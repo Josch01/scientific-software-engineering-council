@@ -84,7 +84,7 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Obtain a scoped re-review against base `f791473bdab826a438f9035cf3842671ca6266c3` before continuing to Task 3.
 
 **Final branch review correction round 1:**
-- [ ] Add a two-thread regression that blocks collection, cancels the process, and proves both paths return the same `CANCELLED` result; make first terminal-result publication atomic.
+- [x] Add a two-thread regression that blocks collection, cancels the process, and proves both paths return the same `CANCELLED` result; make first terminal-result publication atomic.
 - [ ] Add a Codex fixture where a completed `spawn_agent` event reports the parent ID before `thread.started`; the result must not count that ID as a child.
 - [ ] Run focused adapter/worktree tests, full suite, structural validator, and `git diff --check`; record exact results.
 - [ ] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
