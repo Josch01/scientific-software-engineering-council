@@ -76,10 +76,10 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] **Step 5: Commit `feat: add Codex and Gemini runtime adapters`.**
 
 **Review correction round 1 (blocking before Task 3):**
-- [ ] Add regression coverage that rejects Windows batch shims or resolves Gemini to native `node.exe` plus the installed `gemini.js` entry point; assert no batch shim is passed to `Popen`, prompt metacharacters stay a single argv element, and missing native components yield UNAVAILABLE.
-- [ ] Exclusively create run logs, reject stdout/stderr aliases and existing/reserved paths before spawn, and add a regression showing a second run cannot alter or relabel the first run's evidence.
-- [ ] Run the focused provider adapter suite and record exact results in the task report.
-- [ ] Obtain a scoped re-review against base `f791473bdab826a438f9035cf3842671ca6266c3` before continuing to Task 3.
+- [x] Add regression coverage that rejects Windows batch shims or resolves Gemini to native `node.exe` plus the installed `gemini.js` entry point; assert no batch shim is passed to `Popen`, prompt metacharacters stay a single argv element, and missing native components yield UNAVAILABLE.
+- [x] Exclusively create run logs, reject stdout/stderr aliases and existing/reserved paths before spawn, and add a regression showing a second run cannot alter or relabel the first run's evidence.
+- [x] Run the focused provider adapter suite and record exact results in the task report.
+- [x] Obtain a scoped re-review against base `f791473bdab826a438f9035cf3842671ca6266c3` before continuing to Task 3.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
