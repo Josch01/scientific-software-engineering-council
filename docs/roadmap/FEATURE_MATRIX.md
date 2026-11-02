@@ -1,6 +1,7 @@
 # Matriz de capacidades y evidencia
 
 **Referencia:** commit base `908e35637518c4c1ab56c1f75138d194cadd3938`; auditoría 2026-11-02.
+**Incremento P1.1a:** endurecimiento contra evidencia autoafirmada; productor de evidencia canónica pendiente.
 **Estados:** `IMPLEMENTED | VERIFIED | EXPERIMENTAL | NOT_RUN | BLOCKED | PLANNED`.
 
 `VERIFIED` se limita a la afirmación de la fila y al entorno/comando citado. No implica independencia, seguridad completa, validez científica ni readiness de release.
@@ -20,9 +21,9 @@
 | `both` real con coordinación cruzada | `NOT_RUN` | Tests solo validan asignación de proveedores; no hay intercambio runtime verificado. | Correlacionar IDs, contratos, estados y concurrencia de ambos runtimes. |
 | Subagentes nativos por proveedor | `NOT_RUN` | Docs oficiales actuales describen subagentes, pero la salida de help/version no es prueba de una delegación ejecutada. | Adaptador requiere detección de capacidades y traza real; distinguir de procesos CLI top-level. |
 | Worktrees Git de roles y aislamiento de archivos | `EXPERIMENTAL` | Tests crean worktrees Git temporales y prueban independencia del árbol fuente. | Faltan ownership, limpieza transaccional, recovery, lock/idempotencia y prueba contra symlinks ancestro. Worktree no es sandbox de SO. |
-| Mailbox de worker/reviewer | `EXPERIMENTAL` | Rechaza auto-review bajo la etiqueta de worker y usa JSONL. | Las etiquetas de rol no autentican emisor/contexto; el reviewer puede auto-declarar acceptance. |
-| Verificación de tests/reviews del worktree gate | `BLOCKED` | `gate()` reconoce `TEST_RESULT` por resumen `<check>:PASS`; no inspecciona proceso/log/hash. | P1.1 debe impedir falsificación y calcular estado canónico desde ejecución y evidencia validadas. |
-| Gate mecánico de evidencia de release | `EXPERIMENTAL` | Prueba hash/ruta, falta de evidencia y fixture; ejemplo NOT_RUN bloquea (exit 2). | Fixture `fixture-only` con PASS/hash correcto obtiene `READY_FOR_MANUAL_REVIEW`; falta provenance. El estado no libera automáticamente. |
+| Mailbox de worker/reviewer | `EXPERIMENTAL` | La API rechaza `REVIEW_ACCEPTED` y `TEST_RESULT` para workers y reviewers; las pruebas de regresión cubren ambos tipos y todos los roles planificados. | Las etiquetas de rol no autentican emisor/contexto. Solo se aceptan comunicaciones sin autoridad de aceptación. |
+| Verificación de tests/reviews del worktree gate | `BLOCKED` | La prueba de inyección directa de JSONL confirma que declaraciones de acceptance y `<check>:PASS` no elevan el gate. | Falta productor de evidencia canónica del coordinador; `gate()` permanece `BLOCKED` con `evidence_verified: false`. P1.1 sigue incompleta. |
+| Gate mecánico de evidencia de release | `BLOCKED` | Pruebas de hash/ruta/contextos conservadas; fixture con PASS/hash correcto e IDs distintos permanece `BLOCKED`, `provenance_verified: false`. | JSON y hashes no autentican ejecución. Falta registro canónico de ejecución; no se habilita `READY_FOR_MANUAL_REVIEW` mediante evidencia declarada. |
 | Orden tests deterministas → reviewer independiente → fix loop | `PLANNED` | No se observa en `development_runner`. | Secuencia completa es gate P1 pendiente. |
 | Tipos `AgentRuntime`, scheduler DAG, recuperación y semáforo central | `PLANNED` | No hay interfaz/runtime SPI central ni state machine durable. | Prioridad P1 tras el test de evidencia canónica. |
 | Tkinter visible, responsive E2E Windows/Linux | `NOT_RUN` | Solo check headless del modelo. | Se necesita runner con escritorio, pruebas de cancelación/progreso y evidencia visual. |

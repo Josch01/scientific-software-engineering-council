@@ -20,7 +20,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(result["gate_status"], "BLOCKED")
         self.assertTrue(result["issues"])
 
-    def test_success_is_not_final_approval(self):
+    def test_valid_hashes_and_claimed_contexts_do_not_establish_provenance(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             checks = {}
@@ -35,16 +35,21 @@ class ReleaseGateTests(unittest.TestCase):
                     "independence": "SAME_PROVIDER_SEPARATE_CONTEXT",
                     "producer_context_id": "worker-A", "reviewer_context_id": "reviewer-B"
                 }
-            ev = {"task_id": self.task["task_id"], "checks": checks}
+            ev = {"task_id": self.task["task_id"], "checks": checks,
+                  "provenance_verified": True, "source": "coordinator"}
             result = evaluate(self.task, ev, root)
-            self.assertEqual(result["gate_status"], "READY_FOR_MANUAL_REVIEW")
-            self.assertNotEqual(result["gate_status"], "RELEASED")
+            self.assertEqual(result["gate_status"], "BLOCKED")
+            self.assertFalse(result["provenance_verified"])
+            self.assertTrue(any("provenance" in issue for issue in result["issues"]))
+            self.assertFalse(any("SHA-256 mismatch" in issue for issue in result["issues"]))
             corrupted = copy.deepcopy(ev)
             corrupted["checks"]["unit_tests"]["sha256"] = "0" * 64
-            self.assertEqual(evaluate(self.task, corrupted, root)["gate_status"], "BLOCKED")
+            self.assertIn("unit_tests: log SHA-256 mismatch",
+                          evaluate(self.task, corrupted, root)["issues"])
             same_context = copy.deepcopy(ev)
             same_context["checks"]["independent_review"]["reviewer_context_id"] = "worker-A"
-            self.assertEqual(evaluate(self.task, same_context, root)["gate_status"], "BLOCKED")
+            self.assertIn("independent_review: no two distinct declared review contexts",
+                          evaluate(self.task, same_context, root)["issues"])
 
     def test_path_traversal_blocks(self):
         with tempfile.TemporaryDirectory() as d:
@@ -56,3 +61,4 @@ class ReleaseGateTests(unittest.TestCase):
             }}
             result = evaluate(self.task, ev, root)
             self.assertEqual(result["gate_status"], "BLOCKED")
+            self.assertIn("unit_tests: log does not exist inside evidence root",result["issues"])

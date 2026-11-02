@@ -21,7 +21,7 @@ else:
     from route_task import validate_task
 
 KINDS = {"build","debug","refactor","optimize","migrate"}
-EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REVIEW_ACCEPTED","REQUEST_CHANGES","BLOCKED","TEST_RESULT"}
+EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REQUEST_CHANGES","BLOCKED"}
 
 def git(root, *args, check=True):
     proc = subprocess.run(["git","-C",str(root),*args], text=True, encoding="utf-8",
@@ -122,8 +122,8 @@ def message(project, task_id, sender, kind, summary, artifact=""):
         raise ValueError("invalid summary")
     if not isinstance(artifact,str) or len(artifact)>300 or any(c in artifact for c in "\r\n\x00"):
         raise ValueError("invalid artifact reference")
-    if kind in {"REVIEW_ACCEPTED","REVIEW_FINDING","REQUEST_CHANGES"} and sender not in reviewers:
-        raise ValueError("workers cannot approve their own output")
+    if kind in {"REVIEW_FINDING","REQUEST_CHANGES"} and sender not in reviewers:
+        raise ValueError("only reviewers can submit review findings or change requests")
     if kind == "WORKER_RESULT" and sender not in roles:
         raise ValueError("reviewers cannot impersonate workers")
     event={"id":uuid.uuid4().hex,"task_id":task_id,"time":time.time(),
@@ -164,7 +164,8 @@ def inspect(project,task_id):
 def gate(project,task_id):
     state,_=load(project,task_id)
     status=inspect(project,task_id)
-    errors=[]
+    # Mailbox content is untrusted. A coordinator evidence producer is not yet implemented.
+    errors=["coordinator-verified test and review evidence is unavailable"]
     if not status["base_unchanged"] or not status["source_clean"]:
         errors.append("original checkout changed since initialization")
     seen={}
@@ -180,18 +181,12 @@ def gate(project,task_id):
     for w in state["workers"]:
         if not any(e["sender"]==w["role"] and e["kind"]=="WORKER_RESULT" for e in events):
             errors.append("no handoff: "+w["role"])
-    for r in state["review_roles"]:
-        if not any(e["sender"]==r and e["kind"]=="REVIEW_ACCEPTED" for e in events):
-            errors.append("no reviewer acceptance: "+r)
-    for required in state["required_evidence"]:
-        if not any(e["kind"]=="TEST_RESULT" and e["summary"]==required+":PASS" for e in events):
-            errors.append("missing evidence declaration: "+required)
     if any(e["kind"] in {"BLOCKED","REQUEST_CHANGES"} for e in events):
         errors.append("unresolved objections")
-    return {"status":"BLOCKED" if errors else "DECLARED_READY_FOR_HUMAN_REVIEW",
+    return {"status":"BLOCKED",
             "blockers":errors,"collisions":overlaps,"automatic_merge":False,
             "evidence_verified":False,"release_status":"NOT_APPROVED",
-            "note":"Mailbox is self-reported; no real verification or authorization is implied."}
+            "note":"Mailbox claims cannot authorize test success or review acceptance; coordinator evidence is required."}
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

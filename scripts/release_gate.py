@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate claimed release evidence and artifact hashes; human approval is still required."""
+"""Inspect declared log integrity; block readiness while coordinator provenance is unavailable."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,9 @@ except ImportError:  # direct script execution
 
 def evaluate(task: dict[str, Any], evidence: dict[str, Any], evidence_root: Path) -> dict[str, Any]:
     checks_needed = required_checks(task)
-    reasons: list[str] = []
+    # JSON and matching log hashes cannot attest to the process that produced them.
+    # Keep the gate closed until a coordinator-owned execution evidence path exists.
+    reasons: list[str] = ["coordinator execution provenance is unavailable; self-reported evidence cannot authorize review readiness"]
     if not isinstance(evidence, dict) or evidence.get("task_id") != task["task_id"]:
         reasons.append("task_id mismatch or malformed evidence")
         checks: dict[str, Any] = {}
@@ -59,7 +61,8 @@ def evaluate(task: dict[str, Any], evidence: dict[str, Any], evidence_root: Path
                 reasons.append(f"{name}: no two distinct declared review contexts")
     return {
         "task_id": task["task_id"],
-        "gate_status": "BLOCKED" if reasons else "READY_FOR_MANUAL_REVIEW",
+        "gate_status": "BLOCKED",
+        "provenance_verified": False,
         "checks_required": checks_needed,
         "issues": reasons,
         "warning": "A log hash validates integrity, not provenance, adequacy of tests, review independence or mathematical truth.",

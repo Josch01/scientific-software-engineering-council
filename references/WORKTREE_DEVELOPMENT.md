@@ -32,13 +32,15 @@ Task metadata, mailbox and CLI stdout/stderr are stored in a sibling folder name
 
 ## Inter-agent mailbox
 
-Only known specialist roles can record structured events. An implementation role cannot submit `REVIEW_ACCEPTED`. Reviews should run separately on candidate worktree copies using the read-only `run_agents.py` audit process. The structured event is merely a record:
+Only known specialist roles can record structured communication: worker handoffs, review findings, change requests, and blockers. The mailbox API rejects `REVIEW_ACCEPTED` and `TEST_RESULT` for every sender, including reviewer roles. Role labels do not authenticate an execution or an independent context. Reviews should run separately on candidate worktree copies using the read-only `run_agents.py` audit process. The structured event is merely a record:
 
 ```bash
 python scripts/worktree_coordinator.py message --project /path/to/my-git-project --task-id SEIR-BUILD-01 --sender software_auditor --kind REVIEW_FINDING --summary "Falta prueba de regresión del solver"
 ```
 
-The `gate` checks for role handoffs, declarations of reviewer acceptance, declared mandatory checks, overlapping changed filenames, clean base and Git diff problems. Its best possible outcome is `DECLARED_READY_FOR_HUMAN_REVIEW`, **never `RELEASE_APPROVED`**. No statement about software/scientific correctness is inferred from exit status 0 or self-reported reviews.
+The `gate` checks for role handoffs, overlapping changed filenames, clean base and Git diff problems. It treats mailbox content as untrusted, including privileged event types inserted directly into `mailbox.jsonl`. No mailbox declaration can establish test success or reviewer acceptance. The gate currently remains `BLOCKED` with `evidence_verified: false` because the coordinator execution/evidence producer is not implemented. No statement about software/scientific correctness is inferred from exit status 0 or self-reported reviews.
+
+This P1.1a change closes the declaration-based readiness path. It does not complete P1.1 or the multiagent consortium: deterministic tests, separate-context review, and acceptance still need coordinator-produced execution evidence.
 
 ## Remaining phase-2 work
 
