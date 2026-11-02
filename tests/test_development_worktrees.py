@@ -317,7 +317,8 @@ class RuntimeRunnerTests(unittest.TestCase):
             finally:
                 stopped.set()
         with patch.object(provider_runtimes.subprocess,"Popen",side_effect=spawn), \
-                patch.object(provider_runtimes,"_terminate_tree",side_effect=lambda value: value.kill()):
+                patch.object(provider_runtimes,"_terminate_tree",side_effect=lambda value: value.kill()), \
+                patch.object(provider_runtimes,"_new_containment",return_value=Mock(creationflags=0)):
             worker=threading.Thread(target=execute_worker,daemon=True)
             stopper=threading.Thread(target=record_stop,daemon=True)
             worker.start()

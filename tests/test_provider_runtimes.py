@@ -19,6 +19,20 @@ from unittest.mock import Mock, patch
 from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeRequest, RuntimeStatus
 
 
+class OfflineContainment:
+    """No OS handles: parser/contract process doubles have no actual descendants."""
+    creationflags = 0
+
+    def attach(self, process):
+        pass
+
+    def quiesce(self, process):
+        pass
+
+    def close(self):
+        pass
+
+
 class ProviderRuntimeTests(unittest.TestCase):
     def setUp(self):
         # Missing implementation is an explicit RED assertion, not an import error.
@@ -26,6 +40,10 @@ class ProviderRuntimeTests(unittest.TestCase):
                              "provider runtime adapters are not implemented")
         from scripts import provider_runtimes
         self.module = provider_runtimes
+        self.real_containment_factory = getattr(self.module, "_new_containment", None)
+        containment = patch.object(self.module, "_new_containment", side_effect=OfflineContainment, create=True)
+        containment.start()
+        self.addCleanup(containment.stop)
         # Offline process doubles must never reach OS tree-termination commands.
         termination = patch.object(self.module, "_terminate_tree", side_effect=lambda process: process.kill(), create=True)
         termination.start()
@@ -436,7 +454,8 @@ class ProviderRuntimeTests(unittest.TestCase):
 
         runtime = LocalRuntime()
         child_pid = None
-        with patch.object(self.module, "_terminate_tree", wraps=_terminate_tree):
+        with patch.object(self.module, "_terminate_tree", wraps=_terminate_tree), \
+                patch.object(self.module, "_new_containment", wraps=self.real_containment_factory):
             handle = runtime.launch(self.request)
             try:
                 deadline = time.monotonic() + 5
@@ -462,6 +481,119 @@ class ProviderRuntimeTests(unittest.TestCase):
                         except ProcessLookupError:
                             pass
                 runtime.cleanup(handle)
+
+    def test_local_natural_parent_exit_stops_child_before_terminal_log_publication(self):
+        """Local Python Codex-shaped JSONL fixture, never provider E2E."""
+        for exit_code, resume_failure in ((0, False), (1, False), (0, True)):
+            with self.subTest(exit_code=exit_code, resume_failure=resume_failure):
+                root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                ready, marker = root / "child.pid", root / "late-mutation"
+                request = replace(self.request, stdout_path=root / "out", stderr_path=root / "err")
+                child_code = ("import os,time;from pathlib import Path;"
+                    f"Path({str(ready)!r}).write_text(str(os.getpid()));time.sleep(1);"
+                    f"Path({str(marker)!r}).write_text('survived');"
+                    "print('LATE MUTATION',flush=True);time.sleep(30)")
+                parent_code = ("import subprocess,sys,time,json;from pathlib import Path;"
+                    "print(json.dumps({'type':'thread.started','thread_id':'local-parent'}),flush=True);"
+                    f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                    f"ready=Path({str(ready)!r});deadline=time.monotonic()+5\n"
+                    "while not ready.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                    "print(json.dumps({'type':'turn.completed','usage':{}}),flush=True)\n"
+                    f"sys.exit({exit_code})")
+                class LocalRuntime(self.module.CodexRuntime):
+                    def discover_capabilities(inner):
+                        inner._command = (sys.executable,)
+                        return RuntimeCapabilities("codex", True, None, (), None,
+                                                   RuntimeCapabilityStatus.UNKNOWN)
+                    def build_argv(inner, value):
+                        return (sys.executable, "-c", parent_code)
+                runtime = LocalRuntime()
+                handle = None
+                def containment_factory():
+                    containment = self.real_containment_factory()
+                    original_attach = containment.attach
+                    def attach(process):
+                        original_attach(process)
+                        if resume_failure:
+                            deadline = time.monotonic() + 5
+                            while not ready.exists() and time.monotonic() < deadline:
+                                time.sleep(.01)
+                            raise OSError("Injected failure after resume/child startup")
+                    containment.attach = attach
+                    return containment
+                with patch.object(self.module, "_new_containment", side_effect=containment_factory):
+                    try:
+                        handle = runtime.launch(request)
+                        result = runtime.stream_or_collect(handle)
+                        self.assertTrue(ready.exists(), "Local child did not start")
+                        self.assertEqual(result.status, RuntimeStatus.SUCCEEDED
+                                         if exit_code == 0 and not resume_failure else RuntimeStatus.FAILED)
+                        payload = request.stdout_path.read_bytes()
+                        time.sleep(1.2)
+                        self.assertFalse(marker.exists(), "Child survived natural parent exit")
+                        self.assertEqual(request.stdout_path.read_bytes(), payload)
+                        self.assertEqual(result.stdout_sha256, "" if resume_failure
+                                         else hashlib.sha256(payload).hexdigest())
+                    finally:
+                        if ready.exists():
+                            child_pid = int(ready.read_text())
+                            if os.name == "nt":
+                                subprocess.run(["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                            else:
+                                try:
+                                    os.kill(child_pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                        if handle is not None:
+                            runtime.cleanup(handle)
+
+    def test_containment_setup_and_quiescence_fail_closed_without_log_evidence(self):
+        for failure in ("attach", "quiesce"):
+            with self.subTest(failure=failure):
+                containment = Mock(creationflags=0)
+                getattr(containment, failure).side_effect = OSError("unconfirmed containment")
+                with patch.object(self.module, "_new_containment", return_value=containment):
+                    _, _, result, process = self.collect_fixture("codex", [
+                        {"type": "turn.completed", "usage": {}},
+                    ])
+                self.assertEqual(result.status, RuntimeStatus.FAILED)
+                self.assertIn("UNVERIFIED", result.error)
+                self.assertEqual(result.stdout_sha256, "")
+                self.assertEqual(result.stderr_sha256, "")
+                self.assertIsNone(result.provider_session_id)
+                containment.quiesce.assert_called_once_with(process)
+                containment.close.assert_called_once()
+
+    def test_cancel_and_timeout_require_containment_confirmation_before_log_evidence(self):
+        for method in ("cancel", "timeout"):
+            with self.subTest(method=method):
+                containment = Mock(creationflags=0)
+                containment.quiesce.side_effect = OSError("residual member still active")
+                with patch.object(self.module, "_new_containment", return_value=containment):
+                    runtime, handle, process = self.launch_fixture("codex", [
+                        {"type": "turn.completed", "usage": {}},
+                    ], exit_code=-9)
+                    result = getattr(runtime, method)(handle)
+                self.assertEqual(result.status, RuntimeStatus.FAILED)
+                self.assertIn("UNVERIFIED", result.error)
+                self.assertEqual(result.stdout_sha256, "")
+                self.assertEqual(result.stderr_sha256, "")
+                containment.quiesce.assert_called_once_with(process)
+                containment.close.assert_called_once()
+                self.assertIs(runtime.stream_or_collect(handle), result)
+
+    def test_windows_job_close_retains_native_handle_until_close_succeeds(self):
+        from scripts.process_containment import WindowsJob
+        job = WindowsJob.__new__(WindowsJob)
+        job._handle = 123
+        job._api = SimpleNamespace(CloseHandle=Mock(side_effect=[OSError("close failed"), 1]))
+        with self.assertRaises(OSError):
+            job.close()
+        self.assertEqual(job._handle, 123)
+        job.close()
+        self.assertIsNone(job._handle)
+        self.assertEqual(job._api.CloseHandle.call_count, 2)
 
     def test_cancel_and_cleanup_preserve_terminal_result_and_are_idempotent(self):
         runtime, handle, result, process = self.collect_fixture(

@@ -24,6 +24,7 @@ from scripts.agent_runtime import (
     RuntimeLaunchControl, RuntimeRequest, RuntimeResult, RuntimeStatus,
 )
 from scripts.run_agents import _terminate_tree
+from scripts.process_containment import new_containment as _new_containment
 
 
 # A path remains owned for this process's lifetime, including after cleanup or
@@ -56,6 +57,7 @@ class _Run:
     started_clock: float
     process: subprocess.Popen | None = None
     result: RuntimeResult | None = None
+    containment: object | None = None
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
@@ -162,6 +164,7 @@ class _CliRuntime:
             return handle
         argv = (*self._command, *self.build_argv(request)[1:])
         try:
+            run.containment = _new_containment()
             # File-backed output avoids pipe deadlocks and unbounded in-memory logs.
             with request.stdout_path.open("xb") as stdout, request.stderr_path.open("xb") as stderr:
                 # Preparation I/O stays outside the gate so stop can be recorded
@@ -176,11 +179,21 @@ class _CliRuntime:
                     run.process = subprocess.Popen(
                         argv, cwd=request.cwd, stdin=subprocess.DEVNULL,
                         stdout=stdout, stderr=stderr, shell=False,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                        creationflags=run.containment.creationflags,
                         start_new_session=os.name != "nt",
                     )
+                    run.containment.attach(run.process)
         except OSError as exc:
-            self._finish(run, RuntimeStatus.UNAVAILABLE, str(exc))
+            if run.process is not None:
+                try:
+                    run.process.kill()
+                    run.process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                self._finish(run, RuntimeStatus.FAILED,
+                             f"Containment setup UNVERIFIED: {exc}", evidence_stable=False)
+            else:
+                self._finish(run, RuntimeStatus.UNAVAILABLE, str(exc))
             return handle
         return RuntimeHandle(handle.token, request.run_id, self.provider, run.process.pid)
 
@@ -253,6 +266,10 @@ class _CliRuntime:
         with run.lock:
             if run.result is None:
                 self.cancel(handle)
+            elif run.containment is not None:
+                # A failed CloseHandle retains ownership; an explicit cleanup
+                # can retry without altering the immutable terminal result.
+                run.containment.close()
 
     def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
         session_id = None
@@ -323,6 +340,21 @@ class _CliRuntime:
         with run.lock:
             if run.result is not None:
                 return run.result
+            # Every terminal path, including natural root exit, must stop and
+            # confirm residual members before parsing or hashing inherited logs.
+            if run.containment is not None:
+                try:
+                    if run.process is not None:
+                        run.containment.quiesce(run.process)
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    status, evidence_stable = RuntimeStatus.FAILED, False
+                    error = f"Containment termination UNVERIFIED: {exc}"
+                finally:
+                    try:
+                        run.containment.close()
+                    except OSError as exc:
+                        status, evidence_stable = RuntimeStatus.FAILED, False
+                        error = f"Containment closure UNVERIFIED: {exc}"
             return self._publish_result(run, status, error, evidence_stable)
 
     def _publish_result(self, run: _Run, status: RuntimeStatus | None,

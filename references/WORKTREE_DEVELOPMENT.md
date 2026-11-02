@@ -69,11 +69,15 @@ observed path remains in the execution report. A reference identifies a log,
 not authenticated execution or acceptance. Runtime output cannot grant test
 acceptance or reviewer approval. FakeRuntime tests cover dispatch/control flow,
 JSONL fixtures cover parsers, and one local Python child-process test covers
-process/log lifecycle. None is provider E2E. Adapters start an OS process
-group/session and stop the inherited tree (Windows taskkill /T, POSIX killpg),
-then reap the direct process before publishing log hashes. A local Python
-parent/child regression covers ordinary inherited descendants on the test host.
-Detached descendants and OS sandbox enforcement remain UNVERIFIED.
+process/log lifecycle. None is provider E2E. Windows adapters configure a
+kill-on-close Job Object, create the root suspended, assign it to the Job, then
+resume its primary thread. POSIX adapters use a new session/process group.
+Every terminal path, including natural root exit, stops residual contained
+members and confirms quiescence before parsing JSONL or publishing hashes.
+Windows confirmation queries zero active Job members; POSIX stops the group and
+checks for remaining live members. Local Python parent/child tests on the Windows
+host cover natural root success/failure, cancellation and failure after resume.
+Detached/breakaway descendants and OS sandbox enforcement remain UNVERIFIED.
 If tree termination or direct-process reap cannot be confirmed, the adapter
 returns `FAILED` with termination `UNVERIFIED`, bounds its reap attempts, and
 withholds session/child evidence and log hashes because surviving processes may
