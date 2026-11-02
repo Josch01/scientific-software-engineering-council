@@ -7,3 +7,5 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+# Runtime task packets may contain private prompts and raw AI output.
+.ssec/

@@ -2,7 +2,7 @@
 name: scientific-software-engineering-council
 description: "Diseña, implementa, audita, moderniza y libera software científico reproducible en Python o IDL, incluyendo algoritmos matemáticos, optimización, ML, datos y GUI Windows/Linux. Úsala ante solicitudes de crear programas, revisar código existente, corregir errores numéricos, diseñar arquitectura modular, coordinar especialistas, ejecutar pruebas o preparar versiones verificadas."
 metadata:
-  version: "0.2.0-dev.2"
+  version: "0.2.0-dev.3"
   language: "es"
 ---
 
@@ -69,3 +69,7 @@ El arquitecto elige **roles**, no modelos específicos. Los workers no autocerti
 Si el usuario quiere elegir proveedor, concurrencia, permisos, presupuesto o revisión sin editar JSON, usar `scripts/config_panel.py` y consultar `references/CONFIG_PANEL.md`. Respetar siempre la elección `gemini | codex | both` en cada tarea y no forzar segundo proveedor. Los roles se seleccionan automáticamente con `route_task.py`; el plan de ejecución por tandas preserva todas las revisiones obligatorias, independientemente del límite de concurrencia deseado.
 
 El botón de preparación crea perfiles/packets de contexto y un dispatch; **no inicia procesos de Gemini/Codex ni sus subagentes**. Los límites de tiempo, coste y permisos son orientativos, no aplicados por un sandbox ni un medidor. No declarar cumplimiento real hasta conectar un runner que haga cumplir dichas políticas. En auditorías con riesgo R2/R3, conservar los requisitos de evidencia científica y revisión independiente incluso si el usuario elige auditoría basic.
+
+## Runner real de auditoría (v0.2-dev.3)
+
+Para ejecutar roles mediante procesos reales de las CLIs, consultar **`references/RUNNER.md`** y `scripts/run_agents.py`. La ejecución es **auditoría de solo lectura sobre snapshots temporales**, no integración de código. El router decide roles; un proceso por rol obtiene un packet mínimo y los revisores se ejecutan después. `--execute --accept-unmetered-cost` requiere consentimiento; registrar `EXIT_ZERO_UNREVIEWED`, no un resultado certificado. Budget de minutos aplicado a procesos, presupuesto de USD únicamente orientativo. No ejecutar código del repositorio original sin aislamiento externo y no afirmar garantías de aislamiento OS. Codex y Gemini deben estar instalados y autenticados previamente por el usuario.

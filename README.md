@@ -1,4 +1,4 @@
-# Scientific Software Engineering Council — v0.2.0-dev.2
+# Scientific Software Engineering Council — v0.2.0-dev.3
 
 Skill portable de ingeniería de software científico orientada a auditorías, desarrollo, GUI de escritorio, IDL y experimentos reproducibles. **Repositorio nuevo y separado** de `Josch01/skill-investigacion-cientifica-rag`.
 
@@ -48,3 +48,16 @@ python scripts/config_panel.py
 - **Sin GUI**: `python scripts/config_panel.py --check` valida el modelo sin abrir ventana.
 
 Documentación y límites: [Panel y control de seguridad](references/CONFIG_PANEL.md). El coste/tiempo y permisos son políticas **solicitadas, no aplicadas**. El runner real queda pendiente.
+
+## Auditorías reales desde el panel — v0.2-dev.3
+
+Se agregó un ejecutor **experimental y limitado a auditorías**: inicia procesos Codex y/o Gemini desde snapshots separados, guarda logs, controla concurrencia y termina procesos por tiempo o cancelación. El panel incluye **4 · Ejecutar auditoría** y **Cancelar**. La simulación del ejecutor se prueba en CI; no requiere cuentas de los proveedores.
+
+```bash
+# Solo planificar, sin ejecución/coste/escritura
+python scripts/run_agents.py examples/seir_desktop_audit.json --mode both --project /ruta/proyecto
+# Ejecutar CLIs instaladas y autenticadas, con consentimiento sobre coste no medido
+python scripts/run_agents.py examples/seir_desktop_audit.json --mode both --project /ruta/proyecto --execute --accept-unmetered-cost
+```
+
+Lee [RUNNER.md](references/RUNNER.md) antes de ejecutar: snapshots no son un sandbox del sistema operativo, límites de USD no son medibles, el resultado no certifica validez científica y no se integran cambios automáticamente.

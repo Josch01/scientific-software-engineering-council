@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import subprocess
+import uuid
 from pathlib import Path
 
 if __package__:
@@ -20,8 +22,8 @@ else:
 
 
 UI_NOTE = (
-    "SSEC genera perfiles y tareas; NO inicia agentes, instala programas, "
-    "aplica permisos del sistema, ni cobra/limita consumo."
+    "SSEC prepara perfiles y puede ejecutar auditorías bajo confirmación explícita. "
+    "No garantiza aislamiento del SO ni limita el coste real en USD."
 )
 
 
@@ -222,6 +224,81 @@ def main() -> int:
         except (OSError, ValueError, TypeError, KeyError) as exc:
             messagebox.showerror("No se pudo preparar", str(exc))
 
+    active_run = {"process": None, "cancel": None, "log": None}
+
+    def poll_run():
+        proc = active_run["process"]
+        if proc is None:
+            return
+        logfile = active_run["log"]
+        try:
+            if logfile and logfile.exists():
+                data = logfile.read_text(encoding="utf-8", errors="replace")
+                if data:
+                    write_output(data[-12000:])
+        except OSError:
+            pass
+        if proc.poll() is None:
+            root.after(700, poll_run)
+        else:
+            if not (logfile and logfile.exists() and logfile.stat().st_size):
+                write_output(f"Proceso finalizado con código {proc.returncode}. Consultar .ssec/runs/")
+            active_run["process"] = None
+            run_button.configure(state="normal")
+            cancel_button.configure(state="disabled")
+
+    def start_audit():
+        if active_run["process"] is not None:
+            return
+        try:
+            p, c, task = get_inputs()
+            if task["kind"] != "audit":
+                raise ValueError("El ejecutor v0.2 admite solo auditorías por ahora")
+            from pathlib import Path as _Path
+            if __package__:
+                from .run_agents import plan as _plan
+            else:
+                from run_agents import plan as _plan
+            _plan(task, c)
+            if not messagebox.askyesno(
+                "Ejecución real con coste no medido",
+                "Se iniciarán CLIs reales en copias temporales del proyecto. "
+                "El coste en USD NO puede limitarse automáticamente. "
+                "Los resultados NO se integrarán en el proyecto original. "
+                "¿Confirmas expresamente la ejecución?"
+            ):
+                return
+            save_config(p, c)
+            out_dir = p / ".ssec" / "gui_runs"
+            if out_dir.is_symlink():
+                raise ValueError("Directorio de logs enlazado no permitido")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            unique = uuid.uuid4().hex[:12]
+            log = out_dir / f"{unique}.log"
+            cancel = out_dir / f"{unique}.cancel"
+            cmd = [sys.executable, str(_Path(__file__).resolve().parent / "run_agents.py"),
+                   str(_Path(task_file.get()).resolve()), "--project", str(p),
+                   "--config", str(config_path(p)), "--execute",
+                   "--accept-unmetered-cost", "--cancel-file", str(cancel)]
+            with log.open("wb") as handle:
+                active_run["process"] = subprocess.Popen(cmd, cwd=p, stdin=subprocess.DEVNULL,
+                                                        stdout=handle, stderr=subprocess.STDOUT,
+                                                        shell=False)
+            active_run["cancel"], active_run["log"] = cancel, log
+            run_button.configure(state="disabled")
+            cancel_button.configure(state="normal")
+            write_output("Auditoría iniciada. Salida en " + str(log))
+            root.after(700, poll_run)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            messagebox.showerror("Ejecución no iniciada", str(exc))
+
+    def cancel_audit():
+        if active_run["process"] is None:
+            return
+        if messagebox.askyesno("Cancelar", "¿Solicitar cancelación de la auditoría activa?"):
+            active_run["cancel"].write_text("cancel", encoding="utf-8")
+            write_output("Cancelación solicitada. Los agentes terminarán al recibir la señal.")
+
     buttons = ttk.Frame(main_frame, style="Main.TFrame")
     buttons.pack(fill="x", pady=(12, 0))
     ttk.Button(buttons, text="1 · Previsualizar", command=preview,
@@ -230,6 +307,12 @@ def main() -> int:
                style="Panel.TButton").pack(side="left", padx=(0, 9))
     ttk.Button(buttons, text="3 · Preparar perfiles", command=apply,
                style="Panel.TButton").pack(side="right")
+    run_button = ttk.Button(buttons, text="4 · Ejecutar auditoría", command=start_audit,
+                            style="Panel.TButton")
+    run_button.pack(side="left", padx=5)
+    cancel_button = ttk.Button(buttons, text="Cancelar", command=cancel_audit,
+                               state="disabled", style="Panel.TButton")
+    cancel_button.pack(side="left", padx=5)
     saved = config_path(Path(project.get()))
     if saved.is_file():
         try:
