@@ -33,6 +33,7 @@ class RunnerTests(unittest.TestCase):
     def test_safe_commands(self):
         cmd=command_for('codex','audit',Path('/tmp/sample'))
         self.assertEqual(cmd[1:4],['exec','--sandbox','read-only'])
+        self.assertIn("--skip-git-repo-check", cmd)
         self.assertEqual(command_for('gemini','audit',Path('/tmp/sample'))[-2:],['-p','audit'])
         with self.assertRaises(ValueError):
             command_for('sh','rm -rf .',Path('/tmp/sample'))
