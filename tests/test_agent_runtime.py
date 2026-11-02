@@ -72,6 +72,33 @@ class FakeRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.invocations.count(("cleanup", handle)), 1)
         self.assertEqual(runtime.status(handle), RuntimeStatus.RUNNING)
 
+    def test_first_terminal_result_survives_every_later_lifecycle_call(self):
+        for first_status in (RuntimeStatus.SUCCEEDED, RuntimeStatus.FAILED,
+                             RuntimeStatus.UNAVAILABLE, RuntimeStatus.CANCELLED,
+                             RuntimeStatus.TIMED_OUT):
+            with self.subTest(first_status=first_status):
+                runtime=FakeRuntime((first_status,))
+                handle=runtime.launch(self.request)
+                first=runtime.stream_or_collect(handle)
+                self.assertIs(runtime.cancel(handle),first)
+                self.assertIs(runtime.timeout(handle),first)
+                self.assertIs(runtime.stream_or_collect(handle),first)
+                runtime.cleanup(handle)
+                self.assertEqual(runtime.status(handle),first_status)
+                self.assertIs(runtime.stream_or_collect(handle),first)
+
+    def test_running_stop_result_is_cached_across_opposite_stop(self):
+        for stop, expected in (("cancel",RuntimeStatus.CANCELLED),
+                               ("timeout",RuntimeStatus.TIMED_OUT)):
+            with self.subTest(stop=stop):
+                runtime=FakeRuntime()
+                handle=runtime.launch(self.request)
+                first=getattr(runtime,stop)(handle)
+                self.assertEqual(first.status,expected)
+                self.assertIs(runtime.cancel(handle),first)
+                self.assertIs(runtime.timeout(handle),first)
+                self.assertIs(runtime.stream_or_collect(handle),first)
+
     def test_runtime_request_rejects_nonfinite_timeout_and_nul_prompt(self):
         for timeout in (0, -1, math.nan, math.inf, -math.inf):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):

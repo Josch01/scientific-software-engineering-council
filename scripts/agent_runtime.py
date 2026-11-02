@@ -106,6 +106,7 @@ class FakeRuntime:
         self.invocations: list[tuple[str, object]] = []
         self._requests: dict[str, RuntimeRequest] = {}
         self._statuses: dict[str, RuntimeStatus] = {}
+        self._terminal_results: dict[str, RuntimeResult] = {}
         self._cleaned: set[str] = set()
         self._transitions = list(status_transitions)
         self._transition_index = 0
@@ -136,13 +137,15 @@ class FakeRuntime:
 
     def cancel(self, handle: RuntimeHandle) -> RuntimeResult:
         self.invocations.append(("cancel", handle))
-        self._statuses[handle.token] = RuntimeStatus.CANCELLED
-        return self._result(handle, RuntimeStatus.CANCELLED)
+        if self._statuses[handle.token] is RuntimeStatus.RUNNING:
+            self._statuses[handle.token] = RuntimeStatus.CANCELLED
+        return self._result(handle, self._statuses[handle.token])
 
     def timeout(self, handle: RuntimeHandle) -> RuntimeResult:
         self.invocations.append(("timeout", handle))
-        self._statuses[handle.token] = RuntimeStatus.TIMED_OUT
-        return self._result(handle, RuntimeStatus.TIMED_OUT)
+        if self._statuses[handle.token] is RuntimeStatus.RUNNING:
+            self._statuses[handle.token] = RuntimeStatus.TIMED_OUT
+        return self._result(handle, self._statuses[handle.token])
 
     def status(self, handle: RuntimeHandle) -> RuntimeStatus:
         self.invocations.append(("status", handle))
@@ -166,8 +169,10 @@ class FakeRuntime:
         return status
 
     def _result(self, handle: RuntimeHandle, status: RuntimeStatus) -> RuntimeResult:
+        if handle.token in self._terminal_results:
+            return self._terminal_results[handle.token]
         request = self._requests[handle.token]
-        return RuntimeResult(
+        result = RuntimeResult(
             schema_version=1, run_id=handle.run_id, provider="fake", status=status,
             exit_code=0 if status is RuntimeStatus.SUCCEEDED else None,
             provider_session_id=None, stdout_path=request.stdout_path,
@@ -175,3 +180,6 @@ class FakeRuntime:
             started_at_utc=self._STARTED_AT, finished_at_utc=self._FINISHED_AT,
             observed_child_agent_ids=(), error=None,
         )
+        if status is not RuntimeStatus.RUNNING:
+            self._terminal_results[handle.token] = result
+        return result
