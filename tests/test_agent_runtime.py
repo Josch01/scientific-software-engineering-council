@@ -1,3 +1,4 @@
+import math
 import unittest
 from pathlib import Path
 
@@ -52,6 +53,17 @@ class FakeRuntimeTests(unittest.TestCase):
             self.assertEqual(result.status, expected)
             self.assertEqual(runtime.status(handle), expected)
 
+    def test_collection_preserves_cancelled_and_timed_out_terminal_status(self):
+        for method, expected in (("cancel", RuntimeStatus.CANCELLED),
+                                 ("timeout", RuntimeStatus.TIMED_OUT)):
+            with self.subTest(method=method):
+                runtime = FakeRuntime()
+                handle = runtime.launch(self.request)
+                getattr(runtime, method)(handle)
+                result = runtime.stream_or_collect(handle)
+                self.assertEqual(result.status, expected)
+                self.assertEqual(runtime.status(handle), expected)
+
     def test_cleanup_is_idempotent(self):
         runtime = FakeRuntime()
         handle = runtime.launch(self.request)
@@ -60,9 +72,10 @@ class FakeRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.invocations.count(("cleanup", handle)), 1)
         self.assertEqual(runtime.status(handle), RuntimeStatus.RUNNING)
 
-    def test_runtime_request_rejects_invalid_timeout_and_nul_prompt(self):
-        with self.assertRaises(ValueError):
-            RuntimeRequest(**{**self.request.__dict__, "timeout_seconds": 0})
+    def test_runtime_request_rejects_nonfinite_timeout_and_nul_prompt(self):
+        for timeout in (0, -1, math.nan, math.inf, -math.inf):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                RuntimeRequest(**{**self.request.__dict__, "timeout_seconds": timeout})
         with self.assertRaises(ValueError):
             RuntimeRequest(**{**self.request.__dict__, "prompt": "bad\0prompt"})
 

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from pathlib import Path
 from typing import Protocol
 
@@ -22,8 +23,8 @@ class RuntimeRequest:
     def __post_init__(self) -> None:
         if not self.run_id or not self.task_id or not self.role:
             raise ValueError("run_id, task_id, and role must be non-empty")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
         if "\0" in self.prompt:
             raise ValueError("prompt must not contain NUL")
 
@@ -153,6 +154,9 @@ class FakeRuntime:
             self._cleaned.add(handle.token)
 
     def _next_status(self, handle: RuntimeHandle, default: RuntimeStatus) -> RuntimeStatus:
+        current = self._statuses[handle.token]
+        if current is not RuntimeStatus.RUNNING:
+            return current
         if self._transition_index < len(self._transitions):
             status = self._transitions[self._transition_index]
             self._transition_index += 1
