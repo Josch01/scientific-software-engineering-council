@@ -78,6 +78,14 @@ Windows confirmation queries zero active Job members; POSIX stops the group and
 checks for remaining live members. Local Python parent/child tests on the Windows
 host cover natural root success/failure, cancellation and failure after resume.
 Detached/breakaway descendants and OS sandbox enforcement remain UNVERIFIED.
+The POSIX backend observes root exit with `waitid(..., WNOWAIT)` and retains the
+unreaped leader until group signalling and live-member confirmation finish; only
+then does it reap the root. This prevents a reused PID/PGID from becoming a kill
+target. Runtime callers must leave reaping of that child to the runtime. If root
+identity is lost, no group signal is sent and evidence fails closed. This POSIX
+implementation requires non-reaping waitid plus procfs live-member inspection;
+missing support is unavailable before provider creation. Its native path remains
+unverified on this Windows host; offline order/concurrency regressions cover it.
 If tree termination or direct-process reap cannot be confirmed, the adapter
 returns `FAILED` with termination `UNVERIFIED`, bounds its reap attempts, and
 withholds session/child evidence and log hashes because surviving processes may

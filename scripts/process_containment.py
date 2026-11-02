@@ -9,6 +9,7 @@ import ctypes
 import os
 from pathlib import Path
 import signal
+import subprocess
 import time
 
 
@@ -52,6 +53,13 @@ class _ThreadEntry(ctypes.Structure):
 class WindowsJob:
     # CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED (not exposed by subprocess).
     creationflags = 0x200 | 0x4
+    requires_unreaped_root = False
+
+    def root_exited(self, process):
+        return process.poll() is not None
+
+    def wait_for_root(self, process, timeout):
+        return process.wait(timeout=timeout)
 
     def __init__(self):
         self._api = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -143,6 +151,31 @@ class WindowsJob:
 
 class PosixGroup:
     creationflags = 0
+    requires_unreaped_root = True
+
+    def __init__(self):
+        if not all(hasattr(os, name) for name in ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT")):
+            raise OSError("POSIX containment requires non-reaping waitid/WNOWAIT support")
+        if not Path("/proc").is_dir():
+            raise OSError("POSIX live-group confirmation requires procfs in this implementation")
+
+    def root_exited(self, process):
+        try:
+            event = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError as exc:
+            raise OSError("POSIX leader identity lost; refusing to signal a possibly reused PGID") from exc
+        if event is None:
+            return False
+        if event.si_pid != process.pid:
+            raise OSError("POSIX leader identity could not be confirmed")
+        return True
+
+    def wait_for_root(self, process, timeout):
+        deadline = time.monotonic() + timeout
+        while not self.root_exited(process):
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            time.sleep(min(.01, max(0, deadline - time.monotonic())))
 
     def attach(self, process):
         # Popen(start_new_session=True) establishes the group before exec.
@@ -175,16 +208,20 @@ class PosixGroup:
         return False
 
     def quiesce(self, process):
+        # Validate ownership without reaping; even an exited leader must retain
+        # its PID/PGID until signalling and group confirmation are complete.
+        self._pgid = process.pid
+        self.root_exited(process)
         try:
             os.killpg(self._pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=5)
         deadline = time.monotonic() + 5
         while self._has_live_members():
             if time.monotonic() >= deadline:
                 raise OSError("Process group still has live members after termination")
             time.sleep(.01)
+        process.wait(timeout=5)
 
     def close(self):
         pass

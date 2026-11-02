@@ -289,6 +289,9 @@ class RuntimeRunnerTests(unittest.TestCase):
         process=Mock(pid=123,returncode=-9)
         process.poll.return_value=None
         process.wait.return_value=-9
+        containment=Mock(creationflags=0,requires_unreaped_root=False)
+        containment.root_exited.side_effect=lambda value: value.poll() is not None
+        containment.wait_for_root.side_effect=lambda value,timeout: value.wait(timeout=timeout)
         class ControlledRuntime(GeminiRuntime):
             def discover_capabilities(inner):
                 inner._command=("offline-double",)
@@ -318,7 +321,7 @@ class RuntimeRunnerTests(unittest.TestCase):
                 stopped.set()
         with patch.object(provider_runtimes.subprocess,"Popen",side_effect=spawn), \
                 patch.object(provider_runtimes,"_terminate_tree",side_effect=lambda value: value.kill()), \
-                patch.object(provider_runtimes,"_new_containment",return_value=Mock(creationflags=0)):
+                patch.object(provider_runtimes,"_new_containment",return_value=containment):
             worker=threading.Thread(target=execute_worker,daemon=True)
             stopper=threading.Thread(target=record_stop,daemon=True)
             worker.start()

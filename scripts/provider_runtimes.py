@@ -185,11 +185,12 @@ class _CliRuntime:
                     run.containment.attach(run.process)
         except OSError as exc:
             if run.process is not None:
-                try:
-                    run.process.kill()
-                    run.process.wait(timeout=5)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                if run.containment.requires_unreaped_root is not True:
+                    try:
+                        run.process.kill()
+                        run.process.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
                 self._finish(run, RuntimeStatus.FAILED,
                              f"Containment setup UNVERIFIED: {exc}", evidence_stable=False)
             else:
@@ -211,9 +212,12 @@ class _CliRuntime:
             remaining = max(0, run.request.timeout_seconds - (time.monotonic() - run.started_clock))
         # A collector must not prevent another thread from stopping the process.
         try:
-            run.process.wait(timeout=remaining)
+            run.containment.wait_for_root(run.process, remaining)
         except subprocess.TimeoutExpired:
             return self.timeout(handle)
+        except OSError as exc:
+            return self._finish(run, RuntimeStatus.FAILED,
+                                f"Root identity UNVERIFIED: {exc}", evidence_stable=False)
         return self._finish(run)
 
     def cancel(self, handle: RuntimeHandle) -> RuntimeResult:
@@ -227,8 +231,16 @@ class _CliRuntime:
         with run.lock:
             if run.result is not None:
                 return run.result
-            if run.process.poll() is not None:
-                return self._finish(run)
+            try:
+                if run.containment.root_exited(run.process):
+                    return self._finish(run)
+            except OSError as exc:
+                return self._finish(run, RuntimeStatus.FAILED,
+                                    f"Root identity UNVERIFIED: {exc}", evidence_stable=False)
+            if run.containment.requires_unreaped_root is True:
+                # POSIX quiescence owns signalling and the sole final reap.
+                # The legacy helper/poll/wait path could release the PGID early.
+                return self._finish(run, status, status.value)
             # Serialize kill/reap and publication: a waiting collector cannot
             # publish FAILED between process death and the requested stop result.
             stop_error = None
@@ -255,8 +267,12 @@ class _CliRuntime:
         with run.lock:
             if run.result is not None:
                 return run.result.status
-            if run.process.poll() is not None:
-                return self._finish(run).status
+            try:
+                if run.containment.root_exited(run.process):
+                    return self._finish(run).status
+            except OSError as exc:
+                return self._finish(run, RuntimeStatus.FAILED,
+                                    f"Root identity UNVERIFIED: {exc}", evidence_stable=False).status
             if time.monotonic() - run.started_clock >= run.request.timeout_seconds:
                 return self.timeout(handle).status
             return RuntimeStatus.RUNNING

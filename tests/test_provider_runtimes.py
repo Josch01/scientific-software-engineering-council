@@ -22,6 +22,13 @@ from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus, 
 class OfflineContainment:
     """No OS handles: parser/contract process doubles have no actual descendants."""
     creationflags = 0
+    requires_unreaped_root = False
+
+    def root_exited(self, process):
+        return process.poll() is not None
+
+    def wait_for_root(self, process, timeout):
+        return process.wait(timeout=timeout)
 
     def attach(self, process):
         pass
@@ -72,7 +79,7 @@ class ProviderRuntimeTests(unittest.TestCase):
                                                      else self.help_text(provider)), "")
         return patch.object(self.module.subprocess, "run", side_effect=run)
 
-    def launch_fixture(self, provider, events, exit_code=0, wait_error=None):
+    def launch_fixture(self, provider, events, exit_code=0, wait_error=None, process_setup=None):
         # Every parser fixture represents a separate run with fresh evidence paths.
         root = Path(tempfile.mkdtemp(dir=self.temp.name))
         self.request = replace(self.request, stdout_path=root / "stdout.jsonl",
@@ -84,6 +91,8 @@ class ProviderRuntimeTests(unittest.TestCase):
         process.wait.side_effect = wait_error
         process.wait.return_value = exit_code
         process.poll.return_value = None
+        if process_setup is not None:
+            process_setup(process)
 
         def spawn(argv, **kwargs):
             self.assertFalse(kwargs["shell"])
@@ -551,7 +560,7 @@ class ProviderRuntimeTests(unittest.TestCase):
     def test_containment_setup_and_quiescence_fail_closed_without_log_evidence(self):
         for failure in ("attach", "quiesce"):
             with self.subTest(failure=failure):
-                containment = Mock(creationflags=0)
+                containment = Mock(wraps=OfflineContainment(), creationflags=0, requires_unreaped_root=False)
                 getattr(containment, failure).side_effect = OSError("unconfirmed containment")
                 with patch.object(self.module, "_new_containment", return_value=containment):
                     _, _, result, process = self.collect_fixture("codex", [
@@ -568,7 +577,7 @@ class ProviderRuntimeTests(unittest.TestCase):
     def test_cancel_and_timeout_require_containment_confirmation_before_log_evidence(self):
         for method in ("cancel", "timeout"):
             with self.subTest(method=method):
-                containment = Mock(creationflags=0)
+                containment = Mock(wraps=OfflineContainment(), creationflags=0, requires_unreaped_root=False)
                 containment.quiesce.side_effect = OSError("residual member still active")
                 with patch.object(self.module, "_new_containment", return_value=containment):
                     runtime, handle, process = self.launch_fixture("codex", [
@@ -594,6 +603,150 @@ class ProviderRuntimeTests(unittest.TestCase):
         job.close()
         self.assertIsNone(job._handle)
         self.assertEqual(job._api.CloseHandle.call_count, 2)
+
+    def test_posix_backend_signals_group_before_reaping_on_every_terminal_path(self):
+        """POSIX ordering under kernel/process doubles; safe on any test host."""
+        from scripts import process_containment
+        for mode in ("collect", "status", "cancel", "timeout", "setup_failure"):
+            with self.subTest(mode=mode):
+                order = []
+                group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+                state = {"exited": mode in ("collect", "status")}
+                def observe(kind, pid, options):
+                    self.assertTrue(options & 0x100, "waitid must not reap the root")
+                    order.append("observe")
+                    return SimpleNamespace(si_pid=pid) if state["exited"] else None
+                def signal_group(*args):
+                    order.append("signal")
+                    state["exited"] = True
+                kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+                    waitid=Mock(side_effect=observe), killpg=Mock(side_effect=signal_group))
+                def process_setup(process):
+                    def reap(*args, **kwargs):
+                        order.append("reap")
+                        return process.returncode
+                    process.wait.side_effect = reap
+                    process.poll.side_effect = (lambda: reap() if state["exited"] else None)
+                if mode == "setup_failure":
+                    attach = group.attach
+                    def failed_attach(process):
+                        attach(process)
+                        raise OSError("POSIX setup failure")
+                    group.attach = failed_attach
+                with patch.object(process_containment, "os", kernel), \
+                        patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                        patch.object(group, "_has_live_members", return_value=False), \
+                        patch.object(self.module, "_new_containment", return_value=group):
+                    runtime, handle, process = self.launch_fixture("codex", [
+                        {"type": "turn.completed", "usage": {}},
+                    ], process_setup=process_setup)
+                    if mode == "status":
+                        runtime.status(handle)
+                    elif mode in ("cancel", "timeout"):
+                        getattr(runtime, mode)(handle)
+                    result = runtime.stream_or_collect(handle)
+                self.assertIn("signal", order)
+                self.assertIn("reap", order)
+                self.assertLess(order.index("signal"), order.index("reap"), order)
+                self.assertEqual(order.count("signal"), 1)
+                self.assertEqual(result.status, {
+                    "collect": RuntimeStatus.SUCCEEDED, "status": RuntimeStatus.SUCCEEDED,
+                    "cancel": RuntimeStatus.CANCELLED, "timeout": RuntimeStatus.TIMED_OUT,
+                    "setup_failure": RuntimeStatus.FAILED}[mode])
+
+    def test_posix_lost_leader_identity_never_signals_a_reused_group(self):
+        from scripts import process_containment
+        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+        process = Mock(pid=123)
+        group.attach(process)
+        kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+            waitid=Mock(side_effect=ChildProcessError("root already reaped")), killpg=Mock())
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                patch.object(group, "_has_live_members", return_value=False):
+            with self.assertRaises(OSError):
+                group.quiesce(process)
+        kernel.killpg.assert_not_called()
+        process.wait.assert_not_called()
+
+    def test_posix_missing_live_group_inspection_blocks_before_spawn(self):
+        from scripts import process_containment
+        kernel = SimpleNamespace(name="posix", P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+                                 waitid=Mock())
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "Path", return_value=Mock(is_dir=Mock(return_value=False))), \
+                patch.object(self.module, "_new_containment", side_effect=process_containment.new_containment), \
+                patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                self.discovery("codex"), patch.object(self.module.subprocess, "Popen") as spawn:
+            runtime = self.module.CodexRuntime()
+            result = runtime.stream_or_collect(runtime.launch(self.request))
+        self.assertEqual(result.status, RuntimeStatus.UNAVAILABLE)
+        spawn.assert_not_called()
+
+    def test_posix_concurrent_collection_cancel_signals_before_the_only_reap(self):
+        from scripts import process_containment
+        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+        collecting, release, stopped = threading.Event(), threading.Event(), threading.Event()
+        order, results, errors = [], {}, []
+        state = {"reaped": False}
+        def observe(kind, pid, options):
+            if threading.current_thread().name == "posix-collector":
+                collecting.set()
+                if not release.wait(5):
+                    raise AssertionError("POSIX collector was not released")
+            if state["reaped"]:
+                raise ChildProcessError("Root was reaped by the winning stopper")
+            return None
+        def signal_group(*args):
+            order.append("signal")
+        kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+            waitid=Mock(side_effect=observe), killpg=Mock(side_effect=signal_group))
+        def process_setup(process):
+            process.poll.side_effect = AssertionError("POSIX poll would reap early")
+            def reap(*args, **kwargs):
+                order.append("reap")
+                state["reaped"] = True
+                return -9
+            process.wait.side_effect = reap
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                patch.object(group, "_has_live_members", return_value=False), \
+                patch.object(self.module, "_new_containment", return_value=group):
+            runtime, handle, process = self.launch_fixture("codex", [], exit_code=-9,
+                                                          process_setup=process_setup)
+            def collect():
+                try:
+                    results["collect"] = runtime.stream_or_collect(handle)
+                except BaseException as exc:
+                    errors.append(exc)
+            def cancel():
+                try:
+                    results["cancel"] = runtime.cancel(handle)
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    stopped.set()
+            collector = threading.Thread(target=collect, name="posix-collector", daemon=True)
+            stopper = threading.Thread(target=cancel, daemon=True)
+            collector.start()
+            try:
+                self.assertTrue(collecting.wait(5))
+                stopper.start()
+                self.assertTrue(stopped.wait(5))
+            finally:
+                release.set()
+                collector.join(5)
+                if stopper.ident is not None:
+                    stopper.join(5)
+            self.assertFalse(collector.is_alive())
+            self.assertFalse(stopper.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(order, ["signal", "reap"])
+            self.assertIs(results["collect"], results["cancel"])
+            self.assertEqual(results["cancel"].status, RuntimeStatus.CANCELLED)
+            self.assertEqual(runtime.status(handle), RuntimeStatus.CANCELLED)
+            self.assertIs(runtime.timeout(handle), results["cancel"])
+            kernel.killpg.assert_called_once()
 
     def test_cancel_and_cleanup_preserve_terminal_result_and_are_idempotent(self):
         runtime, handle, result, process = self.collect_fixture(
