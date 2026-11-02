@@ -26,6 +26,8 @@
 - Un flag solicitado en el argv no demuestra un sandbox efectivo; las capacidades deben conservar estado `UNVERIFIED` hasta evidencia real.
 - Timeout y cancelación deben terminar el proceso y mantener estados distintos de `FAILED`/`SUCCEEDED`.
 - Salida JSONL malformada, sin evento terminal o con fallo explícito no puede reportar ejecución exitosa.
+- En Windows, ningún shim batch llega a `Popen`; Gemini usa Node nativo más la entrada instalada de su paquete o falla como `UNAVAILABLE`. Los metacaracteres del prompt siguen siendo un único argumento.
+- Una segunda ejecución no trunca ni reutiliza logs anteriores; stdout/stderr no pueden ser la misma ruta y las colisiones se rechazan antes de crear el proceso.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -63,13 +65,21 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - Give each adapter a pure `build_argv(request: RuntimeRequest) -> tuple[str, ...]` method. Codex chooses `read-only` or `workspace-write` from `request.writable`; Gemini uses `--sandbox` and non-YOLO default approval. Do not claim the Gemini argv enforces a read-only workspace.
 - Capability discovery may invoke only the selected executable's `--version` and `--help` (or provider command help), with bounded timeouts; it must not start a model session or inspect credentials.
 - Build argv as an array with `shell=False`. Require `request.cost_acknowledged` before provider launch. Request the existing least-privilege mode supported by each CLI, but report `sandbox_effective=None`/`UNVERIFIED` until runtime evidence proves enforcement.
+- Never pass Windows `.cmd`/`.bat` shims to `subprocess`; for Gemini's npm shim, resolve and invoke its package JavaScript entry point via native `node.exe`, or report the adapter unavailable. Do not use a shell wrapper or manually shell-quote prompt text.
+- Reserve stdout/stderr log paths exclusively for one run: they must differ, must not already exist or belong to another run, and must be created without truncation. Reject collisions before spawning a provider.
 - Parse Codex JSONL (`thread.started`, terminal turn/error events) and Gemini `stream-json` (`init`, terminal `result`, error events). Set session IDs only from those protocol fields; leave `native_subagents` unverified unless a child-agent ID/event is actually observed.
 
-- [ ] **Step 1: Add tests for explicit provider selection, no fallback when executable/help flags are missing, cost-ack rejection before spawn, no-shell argv construction and permission-claim limits, bounded capability discovery, provider session ID extraction, and malformed/no-terminal/failure JSONL.** Fixtures test parsers only and must be described as parser tests, not provider E2E.
-- [ ] **Step 2: Run `python -m unittest discover -s tests -p test_provider_runtimes.py -v` and record failures before implementation.**
-- [ ] **Step 3: Implement Codex/Gemini adapters in `scripts/provider_runtimes.py`.** Keep detected support distinct from runtime behavior proven by a paid CLI session.
-- [ ] **Step 4: Run provider-adapter tests, full unittest suite, and structural validator.** No provider model/session calls are permitted in this task.
-- [ ] **Step 5: Commit `feat: add Codex and Gemini runtime adapters`.**
+- [x] **Step 1: Add tests for explicit provider selection, no fallback when executable/help flags are missing, cost-ack rejection before spawn, no-shell argv construction and permission-claim limits, bounded capability discovery, provider session ID extraction, and malformed/no-terminal/failure JSONL.** Fixtures test parsers only and must be described as parser tests, not provider E2E.
+- [x] **Step 2: Run `python -m unittest discover -s tests -p test_provider_runtimes.py -v` and record failures before implementation.**
+- [x] **Step 3: Implement Codex/Gemini adapters in `scripts/provider_runtimes.py`.** Keep detected support distinct from runtime behavior proven by a paid CLI session.
+- [x] **Step 4: Run provider-adapter tests, full unittest suite, and structural validator.** No provider model/session calls are permitted in this task.
+- [x] **Step 5: Commit `feat: add Codex and Gemini runtime adapters`.**
+
+**Review correction round 1 (blocking before Task 3):**
+- [ ] Add regression coverage that rejects Windows batch shims or resolves Gemini to native `node.exe` plus the installed `gemini.js` entry point; assert no batch shim is passed to `Popen`, prompt metacharacters stay a single argv element, and missing native components yield UNAVAILABLE.
+- [ ] Exclusively create run logs, reject stdout/stderr aliases and existing/reserved paths before spawn, and add a regression showing a second run cannot alter or relabel the first run's evidence.
+- [ ] Run the focused provider adapter suite and record exact results in the task report.
+- [ ] Obtain a scoped re-review against base `f791473bdab826a438f9035cf3842671ca6266c3` before continuing to Task 3.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
