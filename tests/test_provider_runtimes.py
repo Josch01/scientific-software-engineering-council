@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -45,6 +46,10 @@ class ProviderRuntimeTests(unittest.TestCase):
         return patch.object(self.module.subprocess, "run", side_effect=run)
 
     def launch_fixture(self, provider, events, exit_code=0, wait_error=None):
+        # Every parser fixture represents a separate run with fresh evidence paths.
+        root = Path(tempfile.mkdtemp(dir=self.temp.name))
+        self.request = replace(self.request, stdout_path=root / "stdout.jsonl",
+                               stderr_path=root / "stderr.log")
         runtime = self.module.create_runtime(provider)
         payload = events if isinstance(events, bytes) else (
             "\n".join(json.dumps(event) for event in events) + "\n").encode()
@@ -271,6 +276,128 @@ class ProviderRuntimeTests(unittest.TestCase):
             with self.subTest(provider=provider, events=events):
                 _, _, result, _ = self.collect_fixture(provider, events)
                 self.assertEqual(result.status, RuntimeStatus.FAILED)
+
+    def test_windows_gemini_shim_uses_native_node_for_probes_and_launch(self):
+        root = Path(self.temp.name)
+        shim = root / "gemini.CMD"
+        shim.touch()
+        script = root / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
+        script.parent.mkdir(parents=True)
+        script.touch()
+        node = root / "node.exe"
+        node.touch()
+        prompt = 'literal & echo PWNED | > < ^ %PATH% !value! "quoted" --yolo'
+        request = replace(self.request, prompt=prompt)
+
+        def probe(argv, **kwargs):
+            self.assertEqual(argv[:2], (str(node), str(script)))
+            self.assertIn(argv[2:], (("--version",), ("--help",)))
+            self.assertFalse(kwargs["shell"])
+            return subprocess.CompletedProcess(argv, 0, "1.0" if argv[-1] == "--version"
+                                               else self.help_text("gemini"), "")
+
+        with patch.object(sys, "platform", "win32"), \
+                patch.object(self.module.shutil, "which", side_effect=lambda name: {
+                    "gemini": str(shim), "node.exe": str(node)}.get(name)), \
+                patch.object(self.module.subprocess, "run", side_effect=probe), \
+                patch.object(self.module.subprocess, "Popen", return_value=Mock(pid=321)) as spawn:
+            runtime = self.module.GeminiRuntime()
+            runtime.launch(request)
+        argv = spawn.call_args.args[0]
+        self.assertEqual(argv[:2], (str(node), str(script)))
+        self.assertEqual(argv[-1], "--prompt=" + prompt)
+        self.assertFalse(spawn.call_args.kwargs["shell"])
+        self.assertNotIn(str(shim), argv)
+
+    def test_windows_shims_without_native_components_are_unavailable_without_probe(self):
+        root = Path(self.temp.name)
+        for provider, suffix, components in (("gemini", ".CMD", "none"),
+                                              ("gemini", ".bat", "node_only"),
+                                              ("codex", ".cmd", "none")):
+            with self.subTest(provider=provider, components=components):
+                shim = root / (provider + suffix)
+                node = root / "node.exe"
+                node.touch(exist_ok=True)
+                with patch.object(sys, "platform", "win32"), \
+                        patch.object(self.module.shutil, "which", side_effect=lambda name: (
+                            str(shim) if name == provider else str(node) if components == "node_only" else None)), \
+                        patch.object(self.module.subprocess, "run") as probe, \
+                        patch.object(self.module.subprocess, "Popen") as spawn:
+                    runtime = self.module.create_runtime(provider)
+                    result = runtime.stream_or_collect(runtime.launch(self.request))
+                self.assertEqual(result.status, RuntimeStatus.UNAVAILABLE)
+                probe.assert_not_called()
+                spawn.assert_not_called()
+
+    def test_output_aliases_and_existing_files_are_rejected_before_spawn(self):
+        root = Path(self.temp.name)
+        existing = root / "existing.log"
+        existing.write_bytes(b"original evidence")
+        for stdout, stderr in ((root / "same.log", root / "same.log"),
+                                (root / "same.log", root / "nested" / ".." / "same.log"),
+                                (existing, root / "new.log"),
+                                (root / "new.log", existing)):
+            with self.subTest(stdout=stdout, stderr=stderr), \
+                    patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                    self.discovery("codex"), patch.object(self.module.subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.module.CodexRuntime().launch(replace(self.request, stdout_path=stdout, stderr_path=stderr))
+                spawn.assert_not_called()
+        self.assertEqual(existing.read_bytes(), b"original evidence")
+
+    def test_exclusive_creation_preserves_files_created_after_reservation(self):
+        original_open = Path.open
+        for stream_name in ("stdout_path", "stderr_path"):
+            root = Path(tempfile.mkdtemp(dir=self.temp.name))
+            request = replace(self.request, stdout_path=root / "out", stderr_path=root / "err")
+            raced_path = getattr(request, stream_name)
+            injected = False
+
+            def racing_open(path, mode="r", *args, **kwargs):
+                nonlocal injected
+                if path == raced_path and not injected:
+                    injected = True
+                    with original_open(path, "wb") as stream:
+                        stream.write(b"independent evidence")
+                return original_open(path, mode, *args, **kwargs)
+
+            with self.subTest(stream_name=stream_name), \
+                    patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                    self.discovery("codex"), patch.object(Path, "open", new=racing_open), \
+                    patch.object(self.module.subprocess, "Popen") as spawn:
+                runtime = self.module.CodexRuntime()
+                result = runtime.stream_or_collect(runtime.launch(request))
+            self.assertEqual(result.status, RuntimeStatus.UNAVAILABLE)
+            self.assertEqual(raced_path.read_bytes(), b"independent evidence")
+            spawn.assert_not_called()
+
+    def test_run_b_cannot_overwrite_or_relabel_run_a_evidence(self):
+        runtime_a, handle_a, _ = self.launch_fixture("codex", [
+            {"type": "thread.started", "thread_id": "session-A"},
+            {"type": "turn.completed", "usage": {}},
+        ])
+        original = self.request.stdout_path.read_bytes()
+        for completed in (False, True):
+            if completed:
+                runtime_a.stream_or_collect(handle_a)
+            with self.subTest(completed=completed), \
+                    patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                    self.discovery("codex"), patch.object(self.module.subprocess, "Popen") as spawn:
+                with self.assertRaises(ValueError):
+                    self.module.CodexRuntime().launch(replace(self.request, run_id="run-B"))
+                spawn.assert_not_called()
+            self.assertEqual(self.request.stdout_path.read_bytes(), original)
+        result = runtime_a.stream_or_collect(handle_a)
+        self.assertEqual(result.provider_session_id, "session-A")
+        self.assertEqual(result.run_id, "run-1")
+        self.request.stdout_path.unlink()
+        self.request.stderr_path.unlink()
+        runtime_a.cleanup(handle_a)
+        with patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                self.discovery("codex"), patch.object(self.module.subprocess, "Popen") as spawn:
+            with self.assertRaises(ValueError):
+                self.module.CodexRuntime().launch(replace(self.request, run_id="run-B"))
+            spawn.assert_not_called()
 
 
 if __name__ == "__main__":

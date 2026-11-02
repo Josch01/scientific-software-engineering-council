@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import uuid
 
@@ -20,6 +22,12 @@ from scripts.agent_runtime import (
     AgentRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeHandle,
     RuntimeRequest, RuntimeResult, RuntimeStatus,
 )
+
+
+# A path remains owned for this process's lifetime, including after cleanup or
+# deletion of its logs. Completed evidence must never be relabelled by another run.
+_OWNED_OUTPUT_PATHS: set[Path] = set()
+_OUTPUT_LOCK = threading.Lock()
 
 
 def _utc_now() -> str:
@@ -55,23 +63,53 @@ class _CliRuntime:
 
     def __init__(self) -> None:
         self._runs: dict[str, _Run] = {}
-        self._executable: str | None = None
+        self._command: tuple[str, ...] | None = None
+
+    def _resolve_command(self) -> tuple[str, ...] | None:
+        executable = shutil.which(self.provider)
+        if not executable:
+            return None
+        path = Path(executable)
+        if path.suffix.lower() not in (".cmd", ".bat"):
+            return (executable,)
+        # Windows can invoke batch files through cmd.exe despite shell=False.
+        # Never send a batch shim to any subprocess boundary.
+        if sys.platform != "win32" or self.provider != "gemini":
+            return None
+        script = path.parent / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
+        node = shutil.which("node.exe")
+        if (not node or Path(node).suffix.lower() != ".exe"
+                or not Path(node).is_file() or not script.is_file()):
+            return None
+        return (node, str(script))
+
+    def _reserve_outputs(self, request: RuntimeRequest) -> None:
+        paths = (request.stdout_path, request.stderr_path)
+        canonical = tuple(path.resolve() for path in paths)
+        with _OUTPUT_LOCK:
+            if canonical[0] == canonical[1]:
+                raise ValueError("stdout and stderr must use distinct output paths")
+            if any(path.exists() or path.is_symlink() for path in paths):
+                raise ValueError("Output paths must not already exist")
+            if any(path in _OWNED_OUTPUT_PATHS for path in canonical):
+                raise ValueError("Output path is already owned by another run")
+            _OWNED_OUTPUT_PATHS.update(canonical)
 
     def discover_capabilities(self) -> RuntimeCapabilities:
         """Only bounded version/help probes; no credential or model access."""
-        self._executable = shutil.which(self.provider)
+        self._command = self._resolve_command()
         version = None
         features: tuple[str, ...] = ()
         available = False
-        if self._executable:
+        if self._command:
             try:
                 version_result = subprocess.run(
-                    (self._executable, "--version"), shell=False, timeout=5,
+                    (*self._command, "--version"), shell=False, timeout=5,
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
                 )
                 help_result = subprocess.run(
-                    (self._executable, *self._help_args), shell=False, timeout=5,
+                    (*self._command, *self._help_args), shell=False, timeout=5,
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
                 )
@@ -98,16 +136,19 @@ class _CliRuntime:
     def launch(self, request: RuntimeRequest) -> RuntimeHandle:
         if not request.cost_acknowledged:
             raise ValueError("Provider launch requires cost_acknowledged")
+        available = self.discover_capabilities().available
+        if available:
+            self._reserve_outputs(request)
         handle = RuntimeHandle(uuid.uuid4().hex, request.run_id, self.provider, None)
         run = _Run(request, _utc_now(), time.monotonic())
         self._runs[handle.token] = run
-        if not self.discover_capabilities().available:
+        if not available:
             self._finish(run, RuntimeStatus.UNAVAILABLE, "Selected CLI or required flags unavailable")
             return handle
-        argv = (self._executable, *self.build_argv(request)[1:])
+        argv = (*self._command, *self.build_argv(request)[1:])
         try:
             # File-backed output avoids pipe deadlocks and unbounded in-memory logs.
-            with request.stdout_path.open("wb") as stdout, request.stderr_path.open("wb") as stderr:
+            with request.stdout_path.open("xb") as stdout, request.stderr_path.open("xb") as stderr:
                 run.process = subprocess.Popen(
                     argv, cwd=request.cwd, stdin=subprocess.DEVNULL,
                     stdout=stdout, stderr=stderr, shell=False,
