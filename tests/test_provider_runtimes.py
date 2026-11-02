@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -226,6 +227,65 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, RuntimeStatus.TIMED_OUT)
         process.kill.assert_called_once()
         self.assertEqual(process.wait.call_count, 2)
+
+    def test_concurrent_stop_and_collection_share_one_terminal_result(self):
+        """Offline event-controlled wait race; no subprocess or provider runs."""
+        for method, expected in (("cancel", RuntimeStatus.CANCELLED),
+                                 ("timeout", RuntimeStatus.TIMED_OUT)):
+            with self.subTest(method=method):
+                runtime, handle, process = self.launch_fixture("codex", [], exit_code=-9)
+                collecting = threading.Event()
+                release_collector = threading.Event()
+                stopped = threading.Event()
+                results = {}
+                errors = []
+
+                def controlled_wait(*args, **kwargs):
+                    if threading.current_thread().name == "controlled-collector":
+                        collecting.set()
+                        if not release_collector.wait(5):
+                            raise AssertionError("Collector was not released")
+                    return -9
+
+                process.wait.side_effect = controlled_wait
+
+                def collect():
+                    try:
+                        results["collected"] = runtime.stream_or_collect(handle)
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                def stop():
+                    try:
+                        results["stopped"] = getattr(runtime, method)(handle)
+                    except BaseException as exc:
+                        errors.append(exc)
+                    finally:
+                        stopped.set()
+
+                collector = threading.Thread(target=collect, name="controlled-collector", daemon=True)
+                stopper = threading.Thread(target=stop, name="controlled-stopper", daemon=True)
+                collector.start()
+                try:
+                    self.assertTrue(collecting.wait(5), "Collector did not reach process.wait")
+                    stopper.start()
+                    self.assertTrue(stopped.wait(5), "Stop blocked behind collector wait (deadlock)")
+                finally:
+                    release_collector.set()
+                    collector.join(5)
+                    if stopper.ident is not None:
+                        stopper.join(5)
+                self.assertFalse(collector.is_alive())
+                self.assertFalse(stopper.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(results["stopped"].status, expected)
+                self.assertIs(results["collected"], results["stopped"])
+                self.assertEqual(runtime.status(handle), expected)
+                self.assertIs(runtime.stream_or_collect(handle), results["stopped"])
+                self.assertIs(runtime.cancel(handle), results["stopped"])
+                self.assertIs(runtime.timeout(handle), results["stopped"])
+                runtime.cleanup(handle)
+                process.kill.assert_called_once()
 
     def test_cancel_and_cleanup_preserve_terminal_result_and_are_idempotent(self):
         runtime, handle, result, process = self.collect_fixture(

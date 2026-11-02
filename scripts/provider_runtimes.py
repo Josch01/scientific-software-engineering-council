@@ -5,7 +5,7 @@ CLI docs/cli/headless plus packages/cli/src/__snapshots__/nonInteractiveCli.test
 Offline parser fixtures do not establish provider integration or paid-session evidence.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -54,6 +54,7 @@ class _Run:
     started_clock: float
     process: subprocess.Popen | None = None
     result: RuntimeResult | None = None
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 class _CliRuntime:
@@ -166,9 +167,11 @@ class _CliRuntime:
 
     def stream_or_collect(self, handle: RuntimeHandle) -> RuntimeResult:
         run = self._lookup(handle)
-        if run.result is not None:
-            return run.result
-        remaining = max(0, run.request.timeout_seconds - (time.monotonic() - run.started_clock))
+        with run.lock:
+            if run.result is not None:
+                return run.result
+            remaining = max(0, run.request.timeout_seconds - (time.monotonic() - run.started_clock))
+        # A collector must not prevent another thread from stopping the process.
         try:
             run.process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
@@ -183,28 +186,33 @@ class _CliRuntime:
 
     def _stop(self, handle: RuntimeHandle, status: RuntimeStatus) -> RuntimeResult:
         run = self._lookup(handle)
-        if run.result is not None:
-            return run.result
-        if run.process.poll() is not None:
-            return self._finish(run)
-        run.process.kill()
-        run.process.wait()
-        return self._finish(run, status, status.value)
+        with run.lock:
+            if run.result is not None:
+                return run.result
+            if run.process.poll() is not None:
+                return self._finish(run)
+            # Serialize kill/reap and publication: a waiting collector cannot
+            # publish FAILED between process death and the requested stop result.
+            run.process.kill()
+            run.process.wait()
+            return self._finish(run, status, status.value)
 
     def status(self, handle: RuntimeHandle) -> RuntimeStatus:
         run = self._lookup(handle)
-        if run.result is not None:
-            return run.result.status
-        if run.process.poll() is not None:
-            return self._finish(run).status
-        if time.monotonic() - run.started_clock >= run.request.timeout_seconds:
-            return self.timeout(handle).status
-        return RuntimeStatus.RUNNING
+        with run.lock:
+            if run.result is not None:
+                return run.result.status
+            if run.process.poll() is not None:
+                return self._finish(run).status
+            if time.monotonic() - run.started_clock >= run.request.timeout_seconds:
+                return self.timeout(handle).status
+            return RuntimeStatus.RUNNING
 
     def cleanup(self, handle: RuntimeHandle) -> None:
         run = self._lookup(handle)
-        if run.result is None:
-            self.cancel(handle)
+        with run.lock:
+            if run.result is None:
+                self.cancel(handle)
 
     def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
         session_id = None
@@ -271,6 +279,14 @@ class _CliRuntime:
 
     def _finish(self, run: _Run, status: RuntimeStatus | None = None,
                 error: str | None = None) -> RuntimeResult:
+        with run.lock:
+            if run.result is not None:
+                return run.result
+            return self._publish_result(run, status, error)
+
+    def _publish_result(self, run: _Run, status: RuntimeStatus | None,
+                        error: str | None) -> RuntimeResult:
+        """Called with the per-run lock held; publish exactly once."""
         # Existing paths cannot serve as evidence for a CLI that never started.
         session_id, children, parse_error = (self._parse(run.request.stdout_path)
                                               if run.process is not None else (None, (), None))
