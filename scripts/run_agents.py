@@ -78,6 +78,7 @@ def copy_snapshot(files: list[tuple[Path, Path]], destination: Path) -> None:
 def command_for(provider: str, prompt: str, cwd: Path) -> list[str]:
     if provider == "codex":
         return ["codex", "exec", "--sandbox", "read-only", "--json",
+                "--skip-git-repo-check",
                 "--cd", str(cwd), prompt]
     if provider == "gemini":
         return ["gemini", "--sandbox", "--approval-mode", "default",
