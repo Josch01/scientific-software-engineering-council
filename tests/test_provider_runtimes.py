@@ -193,6 +193,24 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(result.observed_child_agent_ids, ("child-1",))
         self.assertIsNone(result.provider_session_id)
 
+    def test_codex_parent_session_is_never_reported_as_child_in_either_event_order(self):
+        """Offline JSONL parser regression, not native-subagent E2E evidence."""
+        for ids, expected in ((["parent", "child-1"], ("child-1",)), (["parent"], ())):
+            spawn = {"type": "item.completed", "item": {
+                "id": "item-1", "type": "collab_tool_call", "tool": "spawn_agent",
+                "status": "completed", "sender_thread_id": "parent",
+                "receiver_thread_ids": ids, "agents_states": {},
+            }}
+            session = {"type": "thread.started", "thread_id": "parent"}
+            for events in ([spawn, session], [session, spawn]):
+                with self.subTest(ids=ids, spawn_first=events[0] is spawn):
+                    _, _, result, _ = self.collect_fixture("codex", events + [
+                        {"type": "turn.completed", "usage": {}},
+                    ])
+                    self.assertEqual(result.status, RuntimeStatus.SUCCEEDED)
+                    self.assertEqual(result.provider_session_id, "parent")
+                    self.assertEqual(result.observed_child_agent_ids, expected)
+
     def test_parser_rejects_malformed_missing_terminal_and_failure_outputs(self):
         cases = {
             "codex": [b"not json\n", b"[]\n", b'{"type":"turn.completed"}\nBAD\n',

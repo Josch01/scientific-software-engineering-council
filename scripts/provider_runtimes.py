@@ -275,7 +275,8 @@ class _CliRuntime:
             error = f"Invalid JSONL output: {exc}"
         if not terminal and error is None:
             error = "Missing successful terminal event"
-        return session_id, tuple(children), error
+        # Reconcile only after parsing: spawn may precede the parent session event.
+        return session_id, tuple(child for child in children if child != session_id), error
 
     def _finish(self, run: _Run, status: RuntimeStatus | None = None,
                 error: str | None = None) -> RuntimeResult:
