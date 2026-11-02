@@ -60,11 +60,12 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 **Interfaces:**
 - Implement `CodexRuntime` and `GeminiRuntime` against the Task 1 `AgentRuntime` protocol.
 - Implement `create_runtime(provider: str) -> AgentRuntime`, accepting only the explicit values `codex` and `gemini`; it never falls back.
+- Give each adapter a pure `build_argv(request: RuntimeRequest) -> tuple[str, ...]` method. Codex chooses `read-only` or `workspace-write` from `request.writable`; Gemini uses `--sandbox` and non-YOLO default approval. Do not claim the Gemini argv enforces a read-only workspace.
 - Capability discovery may invoke only the selected executable's `--version` and `--help` (or provider command help), with bounded timeouts; it must not start a model session or inspect credentials.
 - Build argv as an array with `shell=False`. Require `request.cost_acknowledged` before provider launch. Request the existing least-privilege mode supported by each CLI, but report `sandbox_effective=None`/`UNVERIFIED` until runtime evidence proves enforcement.
 - Parse Codex JSONL (`thread.started`, terminal turn/error events) and Gemini `stream-json` (`init`, terminal `result`, error events). Set session IDs only from those protocol fields; leave `native_subagents` unverified unless a child-agent ID/event is actually observed.
 
-- [ ] **Step 1: Add tests for explicit provider selection, no fallback when executable/help flags are missing, cost-ack rejection before spawn, no-shell argv construction, bounded capability discovery, provider session ID extraction, and malformed/no-terminal/failure JSONL.** Fixtures test parsers only and must be described as parser tests, not provider E2E.
+- [ ] **Step 1: Add tests for explicit provider selection, no fallback when executable/help flags are missing, cost-ack rejection before spawn, no-shell argv construction and permission-claim limits, bounded capability discovery, provider session ID extraction, and malformed/no-terminal/failure JSONL.** Fixtures test parsers only and must be described as parser tests, not provider E2E.
 - [ ] **Step 2: Run `python -m unittest discover -s tests -p test_provider_runtimes.py -v` and record failures before implementation.**
 - [ ] **Step 3: Implement Codex/Gemini adapters in `scripts/provider_runtimes.py`.** Keep detected support distinct from runtime behavior proven by a paid CLI session.
 - [ ] **Step 4: Run provider-adapter tests, full unittest suite, and structural validator.** No provider model/session calls are permitted in this task.
