@@ -39,6 +39,7 @@
 - La autorización de launch se sincroniza con stop/deadline hasta el punto de creación del proceso; una señal registrada antes de `Popen` impide spawn.
 - Tras terminar el proceso CLI principal, los miembros que sigan vivos en su grupo/Job Object se terminan antes de calcular/publicar hashes; un hijo ordinario no puede mutar logs después de SUCCEEDED.
 - En POSIX, el líder del grupo no se reapeará hasta terminar la señalización/verificación del grupo; un PGID perdido provoca fallo cerrado y nunca una señal a una identidad numérica posiblemente reutilizada.
+- Distinguir pérdida real de identidad (`ChildProcessError`/`ECHILD` o PID inesperado) de fallo de observación (`PermissionError`/otro `OSError`): mientras el runtime conserva el líder sin reapear, debe intentar señalizar/verificar/reapear el grupo aunque no pueda observarlo. Conservar `FAILED`/`UNVERIFIED` y hashes vacíos; si falla la señalización/verificación, cleanup reintenta sin reapear antes y registra `cleanup_error` si tampoco termina.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -115,6 +116,7 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Perform the final stop/deadline check after reservation/open and synchronize that check with `Popen` (shared launch gate/token); add barrier-controlled stop and timeout tests that previously reached `Popen` after stop.
 - [x] Terminate residual process-group/job members even when the CLI parent exits first; on Windows use a job mechanism established before provider code runs, and on POSIX stop the isolated process group. Add a local Python parent-exits/child-mutates-stdout regression; hash only after descendants are stopped. Keep breakaway descendants and OS sandbox unverified.
 - [x] Preserve the POSIX root PID/PGID until process-group signalling and live-member confirmation finish; observe exit with non-reaping `waitid(..., WNOWAIT)`, fail before launch if safe confirmation support is missing, and cover collect/status/cancel/timeout/setup-failure/concurrent collection plus lost identity.
+- [x] Separate actual POSIX identity loss from observation errors; cover owned-group cleanup after waitid PermissionError, failed signalling and explicit cleanup retry while retaining the first FAILED result with no finalized log evidence.
 - [ ] Run focused/full tests, validator/help/diff checks, and obtain independent scoped review before continuing to coordinator evidence work.
 
 ### Task 3: Route Development Workers Through AgentRuntime

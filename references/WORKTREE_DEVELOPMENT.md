@@ -86,6 +86,14 @@ identity is lost, no group signal is sent and evidence fails closed. This POSIX
 implementation requires non-reaping waitid plus procfs live-member inspection;
 missing support is unavailable before provider creation. Its native path remains
 unverified on this Windows host; offline order/concurrency regressions cover it.
+Confirmed identity loss means `ChildProcessError`/`ECHILD` or an unexpected PID.
+An observation `PermissionError`/other runtime error does not itself reap the
+exclusively owned leader: the runtime still signals, confirms and reaps its group,
+while keeping the run `FAILED`/`UNVERIFIED` with empty hashes/session evidence.
+If signalling or confirmation fails, the leader is not reaped and explicit
+cleanup retries quiescence. Repeated cleanup failure is recorded/raised as
+`cleanup_error`; a later successful cleanup preserves the original immutable
+`FAILED` result and cannot publish new hashes or upgrade it to success.
 If tree termination or direct-process reap cannot be confirmed, the adapter
 returns `FAILED` with termination `UNVERIFIED`, bounds its reap attempts, and
 withholds session/child evidence and log hashes because surviving processes may

@@ -58,6 +58,8 @@ class _Run:
     process: subprocess.Popen | None = None
     result: RuntimeResult | None = None
     containment: object | None = None
+    containment_quiesced: bool = False
+    cleanup_error: str | None = None
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
@@ -217,7 +219,7 @@ class _CliRuntime:
             return self.timeout(handle)
         except OSError as exc:
             return self._finish(run, RuntimeStatus.FAILED,
-                                f"Root identity UNVERIFIED: {exc}", evidence_stable=False)
+                                f"Root observation UNVERIFIED: {exc}", evidence_stable=False)
         return self._finish(run)
 
     def cancel(self, handle: RuntimeHandle) -> RuntimeResult:
@@ -236,7 +238,7 @@ class _CliRuntime:
                     return self._finish(run)
             except OSError as exc:
                 return self._finish(run, RuntimeStatus.FAILED,
-                                    f"Root identity UNVERIFIED: {exc}", evidence_stable=False)
+                                    f"Root observation UNVERIFIED: {exc}", evidence_stable=False)
             if run.containment.requires_unreaped_root is True:
                 # POSIX quiescence owns signalling and the sole final reap.
                 # The legacy helper/poll/wait path could release the PGID early.
@@ -272,7 +274,7 @@ class _CliRuntime:
                     return self._finish(run).status
             except OSError as exc:
                 return self._finish(run, RuntimeStatus.FAILED,
-                                    f"Root identity UNVERIFIED: {exc}", evidence_stable=False).status
+                                    f"Root observation UNVERIFIED: {exc}", evidence_stable=False).status
             if time.monotonic() - run.started_clock >= run.request.timeout_seconds:
                 return self.timeout(handle).status
             return RuntimeStatus.RUNNING
@@ -282,10 +284,16 @@ class _CliRuntime:
         with run.lock:
             if run.result is None:
                 self.cancel(handle)
-            elif run.containment is not None:
-                # A failed CloseHandle retains ownership; an explicit cleanup
-                # can retry without altering the immutable terminal result.
-                run.containment.close()
+            if run.containment is not None:
+                try:
+                    if not run.containment_quiesced and run.process is not None:
+                        run.containment.quiesce(run.process)
+                        run.containment_quiesced = True
+                    run.containment.close()
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    run.cleanup_error = f"Containment cleanup UNVERIFIED: {exc}"
+                    raise OSError(run.cleanup_error) from exc
+                run.cleanup_error = None
 
     def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
         session_id = None
@@ -361,10 +369,15 @@ class _CliRuntime:
             if run.containment is not None:
                 try:
                     if run.process is not None:
-                        run.containment.quiesce(run.process)
+                        warning = run.containment.quiesce(run.process)
+                        if isinstance(warning, str) and warning:
+                            status, evidence_stable = RuntimeStatus.FAILED, False
+                            error = f"{error}; {warning}" if error else warning
+                    run.containment_quiesced = True
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     status, evidence_stable = RuntimeStatus.FAILED, False
-                    error = f"Containment termination UNVERIFIED: {exc}"
+                    detail = f"Containment termination UNVERIFIED: {exc}"
+                    error = f"{error}; {detail}" if error else detail
                 finally:
                     try:
                         run.containment.close()

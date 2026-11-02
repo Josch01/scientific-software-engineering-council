@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import hashlib
+import errno
 import importlib.util
 import json
 import os
@@ -656,18 +657,22 @@ class ProviderRuntimeTests(unittest.TestCase):
 
     def test_posix_lost_leader_identity_never_signals_a_reused_group(self):
         from scripts import process_containment
-        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
-        process = Mock(pid=123)
-        group.attach(process)
-        kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
-            waitid=Mock(side_effect=ChildProcessError("root already reaped")), killpg=Mock())
-        with patch.object(process_containment, "os", kernel), \
-                patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
-                patch.object(group, "_has_live_members", return_value=False):
-            with self.assertRaises(OSError):
-                group.quiesce(process)
-        kernel.killpg.assert_not_called()
-        process.wait.assert_not_called()
+        for outcome in (ChildProcessError("root already reaped"),
+                        OSError(errno.ECHILD, "no owned child"), SimpleNamespace(si_pid=999)):
+            with self.subTest(outcome=outcome):
+                group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+                process = Mock(pid=123)
+                group.attach(process)
+                observer = Mock(side_effect=outcome) if isinstance(outcome, BaseException) else Mock(return_value=outcome)
+                kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+                    waitid=observer, killpg=Mock())
+                with patch.object(process_containment, "os", kernel), \
+                        patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                        patch.object(group, "_has_live_members", return_value=False):
+                    with self.assertRaises(OSError):
+                        group.quiesce(process)
+                kernel.killpg.assert_not_called()
+                process.wait.assert_not_called()
 
     def test_posix_missing_live_group_inspection_blocks_before_spawn(self):
         from scripts import process_containment
@@ -747,6 +752,87 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.status(handle), RuntimeStatus.CANCELLED)
             self.assertIs(runtime.timeout(handle), results["cancel"])
             kernel.killpg.assert_called_once()
+
+    def test_posix_waitid_observation_failure_still_stops_owned_group_without_evidence(self):
+        from scripts import process_containment
+        for mode in ("status", "collect", "cancel", "timeout", "cleanup", "quiesce"):
+            with self.subTest(mode=mode):
+                group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+                order = []
+                observed = []
+                def observe(kind, pid, options):
+                    observed.append(pid)
+                    if mode == "quiesce" and len(observed) == 1:
+                        return SimpleNamespace(si_pid=pid)
+                    raise PermissionError("observation denied")
+                kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+                    waitid=Mock(side_effect=observe),
+                    killpg=Mock(side_effect=lambda *args: order.append("signal")))
+                def process_setup(process):
+                    process.poll.side_effect = AssertionError("Owned POSIX root must remain unreaped")
+                    process.wait.side_effect = lambda *args, **kwargs: order.append("reap") or -9
+                with patch.object(process_containment, "os", kernel), \
+                        patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                        patch.object(group, "_has_live_members", return_value=False), \
+                        patch.object(self.module, "_new_containment", return_value=group):
+                    runtime, handle, process = self.launch_fixture("codex", [
+                        {"type": "thread.started", "thread_id": "mutable-parent"},
+                        {"type": "turn.completed", "usage": {}},
+                    ], process_setup=process_setup)
+                    if mode not in ("collect", "quiesce"):
+                        getattr(runtime, mode)(handle)
+                    result = runtime.stream_or_collect(handle)
+                    self.assertEqual(order, ["signal", "reap"])
+                    self.assertEqual(result.status, RuntimeStatus.FAILED)
+                    self.assertIn("UNVERIFIED", result.error)
+                    self.assertIn("observation denied", result.error)
+                    self.assertIsNone(result.provider_session_id)
+                    self.assertEqual(result.observed_child_agent_ids, ())
+                    self.assertEqual(result.stdout_sha256, "")
+                    self.assertEqual(result.stderr_sha256, "")
+                    runtime.cleanup(handle)
+                    self.assertIs(runtime.stream_or_collect(handle), result)
+                    self.assertEqual(order, ["signal", "reap"])
+                    process.kill.assert_not_called()
+
+    def test_posix_failed_signal_is_retried_by_cleanup_without_upgrading_cached_failure(self):
+        from scripts import process_containment
+        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+        order = []
+        state = {"deny_signal": True}
+        def signal_group(*args):
+            order.append("signal")
+            if state["deny_signal"]:
+                raise PermissionError("group signal denied")
+        kernel = SimpleNamespace(P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
+            waitid=Mock(side_effect=PermissionError("observation denied")), killpg=Mock(side_effect=signal_group))
+        def process_setup(process):
+            process.poll.side_effect = AssertionError("No reaping poll")
+            process.wait.side_effect = lambda *args, **kwargs: order.append("reap") or -9
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "signal", SimpleNamespace(SIGKILL=9)), \
+                patch.object(group, "_has_live_members", return_value=False), \
+                patch.object(self.module, "_new_containment", return_value=group):
+            runtime, handle, process = self.launch_fixture("codex", [], process_setup=process_setup)
+            self.assertEqual(runtime.status(handle), RuntimeStatus.FAILED)
+            result = runtime.stream_or_collect(handle)
+            self.assertEqual(order, ["signal"])
+            process.wait.assert_not_called()
+            with self.assertRaises(OSError):
+                runtime.cleanup(handle)
+            self.assertIn("UNVERIFIED", runtime._runs[handle.token].cleanup_error)
+            process.wait.assert_not_called()
+            state["deny_signal"] = False
+            runtime.cleanup(handle)
+            self.assertEqual(order, ["signal", "signal", "signal", "reap"])
+            self.assertTrue(runtime._runs[handle.token].containment_quiesced)
+            self.assertIsNone(runtime._runs[handle.token].cleanup_error)
+            self.assertIs(runtime.stream_or_collect(handle), result)
+            self.assertEqual(result.status, RuntimeStatus.FAILED)
+            self.assertEqual(result.stdout_sha256, "")
+            self.assertEqual(result.stderr_sha256, "")
+            runtime.cleanup(handle)
+            self.assertEqual(order, ["signal", "signal", "signal", "reap"])
 
     def test_cancel_and_cleanup_preserve_terminal_result_and_are_idempotent(self):
         runtime, handle, result, process = self.collect_fixture(

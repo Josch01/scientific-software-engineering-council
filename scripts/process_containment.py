@@ -6,6 +6,7 @@ Detached/breakaway descendants are outside the verified guarantee.
 """
 
 import ctypes
+import errno
 import os
 from pathlib import Path
 import signal
@@ -15,6 +16,10 @@ import time
 
 DWORD = ctypes.c_uint32
 HANDLE = ctypes.c_void_p
+
+
+class LostRootIdentityError(OSError):
+    """The owned child was reaped or waitid confirmed a different identity."""
 
 
 class _BasicLimits(ctypes.Structure):
@@ -163,11 +168,15 @@ class PosixGroup:
         try:
             event = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         except ChildProcessError as exc:
-            raise OSError("POSIX leader identity lost; refusing to signal a possibly reused PGID") from exc
+            raise LostRootIdentityError("POSIX leader identity lost; refusing to signal a possibly reused PGID") from exc
+        except OSError as exc:
+            if exc.errno == errno.ECHILD:
+                raise LostRootIdentityError("POSIX leader identity lost; no owned child remains") from exc
+            raise
         if event is None:
             return False
         if event.si_pid != process.pid:
-            raise OSError("POSIX leader identity could not be confirmed")
+            raise LostRootIdentityError("POSIX waitid returned an unexpected leader identity")
         return True
 
     def wait_for_root(self, process, timeout):
@@ -211,7 +220,15 @@ class PosixGroup:
         # Validate ownership without reaping; even an exited leader must retain
         # its PID/PGID until signalling and group confirmation are complete.
         self._pgid = process.pid
-        self.root_exited(process)
+        observation_error = None
+        try:
+            self.root_exited(process)
+        except LostRootIdentityError:
+            raise
+        except OSError as exc:
+            # An observation policy/error does not reap our exclusively owned
+            # leader. Still stop its group; only confirmed identity loss forbids it.
+            observation_error = f"POSIX root observation UNVERIFIED: {exc}"
         try:
             os.killpg(self._pgid, signal.SIGKILL)
         except ProcessLookupError:
@@ -222,6 +239,9 @@ class PosixGroup:
                 raise OSError("Process group still has live members after termination")
             time.sleep(.01)
         process.wait(timeout=5)
+        # A warning is returned only after confirmed stop/reap. Callers must keep
+        # the run FAILED without retrying a group whose root has now been reaped.
+        return observation_error
 
     def close(self):
         pass
