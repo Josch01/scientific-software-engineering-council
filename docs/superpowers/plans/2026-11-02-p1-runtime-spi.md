@@ -34,6 +34,8 @@
 - Si peer-stop o deadline vence durante discovery, no se inicia el modelo al terminar la consulta acotada; la verificación de stop/deadline ocurre antes del `Popen` billable.
 - `FakeRuntime` conserva el primer resultado terminal después de `SUCCEEDED`, `FAILED`, `UNAVAILABLE`, `CANCELLED` o `TIMED_OUT`, igual que un adaptador real.
 - Referencias de mailbox para stdout distinguen directorio de ejecución además del rol; ejecuciones repetidas no apuntan al mismo artifact.
+- El mailbox no referencia un artifact inexistente cuando el worker no llegó a crear logs.
+- Si falla el comando de terminar el árbol, el runtime no bloquea indefinidamente ni presenta la terminación completa como confirmada.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -100,6 +102,11 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [ ] Store an execution-specific relative stdout artifact path in the mailbox (including `dev-logs/<execution-id>/`); prove repeated runs do not produce identical artifact references.
 - [ ] Run adapter/runner focused tests, full suite, validator and diff check; capture evidence and limitations.
 - [ ] Obtain independent scoped review of the fixes; address findings before moving to the coordinator evidence producer.
+
+**Final branch review correction round 3:**
+- [ ] Return an empty mailbox artifact reference when no log file exists; add a prelaunch-unavailable regression.
+- [ ] Handle nonzero/failed Windows process-tree termination without hanging in `wait()` or silently claiming confirmed cancellation; add offline failure-path coverage.
+- [ ] Run focused worktree/provider tests and `git diff --check`; append evidence and review this follow-up.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
