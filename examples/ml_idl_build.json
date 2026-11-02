@@ -1,0 +1,13 @@
+{
+  "task_id": "EXAMPLE-ML-IDL",
+  "kind": "build",
+  "request": "Crear software modular con entrenamiento, GUI, exportación, e interoperabilidad IDL",
+  "domains": ["ml", "data", "numerical"],
+  "languages": ["python", "idl"],
+  "interfaces": ["desktop_gui"],
+  "targets": ["windows", "linux"],
+  "risk": "R2",
+  "runtime": {"real_subagents": true, "separate_contexts": true},
+  "constraints": ["API versionada", "sin dependencia de Qt en el core"],
+  "acceptance": ["smoke tests Windows/Linux", "pruebas del bridge", "reproducción del entrenamiento"]
+}

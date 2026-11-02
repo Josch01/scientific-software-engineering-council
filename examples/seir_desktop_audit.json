@@ -1,0 +1,13 @@
+{
+  "task_id": "EXAMPLE-SEIR-AUDIT",
+  "kind": "audit",
+  "request": "Auditar un SEIR con frecuencias forzadas y una GUI de Windows/Linux, sin cambiar la teoría científica",
+  "domains": ["numerical", "identifiability", "dynamics", "optimization"],
+  "languages": ["python"],
+  "interfaces": ["desktop_gui"],
+  "targets": ["windows", "linux"],
+  "risk": "R2",
+  "runtime": {"real_subagents": false, "separate_contexts": false},
+  "constraints": ["no tocar fuentes originales", "no declarar unicidad por RMSE"],
+  "acceptance": ["inventario y matriz de riesgos", "test cases de solver", "auditoría independiente si se habilita runtime"]
+}

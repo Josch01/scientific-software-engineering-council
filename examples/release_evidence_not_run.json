@@ -1,0 +1,5 @@
+{
+  "task_id": "EXAMPLE-SEIR-AUDIT",
+  "checks": {},
+  "note": "Demostración intencional de evidencia faltante; debe bloquear cualquier liberación."
+}

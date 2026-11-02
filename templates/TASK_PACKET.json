@@ -1,0 +1,13 @@
+{
+  "task_id": "TASK-001",
+  "kind": "audit",
+  "request": "Auditar un proyecto científico existente y proponer acciones sin modificar el original",
+  "domains": ["numerical", "identifiability"],
+  "languages": ["python"],
+  "interfaces": ["desktop_gui"],
+  "targets": ["windows", "linux"],
+  "risk": "R2",
+  "runtime": {"real_subagents": false, "separate_contexts": false},
+  "constraints": ["no modificar originales", "preservar las hipótesis del modelo"],
+  "acceptance": ["casos mínimos reproducibles", "matriz de pruebas", "informe de hallazgos"]
+}
