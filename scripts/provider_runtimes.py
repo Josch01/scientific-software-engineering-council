@@ -21,7 +21,7 @@ import uuid
 
 from scripts.agent_runtime import (
     AgentRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeHandle,
-    RuntimeRequest, RuntimeResult, RuntimeStatus,
+    RuntimeLaunchControl, RuntimeRequest, RuntimeResult, RuntimeStatus,
 )
 from scripts.run_agents import _terminate_tree
 
@@ -147,11 +147,15 @@ class _CliRuntime:
     def launch(self, request: RuntimeRequest) -> RuntimeHandle:
         if not request.cost_acknowledged:
             raise ValueError("Provider launch requires cost_acknowledged")
+        started_clock = time.monotonic()
+        started_at = _utc_now()
+        control = request.launch_control or RuntimeLaunchControl(
+            threading.Event(), started_clock + request.timeout_seconds)
         available = self.discover_capabilities().available
         if available:
             self._reserve_outputs(request)
         handle = RuntimeHandle(uuid.uuid4().hex, request.run_id, self.provider, None)
-        run = _Run(request, _utc_now(), time.monotonic())
+        run = _Run(request, started_at, started_clock)
         self._runs[handle.token] = run
         if not available:
             self._finish(run, RuntimeStatus.UNAVAILABLE, "Selected CLI or required flags unavailable")
@@ -160,12 +164,21 @@ class _CliRuntime:
         try:
             # File-backed output avoids pipe deadlocks and unbounded in-memory logs.
             with request.stdout_path.open("xb") as stdout, request.stderr_path.open("xb") as stderr:
-                run.process = subprocess.Popen(
-                    argv, cwd=request.cwd, stdin=subprocess.DEVNULL,
-                    stdout=stdout, stderr=stderr, shell=False,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-                    start_new_session=os.name != "nt",
-                )
+                # Preparation I/O stays outside the gate so stop can be recorded
+                # while it blocks. Only final authorization and creation are atomic.
+                with control.gate:
+                    blocked = control.blocked_status()
+                    if blocked is None and time.monotonic() >= started_clock + request.timeout_seconds:
+                        blocked = RuntimeStatus.TIMED_OUT
+                    if blocked is not None:
+                        self._finish(run, blocked, blocked.value)
+                        return handle
+                    run.process = subprocess.Popen(
+                        argv, cwd=request.cwd, stdin=subprocess.DEVNULL,
+                        stdout=stdout, stderr=stderr, shell=False,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                        start_new_session=os.name != "nt",
+                    )
         except OSError as exc:
             self._finish(run, RuntimeStatus.UNAVAILABLE, str(exc))
             return handle

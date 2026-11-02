@@ -17,7 +17,7 @@ if not __package__:
     # Keep direct `python scripts/development_runner.py` entry points working
     # with the adapters' package imports as well as module-based invocation.
     sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
-from scripts.agent_runtime import RuntimeRequest, RuntimeStatus
+from scripts.agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeStatus
 from scripts.provider_runtimes import create_runtime
 from scripts.worktree_coordinator import load, inspect, message, git
 
@@ -98,7 +98,9 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
         request=RuntimeRequest(
             run_id=uuid.uuid4().hex,task_id=task["task_id"],role=name,
             prompt=prompt(worker,task),cwd=folder,stdout_path=stdout,stderr_path=stderr,
-            timeout_seconds=remaining,writable=True,cost_acknowledged=cost_ack)
+            timeout_seconds=remaining,writable=True,cost_acknowledged=cost_ack,
+            launch_control=stop if isinstance(stop,RuntimeLaunchControl)
+                           else RuntimeLaunchControl(stop,deadline))
         handle=runtime.launch(request)
         while True:
             if stop.is_set():
@@ -156,8 +158,8 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     logs.mkdir(exist_ok=False)
     if runtime_factory is None:
         runtime_factory=create_runtime
-    stop=threading.Event()
     deadline=time.monotonic()+minutes*60
+    stop=RuntimeLaunchControl(threading.Event(),deadline)
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
         futures=[pool.submit(run_worker,w,task,logs,deadline,stop,runtime_factory,cost_ack)
                  for w in state["workers"]]

@@ -1,8 +1,10 @@
 """Provider-neutral contracts and a deterministic runtime test double."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import math
+import threading
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +21,7 @@ class RuntimeRequest:
     timeout_seconds: float
     writable: bool
     cost_acknowledged: bool
+    launch_control: "RuntimeLaunchControl | None" = None
 
     def __post_init__(self) -> None:
         if not self.run_id or not self.task_id or not self.role:
@@ -52,6 +55,38 @@ class RuntimeStatus(Enum):
     TIMED_OUT = "TIMED_OUT"
     CANCELLED = "CANCELLED"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass
+class RuntimeLaunchControl:
+    """Shared authorization gate; record stop through set(), never under preparation I/O."""
+
+    stop_event: threading.Event
+    deadline: float
+    gate: threading.RLock = field(default_factory=threading.RLock, init=False,
+                                  repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.deadline):
+            raise ValueError("Launch deadline must be finite")
+
+    def set(self) -> None:
+        with self.gate:
+            self.stop_event.set()
+
+    def is_set(self) -> bool:
+        return self.stop_event.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.stop_event.wait(timeout)
+
+    def blocked_status(self) -> RuntimeStatus | None:
+        with self.gate:
+            if self.stop_event.is_set():
+                return RuntimeStatus.CANCELLED
+            if time.monotonic() >= self.deadline:
+                return RuntimeStatus.TIMED_OUT
+            return None
 
 
 @dataclass(frozen=True)

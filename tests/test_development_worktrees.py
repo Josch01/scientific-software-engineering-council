@@ -8,7 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock,patch
 from scripts.configuration import DEFAULT_CONFIG
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
 from scripts.development_runner import execute,run_worker
@@ -275,6 +275,71 @@ class RuntimeRunnerTests(unittest.TestCase):
                 self.assertEqual(errors,[])
                 self.assertEqual(output[0]["status"],expected)
                 self.assertNotIn("launch",[method for method,_ in runtime.invocations])
+
+    def test_stop_during_guarded_spawn_is_recorded_then_worker_cancels_handle(self):
+        from scripts import provider_runtimes
+        self.state["workers"]=self.workers[:1]
+        started=threading.Event()
+        release=threading.Event()
+        stopping=threading.Event()
+        stopped=threading.Event()
+        controls=[]
+        results=[]
+        errors=[]
+        process=Mock(pid=123,returncode=-9)
+        process.poll.return_value=None
+        process.wait.return_value=-9
+        class ControlledRuntime(GeminiRuntime):
+            def discover_capabilities(inner):
+                inner._command=("offline-double",)
+                return RuntimeCapabilities("offline-double",True,None,(),None,
+                                           RuntimeCapabilityStatus.UNKNOWN)
+            def launch(inner,request):
+                controls.append(getattr(request,"launch_control",None))
+                return super().launch(request)
+        def spawn(*args,**kwargs):
+            started.set()
+            if not release.wait(5):
+                raise AssertionError("Spawn barrier not released")
+            return process
+        def execute_worker():
+            try:
+                results.append(self.execute(launch=True,cost_ack=True,
+                    runtime_factory=lambda provider: ControlledRuntime()))
+            except BaseException as exc:
+                errors.append(exc)
+        def record_stop():
+            stopping.set()
+            try:
+                controls[0].set()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                stopped.set()
+        with patch.object(provider_runtimes.subprocess,"Popen",side_effect=spawn), \
+                patch.object(provider_runtimes,"_terminate_tree",side_effect=lambda value: value.kill()):
+            worker=threading.Thread(target=execute_worker,daemon=True)
+            stopper=threading.Thread(target=record_stop,daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(started.wait(5))
+                self.assertIsNotNone(controls[0],"Runner did not pass shared launch control")
+                stopper.start()
+                self.assertTrue(stopping.wait(5))
+                self.assertFalse(stopped.wait(.05),"Stop was recorded inside in-progress guarded Popen")
+            finally:
+                release.set()
+                if not controls or controls[0] is None:
+                    process.poll.return_value=-9
+                worker.join(5)
+                if stopper.ident is not None:
+                    stopper.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(stopper.is_alive())
+        self.assertEqual(errors,[])
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(results[0]["results"][0]["status"],"CANCELLED")
+        process.kill.assert_called_once()
 
     def test_peer_failure_cancels_running_runtime_through_contract(self):
         launched=threading.Event()

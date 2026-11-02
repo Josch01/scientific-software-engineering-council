@@ -153,6 +153,56 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertIs(runtime.discover_capabilities(), first)
             self.assertEqual(probe.call_count, 2)
 
+    def test_stop_or_deadline_during_output_reservation_prevents_spawn(self):
+        from scripts import agent_runtime
+        control_type = getattr(agent_runtime, "RuntimeLaunchControl", None)
+        self.assertIsNotNone(control_type, "Shared runtime launch control is missing")
+        for reason, expected in (("stop", RuntimeStatus.CANCELLED),
+                                 ("deadline", RuntimeStatus.TIMED_OUT)):
+            with self.subTest(reason=reason):
+                root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                clock = [0]
+                entered = threading.Event()
+                release = threading.Event()
+                control = control_type(threading.Event(), 10)
+                request = replace(self.request, launch_control=control,
+                                  stdout_path=root / "out", stderr_path=root / "err")
+                runtime = self.module.CodexRuntime()
+                original_reserve = runtime._reserve_outputs
+                results, errors = [], []
+                def reserve(value):
+                    entered.set()
+                    if not release.wait(5):
+                        raise AssertionError("Reservation barrier not released")
+                    return original_reserve(value)
+                def launch():
+                    try:
+                        results.append(runtime.launch(request))
+                    except BaseException as exc:
+                        errors.append(exc)
+                with patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                        self.discovery("codex"), patch.object(runtime, "_reserve_outputs", side_effect=reserve), \
+                        patch.object(self.module.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(self.module.subprocess, "Popen", return_value=Mock(pid=123)) as spawn:
+                    thread = threading.Thread(target=launch, daemon=True)
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        if reason == "stop":
+                            control.set()
+                        else:
+                            clock[0] = 11
+                    finally:
+                        release.set()
+                        thread.join(5)
+                    self.assertFalse(thread.is_alive(), "Stop recording deadlocked behind reservation")
+                    self.assertEqual(errors, [])
+                    spawn.assert_not_called()
+                    result = runtime.stream_or_collect(results[0])
+                    self.assertEqual(result.status, expected)
+                    self.assertIsNone(result.provider_session_id)
+                    self.assertEqual(result.stdout_sha256, "")
+
     def test_missing_executable_or_required_help_flags_never_launches_or_falls_back(self):
         for provider in ("codex", "gemini"):
             for executable, help_text in ((None, ""), (f"/selected/{provider}", "--unrelated")):
