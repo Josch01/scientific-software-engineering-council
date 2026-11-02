@@ -63,8 +63,11 @@ runtime outcome, while the overall successful execution remains
 Mailbox handoffs use only `WORKER_RESULT`; runtime output cannot grant test
 acceptance or reviewer approval. FakeRuntime tests cover dispatch/control flow,
 JSONL fixtures cover parsers, and one local Python child-process test covers
-process/log lifecycle. None is provider E2E. Direct-process kill/reap does not
-prove termination of every descendant or OS sandbox enforcement.
+process/log lifecycle. None is provider E2E. Adapters start an OS process
+group/session and stop the inherited tree (Windows taskkill /T, POSIX killpg),
+then reap the direct process before publishing log hashes. A local Python
+parent/child regression covers ordinary inherited descendants on the test host.
+Detached descendants and OS sandbox enforcement remain UNVERIFIED.
 
 ## Inter-agent mailbox
 

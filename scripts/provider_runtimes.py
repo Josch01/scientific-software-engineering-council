@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -22,6 +23,7 @@ from scripts.agent_runtime import (
     AgentRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeHandle,
     RuntimeRequest, RuntimeResult, RuntimeStatus,
 )
+from scripts.run_agents import _terminate_tree
 
 
 # A path remains owned for this process's lifetime, including after cleanup or
@@ -153,6 +155,8 @@ class _CliRuntime:
                 run.process = subprocess.Popen(
                     argv, cwd=request.cwd, stdin=subprocess.DEVNULL,
                     stdout=stdout, stderr=stderr, shell=False,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                    start_new_session=os.name != "nt",
                 )
         except OSError as exc:
             self._finish(run, RuntimeStatus.UNAVAILABLE, str(exc))
@@ -193,7 +197,7 @@ class _CliRuntime:
                 return self._finish(run)
             # Serialize kill/reap and publication: a waiting collector cannot
             # publish FAILED between process death and the requested stop result.
-            run.process.kill()
+            _terminate_tree(run.process)
             run.process.wait()
             return self._finish(run, status, status.value)
 

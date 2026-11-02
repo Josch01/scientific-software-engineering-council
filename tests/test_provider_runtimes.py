@@ -4,15 +4,18 @@ from dataclasses import replace
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
-from scripts.agent_runtime import RuntimeCapabilityStatus, RuntimeRequest, RuntimeStatus
+from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeRequest, RuntimeStatus
 
 
 class ProviderRuntimeTests(unittest.TestCase):
@@ -22,6 +25,10 @@ class ProviderRuntimeTests(unittest.TestCase):
                              "provider runtime adapters are not implemented")
         from scripts import provider_runtimes
         self.module = provider_runtimes
+        # Offline process doubles must never reach OS tree-termination commands.
+        termination = patch.object(self.module, "_terminate_tree", side_effect=lambda process: process.kill(), create=True)
+        termination.start()
+        self.addCleanup(termination.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
@@ -304,6 +311,60 @@ class ProviderRuntimeTests(unittest.TestCase):
                 self.assertIs(runtime.timeout(handle), results["stopped"])
                 runtime.cleanup(handle)
                 process.kill.assert_called_once()
+
+    def test_local_python_stop_terminates_inherited_child_before_publishing_logs(self):
+        """Local process-tree lifecycle only; no provider or sandbox evidence."""
+        from scripts.run_agents import _terminate_tree
+        root = Path(self.temp.name)
+        ready = root / "child.pid"
+        marker = root / "child-survived"
+        child_code = ("import os,time;from pathlib import Path;"
+                      f"Path({str(ready)!r}).write_text(str(os.getpid()));"
+                      "print('child-started',flush=True);time.sleep(1);"
+                      f"Path({str(marker)!r}).write_text('survived');time.sleep(30)")
+        parent_code = ("import subprocess,sys,time;"
+                       f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                       "print('parent-started',flush=True);time.sleep(30)")
+
+        class LocalRuntime(self.module.CodexRuntime):
+            provider = "local-python"
+
+            def discover_capabilities(inner):
+                inner._command = (sys.executable,)
+                return RuntimeCapabilities("local-python", True, None, (), None,
+                                           RuntimeCapabilityStatus.UNKNOWN)
+
+            def build_argv(inner, request):
+                return (sys.executable, "-c", parent_code)
+
+        runtime = LocalRuntime()
+        child_pid = None
+        with patch.object(self.module, "_terminate_tree", wraps=_terminate_tree):
+            handle = runtime.launch(self.request)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(ready.exists(), "Local child did not start")
+                child_pid = int(ready.read_text())
+                result = runtime.cancel(handle)
+                self.assertEqual(result.status, RuntimeStatus.CANCELLED)
+                payload = self.request.stdout_path.read_bytes()
+                time.sleep(1.2)
+                self.assertFalse(marker.exists(), "Inherited child survived parent cancellation")
+                self.assertEqual(self.request.stdout_path.read_bytes(), payload)
+                self.assertEqual(result.stdout_sha256, hashlib.sha256(payload).hexdigest())
+            finally:
+                if child_pid is not None:
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                    else:
+                        try:
+                            os.kill(child_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                runtime.cleanup(handle)
 
     def test_cancel_and_cleanup_preserve_terminal_result_and_are_idempotent(self):
         runtime, handle, result, process = self.collect_fixture(
