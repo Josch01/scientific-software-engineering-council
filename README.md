@@ -37,3 +37,15 @@ El último comando debe bloquear (exit code 2) porque se incluyen verificaciones
 - `v1.0`: benchmarks reproducibles, evaluación del propio consorcio, política de actualización de skills dependientes y distribución multiplataforma auditada.
 
 Documentación de referencia: https://agentskills.io/specification , https://doc.qt.io/qtforpython-6/ , https://www.nv5geospatialsoftware.com/docs/Python.html
+
+## Modos de subagentes (v0.2-dev)
+
+Elegir **solo Gemini**, **solo Codex** o **ambos**. El router escoge los especialistas; `prepare_agents.py` genera perfiles nativos y paquetes por rol, sin ejecutarlos:
+
+```bash
+python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode gemini --project /ruta/al/proyecto
+python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode codex --project /ruta/al/proyecto --apply
+python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode both --project /ruta/al/proyecto --apply
+```
+
+Ver [modos y límites](references/PROVIDER_MODES.md). La coordinación automática entre proveedores sigue pendiente.

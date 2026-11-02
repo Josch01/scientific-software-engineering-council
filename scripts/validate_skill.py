@@ -12,7 +12,8 @@ MANDATORY = [
     "references/SCIENTIFIC_BOUNDARY.md", "references/TEST_MATRIX.md",
     "references/GUI_DESKTOP.md", "references/IDL_ADAPTER.md",
     "references/DEPENDENCY_SKILLS.md", "references/RELEASE_POLICY.md",
-    "references/ARCHITECTURE.md", "scripts/route_task.py", "scripts/release_gate.py",
+    "references/ARCHITECTURE.md", "references/PROVIDER_MODES.md",
+    "scripts/prepare_agents.py", "scripts/route_task.py", "scripts/release_gate.py",
     "templates/TASK_PACKET.json", ".github/workflows/validate.yml",
 ]
 
