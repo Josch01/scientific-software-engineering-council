@@ -5,7 +5,7 @@
 - Executes real installed Gemini CLI, Codex CLI, or both from separate processes.
 - The router selects only required roles; each role receives its own packet and a disposable source snapshot.
 - Bounded **top-level** concurrency, wave scheduling (reviewers later), a global wall-clock deadline, cancellation flag, and logs per process.
-- Codex launched via `codex exec --sandbox read-only --json --cd ...`; Gemini via `gemini --sandbox --approval-mode default --output-format json -p ...`.
+- Codex launched via `codex exec --sandbox read-only --json --skip-git-repo-check --cd ...`; Gemini via `gemini --sandbox --approval-mode default --output-format json -p ...`.
 - Local desktop configuration panel has an explicitly confirmed **4 · Ejecutar auditoría** action, run-status polling, and **Cancelar** action.
 - Dry-run is the default. The stage runs **audits only**. No file merges, code changes to the original project, real bills measured, or scientific certifications.
 
