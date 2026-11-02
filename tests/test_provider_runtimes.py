@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -261,6 +262,42 @@ class ProviderRuntimeTests(unittest.TestCase):
             "codex", [], wait_error=[subprocess.TimeoutExpired("codex", 30), -9])
         self.assertEqual(result.status, RuntimeStatus.TIMED_OUT)
         process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 2)
+
+    def test_nonzero_windows_taskkill_cannot_confirm_cancellation_or_log_hashes(self):
+        from scripts import run_agents
+        runtime, handle, process = self.launch_fixture("codex", [
+            {"type": "thread.started", "thread_id": "mutable-session"},
+            {"type": "turn.completed", "usage": {}},
+        ], exit_code=-9)
+        with patch.object(self.module, "_terminate_tree", wraps=run_agents._terminate_tree), \
+                patch.object(run_agents, "os", SimpleNamespace(name="nt")), \
+                patch.object(run_agents.subprocess, "run", return_value=
+                             subprocess.CompletedProcess(["taskkill"], 1)) as command:
+            result = runtime.cancel(handle)
+        self.assertEqual(command.call_args.args[0][0], "taskkill")
+        self.assertEqual(result.status, RuntimeStatus.FAILED)
+        self.assertIn("UNVERIFIED", result.error)
+        self.assertEqual(result.stdout_sha256, "")
+        self.assertEqual(result.stderr_sha256, "")
+        self.assertIsNone(result.provider_session_id)
+        process.kill.assert_called_once()
+        self.assertGreater(process.wait.call_args.kwargs["timeout"], 0)
+        self.assertIs(runtime.stream_or_collect(handle), result)
+
+    def test_stop_waits_are_bounded_when_direct_process_will_not_exit(self):
+        runtime, handle, process = self.launch_fixture("codex", [], exit_code=None)
+        def stuck_wait(*args, **kwargs):
+            self.assertIn("timeout", kwargs, "Unbounded wait after attempted tree termination")
+            self.assertGreater(kwargs["timeout"], 0)
+            self.assertLessEqual(kwargs["timeout"], 5)
+            raise subprocess.TimeoutExpired("local-double", kwargs["timeout"])
+        process.wait.side_effect = stuck_wait
+        result = runtime.timeout(handle)
+        self.assertEqual(result.status, RuntimeStatus.FAILED)
+        self.assertIn("UNVERIFIED", result.error)
+        self.assertEqual(result.stdout_sha256, "")
+        self.assertEqual(result.stderr_sha256, "")
         self.assertEqual(process.wait.call_count, 2)
 
     def test_concurrent_stop_and_collection_share_one_terminal_result(self):

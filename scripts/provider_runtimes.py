@@ -205,8 +205,23 @@ class _CliRuntime:
                 return self._finish(run)
             # Serialize kill/reap and publication: a waiting collector cannot
             # publish FAILED between process death and the requested stop result.
-            _terminate_tree(run.process)
-            run.process.wait()
+            stop_error = None
+            try:
+                _terminate_tree(run.process)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                stop_error = f"Tree termination UNVERIFIED: {exc}"
+            try:
+                run.process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                stop_error = stop_error or f"Tree termination UNVERIFIED: {exc}"
+                try:
+                    run.process.kill()
+                    run.process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired) as retry_exc:
+                    stop_error += f"; direct-process reap unconfirmed: {retry_exc}"
+            if stop_error is not None:
+                return self._finish(run, RuntimeStatus.FAILED, stop_error,
+                                    evidence_stable=False)
             return self._finish(run, status, status.value)
 
     def status(self, handle: RuntimeHandle) -> RuntimeStatus:
@@ -291,25 +306,26 @@ class _CliRuntime:
         return session_id, tuple(child for child in children if child != session_id), error
 
     def _finish(self, run: _Run, status: RuntimeStatus | None = None,
-                error: str | None = None) -> RuntimeResult:
+                error: str | None = None, *, evidence_stable: bool = True) -> RuntimeResult:
         with run.lock:
             if run.result is not None:
                 return run.result
-            return self._publish_result(run, status, error)
+            return self._publish_result(run, status, error, evidence_stable)
 
     def _publish_result(self, run: _Run, status: RuntimeStatus | None,
-                        error: str | None) -> RuntimeResult:
+                        error: str | None, evidence_stable: bool) -> RuntimeResult:
         """Called with the per-run lock held; publish exactly once."""
         # Existing paths cannot serve as evidence for a CLI that never started.
         session_id, children, parse_error = (self._parse(run.request.stdout_path)
-                                              if run.process is not None else (None, (), None))
+                                              if run.process is not None and evidence_stable
+                                              else (None, (), None))
         exit_code = run.process.returncode if run.process else None
         if status is None:
             error = parse_error or (f"Provider exited with code {exit_code}" if exit_code != 0 else None)
             status = RuntimeStatus.FAILED if error else RuntimeStatus.SUCCEEDED
 
         def digest(path: Path) -> str:
-            if run.process is None or not path.exists():
+            if not evidence_stable or run.process is None or not path.exists():
                 return ""
             with path.open("rb") as stream:
                 return hashlib.file_digest(stream, "sha256").hexdigest()

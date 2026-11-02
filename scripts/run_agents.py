@@ -103,18 +103,22 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
         return
     if os.name == "nt":
         try:
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            result = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=8, check=False)
-        except (OSError, subprocess.TimeoutExpired):
+                           stdin=subprocess.DEVNULL, shell=False, timeout=8, check=False)
+            if result.returncode != 0:
+                raise OSError(f"taskkill returned {result.returncode}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
             proc.kill()
+            raise OSError(f"Tree termination UNVERIFIED ({exc}); direct-process kill attempted") from exc
     else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        except OSError:
+        except OSError as exc:
             proc.kill()
+            raise OSError("Process-group termination UNVERIFIED; direct-process kill attempted") from exc
 
 def run_one(agent: dict[str, Any], task_id: str,
             source_files: list[tuple[Path, Path]], profiles: dict[str, str],

@@ -74,6 +74,11 @@ group/session and stop the inherited tree (Windows taskkill /T, POSIX killpg),
 then reap the direct process before publishing log hashes. A local Python
 parent/child regression covers ordinary inherited descendants on the test host.
 Detached descendants and OS sandbox enforcement remain UNVERIFIED.
+If tree termination or direct-process reap cannot be confirmed, the adapter
+returns `FAILED` with termination `UNVERIFIED`, bounds its reap attempts, and
+withholds session/child evidence and log hashes because surviving processes may
+still modify those logs. Such a result does not confirm cancellation or cleanup;
+remaining processes may require external intervention.
 
 ## Inter-agent mailbox
 
