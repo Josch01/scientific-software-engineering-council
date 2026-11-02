@@ -10,6 +10,10 @@ Skill portable de ingeniería de software científico orientada a auditorías, d
 - Para contextos realmente separados: configurar en v0.2 un adaptador al runtime de Codex, Gemini CLI o Antigravity con sesiones/worktrees reales, permisos y presupuestos.
 - IDL significa *Interactive Data Language* de NV5; si se usa otro significado de IDL, cambiar el adaptador.
 
+## Instalar en Gemini CLI y Codex
+
+Consulta [INSTALLATION.md](INSTALLATION.md) para instalarla desde GitHub y comprobar su funcionamiento.
+
 ## Inicio rápido
 
 ```bash
