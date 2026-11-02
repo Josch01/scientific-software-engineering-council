@@ -95,9 +95,9 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - Worker results include runtime status, provider session ID, log paths/hashes, and observed child-agent IDs. A parent process/session ID is not a subagent ID.
 - Missing/unsupported provider returns an explicit blocked/failed runtime result; it cannot substitute another CLI. Timeout and cancellation call the runtime contract methods.
 
-- [ ] **Step 1: Add runner tests using `FakeRuntime` for preview without discovery, mode-specific dispatch for Codex-only/Gemini-only/both, no provider fallback, explicit cost acknowledgement, timeout and cancellation propagation, and result-to-mailbox handoff without privileged statuses. Add one local Python child-process test for process/log lifecycle only; label it as such, not provider E2E.**
-- [ ] **Step 2: Run the focused worktree suite and capture expected failures against the current direct-`Popen` runner.**
-- [ ] **Step 3: Refactor `development_runner.py` to use `create_runtime()` and the Task 1 protocol while preserving its CLI and preview semantics.**
-- [ ] **Step 4: Update docs and matrix to identify runtime adapter coverage, `NOT_RUN` real Codex/Gemini E2E, `UNVERIFIED` native subagents/sandbox effectiveness, and P1 work still pending.**
-- [ ] **Step 5: Run focused tests, full unittest suite, and structural validator. Inspect that no provider calls or credential access occurred.**
-- [ ] **Step 6: Commit `refactor: route development workers through runtimes`.**
+- [x] **Step 1: Add runner tests using `FakeRuntime` for preview without discovery, mode-specific dispatch for Codex-only/Gemini-only/both, no provider fallback, explicit cost acknowledgement, timeout and cancellation propagation, and result-to-mailbox handoff without privileged statuses. Add one local Python child-process test for process/log lifecycle only; label it as such, not provider E2E.**
+- [x] **Step 2: Run the focused worktree suite and capture expected failures against the current direct-`Popen` runner.**
+- [x] **Step 3: Refactor `development_runner.py` to use `create_runtime()` and the Task 1 protocol while preserving its CLI and preview semantics.**
+- [x] **Step 4: Update docs and matrix to identify runtime adapter coverage, `NOT_RUN` real Codex/Gemini E2E, `UNVERIFIED` native subagents/sandbox effectiveness, and P1 work still pending.**
+- [x] **Step 5: Run focused tests, full unittest suite, and structural validator. Inspect that no provider calls or credential access occurred.**
+- [x] **Step 6: Commit `refactor: route development workers through runtimes`.**
