@@ -111,7 +111,7 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Run focused worktree/provider tests and `git diff --check`; append evidence and review this follow-up.
 
 **Final branch review correction round 4:**
-- [ ] Synchronize the final stop/deadline check with process creation across reservation, open, and `Popen` (shared launch gate/token); add barrier-controlled stop and timeout tests that previously reached `Popen` after stop.
+- [x] Perform the final stop/deadline check after reservation/open and synchronize that check with `Popen` (shared launch gate/token); add barrier-controlled stop and timeout tests that previously reached `Popen` after stop.
 - [ ] Terminate residual process-group/job members even when the CLI parent exits first; on Windows use a job mechanism established before provider code runs, and on POSIX stop the isolated process group. Add a local Python parent-exits/child-mutates-stdout regression; hash only after descendants are stopped. Keep breakaway descendants and OS sandbox unverified.
 - [ ] Run focused/full tests, validator/help/diff checks, and obtain independent scoped review before continuing to coordinator evidence work.
 
