@@ -85,9 +85,9 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 
 **Final branch review correction round 1:**
 - [x] Add a two-thread regression that blocks collection, cancels the process, and proves both paths return the same `CANCELLED` result; make first terminal-result publication atomic.
-- [ ] Add a Codex fixture where a completed `spawn_agent` event reports the parent ID before `thread.started`; the result must not count that ID as a child.
-- [ ] Run focused adapter/worktree tests, full suite, structural validator, and `git diff --check`; record exact results.
-- [ ] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
+- [x] Add a Codex fixture where a completed `spawn_agent` event reports the parent ID before `thread.started`; the result must not count that ID as a child.
+- [x] Run focused adapter/worktree tests, full suite, structural validator, and `git diff --check`; record exact results.
+- [x] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
