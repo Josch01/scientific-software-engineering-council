@@ -61,3 +61,13 @@ python scripts/run_agents.py examples/seir_desktop_audit.json --mode both --proj
 ```
 
 Lee [RUNNER.md](references/RUNNER.md) antes de ejecutar: snapshots no son un sandbox del sistema operativo, límites de USD no son medibles, el resultado no certifica validez científica y no se integran cambios automáticamente.
+
+## Worktrees y coordinación de desarrollo — v0.2-dev.4
+
+Se añadió un [coordinador por worktrees](references/WORKTREE_DEVELOPMENT.md), un mailbox de handoffs y un ejecutor opt-in de CLI para desarrollo en ramas separadas. Gemini y Codex se eligen por tarea. Aún **no** hay integración automática de cambios ni auditoría autónoma cerrada; el gate bloquea y exige revisión humana.
+
+```bash
+python scripts/worktree_coordinator.py plan examples/seir_worktree_build.json --project /path/to/clean-git-project
+python scripts/worktree_coordinator.py init examples/seir_worktree_build.json --project /path/to/clean-git-project --apply
+python scripts/worktree_coordinator.py gate --project /path/to/clean-git-project --task-id SEIR-BUILD-01
+```

@@ -1,0 +1,32 @@
+{
+  "task_id": "SEIR-BUILD-01",
+  "kind": "build",
+  "request": "Crear un motor SEIR modular con ODE, tests de invariantes, logs reproducibles y revisión científica independiente; no declarar identificabilidad por ajuste",
+  "domains": [
+    "numerical",
+    "identifiability",
+    "optimization"
+  ],
+  "languages": [
+    "python"
+  ],
+  "interfaces": [
+    "cli"
+  ],
+  "targets": [
+    "windows",
+    "linux"
+  ],
+  "risk": "R2",
+  "runtime": {
+    "real_subagents": true,
+    "separate_contexts": true
+  },
+  "constraints": [
+    "Conservar el proyecto original y no hacer merge automático"
+  ],
+  "acceptance": [
+    "Pruebas unitarias y de regresión",
+    "Auditoría científica separada"
+  ]
+}

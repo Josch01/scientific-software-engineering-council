@@ -2,7 +2,7 @@
 name: scientific-software-engineering-council
 description: "Diseña, implementa, audita, moderniza y libera software científico reproducible en Python o IDL, incluyendo algoritmos matemáticos, optimización, ML, datos y GUI Windows/Linux. Úsala ante solicitudes de crear programas, revisar código existente, corregir errores numéricos, diseñar arquitectura modular, coordinar especialistas, ejecutar pruebas o preparar versiones verificadas."
 metadata:
-  version: "0.2.0-dev.3"
+  version: "0.2.0-dev.4"
   language: "es"
 ---
 
@@ -73,3 +73,7 @@ El botón de preparación crea perfiles/packets de contexto y un dispatch; **no 
 ## Runner real de auditoría (v0.2-dev.3)
 
 Para ejecutar roles mediante procesos reales de las CLIs, consultar **`references/RUNNER.md`** y `scripts/run_agents.py`. La ejecución es **auditoría de solo lectura sobre snapshots temporales**, no integración de código. El router decide roles; un proceso por rol obtiene un packet mínimo y los revisores se ejecutan después. `--execute --accept-unmetered-cost` requiere consentimiento; registrar `EXIT_ZERO_UNREVIEWED`, no un resultado certificado. Budget de minutos aplicado a procesos, presupuesto de USD únicamente orientativo. No ejecutar código del repositorio original sin aislamiento externo y no afirmar garantías de aislamiento OS. Codex y Gemini deben estar instalados y autenticados previamente por el usuario.
+
+## Desarrollo Git Worktrees (experimental v0.2-dev.4)
+
+Consultar `references/WORKTREE_DEVELOPMENT.md`, `scripts/worktree_coordinator.py` y `scripts/development_runner.py` antes de cualquier desarrollo distribuido. La preparación es una vista previa; `init --apply` crea ramas aisladas por rol y `--execute --accept-unmetered-cost` inicia proveedores reales. No existen auto-merges, commits automáticos, verificación de ciencia mediante logs ni garantía de sandbox solo por usar worktrees. Los auditores revisan sin escribir; la integración requiere pruebas verificadas y autorización humana.
