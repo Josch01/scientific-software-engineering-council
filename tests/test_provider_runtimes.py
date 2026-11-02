@@ -142,6 +142,16 @@ class ProviderRuntimeTests(unittest.TestCase):
                 self.assertEqual(probe.call_count, 2)
                 spawn.assert_not_called()
 
+    def test_launch_reuses_cached_discovery_without_repeating_probes(self):
+        with patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                self.discovery("codex") as probe, \
+                patch.object(self.module.subprocess, "Popen", return_value=Mock(pid=123)):
+            runtime = self.module.CodexRuntime()
+            first = runtime.discover_capabilities()
+            runtime.launch(self.request)
+            self.assertIs(runtime.discover_capabilities(), first)
+            self.assertEqual(probe.call_count, 2)
+
     def test_missing_executable_or_required_help_flags_never_launches_or_falls_back(self):
         for provider in ("codex", "gemini"):
             for executable, help_text in ((None, ""), (f"/selected/{provider}", "--unrelated")):

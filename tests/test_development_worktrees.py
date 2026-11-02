@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 from scripts.configuration import DEFAULT_CONFIG
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
-from scripts.development_runner import execute
+from scripts.development_runner import execute,run_worker
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
 from scripts.provider_runtimes import GeminiRuntime
 
@@ -228,7 +228,7 @@ class RuntimeRunnerTests(unittest.TestCase):
     def test_timeout_calls_runtime_timeout_and_cleanup(self):
         self.state["workers"]=self.workers[:1]
         runtime=FakeRuntime()
-        with patch("scripts.development_runner.time.monotonic",side_effect=[0,0,61]):
+        with patch("scripts.development_runner.time.monotonic",side_effect=[0,0,0,61]):
             report=self.execute(launch=True,cost_ack=True,minutes=1,
                                 runtime_factory=lambda provider: runtime)
         self.assertEqual(report["results"][0]["status"],"TIMED_OUT")
@@ -236,6 +236,45 @@ class RuntimeRunnerTests(unittest.TestCase):
         self.assertIn("timeout",methods)
         self.assertIn("cleanup",methods)
         self.assertNotIn("cancel",methods)
+
+    def test_stop_or_deadline_during_discovery_prevents_launch(self):
+        for reason, expected in (("stop","CANCELLED"),("deadline","TIMED_OUT")):
+            with self.subTest(reason=reason):
+                entered=threading.Event()
+                release=threading.Event()
+                stop=threading.Event()
+                clock=[0]
+                output=[]
+                errors=[]
+                class BlockedDiscovery(FakeRuntime):
+                    def discover_capabilities(inner):
+                        entered.set()
+                        if not release.wait(5):
+                            raise AssertionError("Discovery was not released")
+                        return super().discover_capabilities()
+                runtime=BlockedDiscovery((RuntimeStatus.SUCCEEDED,))
+                def worker():
+                    try:
+                        output.append(run_worker(self.workers[0],TASK,self.meta,60,stop,
+                                                 lambda provider: runtime,True))
+                    except BaseException as exc:
+                        errors.append(exc)
+                thread=threading.Thread(target=worker,daemon=True)
+                with patch("scripts.development_runner.time.monotonic",side_effect=lambda: clock[0]):
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(2),"Worker did not discover capabilities before launch")
+                        if reason=="stop":
+                            stop.set()
+                        else:
+                            clock[0]=61
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors,[])
+                self.assertEqual(output[0]["status"],expected)
+                self.assertNotIn("launch",[method for method,_ in runtime.invocations])
 
     def test_peer_failure_cancels_running_runtime_through_contract(self):
         launched=threading.Event()

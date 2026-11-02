@@ -67,6 +67,8 @@ class _CliRuntime:
     def __init__(self) -> None:
         self._runs: dict[str, _Run] = {}
         self._command: tuple[str, ...] | None = None
+        self._capabilities: RuntimeCapabilities | None = None
+        self._discovery_lock = threading.Lock()
 
     def _resolve_command(self) -> tuple[str, ...] | None:
         executable = shutil.which(self.provider)
@@ -100,6 +102,12 @@ class _CliRuntime:
 
     def discover_capabilities(self) -> RuntimeCapabilities:
         """Only bounded version/help probes; no credential or model access."""
+        with self._discovery_lock:
+            if self._capabilities is None:
+                self._capabilities = self._discover_capabilities()
+            return self._capabilities
+
+    def _discover_capabilities(self) -> RuntimeCapabilities:
         self._command = self._resolve_command()
         version = None
         features: tuple[str, ...] = ()

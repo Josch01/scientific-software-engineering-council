@@ -63,15 +63,29 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
             result["status"]="TIMED_OUT"
             stop.set()
             return result
+        try:
+            runtime=runtime_factory(worker["provider"])
+            capabilities=runtime.discover_capabilities()
+        except (OSError,ValueError) as exc:
+            result["status"]="UNAVAILABLE"
+            raise ValueError(str(exc)) from exc
+        # Discovery can block while a peer fails or the execution budget expires.
+        # Approved adapters cache these probes, so launch cannot repeat that gap.
+        if stop.is_set():
+            result["status"]="CANCELLED"
+            return result
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            result["status"]="TIMED_OUT"
+            stop.set()
+            return result
+        if not capabilities.available:
+            result["status"]="UNAVAILABLE"
+            raise ValueError("Selected runtime is unavailable")
         request=RuntimeRequest(
             run_id=uuid.uuid4().hex,task_id=task["task_id"],role=name,
             prompt=prompt(worker,task),cwd=folder,stdout_path=stdout,stderr_path=stderr,
             timeout_seconds=remaining,writable=True,cost_acknowledged=cost_ack)
-        try:
-            runtime=runtime_factory(worker["provider"])
-        except (OSError,ValueError) as exc:
-            result["status"]="UNAVAILABLE"
-            raise ValueError(str(exc)) from exc
         handle=runtime.launch(request)
         while True:
             if stop.is_set():
