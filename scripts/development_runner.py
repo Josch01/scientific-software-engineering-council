@@ -6,29 +6,20 @@ No auto merge, commit, push, approval, billing enforcement, or OS isolation.
 from __future__ import annotations
 import argparse
 import concurrent.futures
+from dataclasses import asdict
 import json
-import os
-import shutil
-import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
-if __package__:
-    from .run_agents import _terminate_tree
-    from .worktree_coordinator import load, inspect, message, git
-else:
-    from run_agents import _terminate_tree
-    from worktree_coordinator import load, inspect, message, git
-
-def command_for(provider, text, folder):
-    if provider=="codex":
-        return ["codex","exec","--sandbox","workspace-write","--json",
-                "--skip-git-repo-check","--cd",str(folder),text]
-    if provider=="gemini":
-        return ["gemini","--sandbox","--approval-mode","default",
-                "--output-format","json","-p",text]
-    raise ValueError("unsupported provider")
+if not __package__:
+    # Keep direct `python scripts/development_runner.py` entry points working
+    # with the adapters' package imports as well as module-based invocation.
+    sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+from scripts.agent_runtime import RuntimeRequest, RuntimeStatus
+from scripts.provider_runtimes import create_runtime
+from scripts.worktree_coordinator import load, inspect, message, git
 
 def prompt(worker,task):
     return (
@@ -41,51 +32,78 @@ def prompt(worker,task):
         "A worktree is NOT an OS sandbox: do not assume isolation."
     )
 
-def run_worker(worker,task,logs,deadline,stop):
+def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
     folder=Path(worker["path"])
     name=worker["role"]
     stdout=logs/(name+".stdout")
     stderr=logs/(name+".stderr")
-    result={"role":name,"provider":worker["provider"],"status":"LAUNCH_FAILED",
-            "returncode":None,"stdout":str(stdout),"stderr":str(stderr)}
+    result={"role":name,"requested_provider":worker["provider"],
+            "provider":worker["provider"],"status":"FAILED",
+            "returncode":None,"exit_code":None,"stdout":str(stdout),"stderr":str(stderr),
+            "stdout_path":str(stdout),"stderr_path":str(stderr),"stdout_sha256":"",
+            "stderr_sha256":"","provider_session_id":None,"observed_child_agent_ids":(),
+            "runtime_result_observed":False}
+    runtime=None
+    handle=None
     try:
+        if not cost_ack:
+            raise ValueError("--accept-unmetered-cost required")
         if not folder.is_dir() or folder.is_symlink():
             raise ValueError("missing worktree")
         if git(folder,"symbolic-ref","--short","HEAD")!=worker["branch"]:
             raise ValueError("wrong branch")
-        exe=shutil.which(worker["provider"])
-        if not exe:
-            raise ValueError("CLI not found: "+worker["provider"])
-        cmd=command_for(worker["provider"],prompt(worker,task),folder)
-        cmd[0]=exe
-        flags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name=="nt" else 0
-        with stdout.open("wb") as o,stderr.open("wb") as e:
-            p=subprocess.Popen(cmd,cwd=folder,stdin=subprocess.DEVNULL,
-                               stdout=o,stderr=e,shell=False,
-                               creationflags=flags,start_new_session=os.name!="nt")
-            while p.poll() is None:
-                if stop.is_set():
-                    _terminate_tree(p)
-                    result["status"]="CANCELLED"
-                    break
-                if time.monotonic()>=deadline:
-                    stop.set()
-                    _terminate_tree(p)
-                    result["status"]="TIMED_OUT"
-                    break
-                time.sleep(.2)
-            try: p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _terminate_tree(p)
-                result["status"]="TIMED_OUT"
-            result["returncode"]=p.returncode
-            if result["status"] not in ("CANCELLED","TIMED_OUT"):
-                result["status"]="EXIT_ZERO_UNREVIEWED" if p.returncode==0 else "CLI_FAILED"
+        if worker["provider"] not in ("codex","gemini"):
+            result["status"]="UNAVAILABLE"
+            raise ValueError("unsupported provider: "+str(worker["provider"]))
+        if stop.is_set():
+            result["status"]="CANCELLED"
+            return result
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            result["status"]="TIMED_OUT"
+            stop.set()
+            return result
+        request=RuntimeRequest(
+            run_id=uuid.uuid4().hex,task_id=task["task_id"],role=name,
+            prompt=prompt(worker,task),cwd=folder,stdout_path=stdout,stderr_path=stderr,
+            timeout_seconds=remaining,writable=True,cost_acknowledged=cost_ack)
+        try:
+            runtime=runtime_factory(worker["provider"])
+        except (OSError,ValueError) as exc:
+            result["status"]="UNAVAILABLE"
+            raise ValueError(str(exc)) from exc
+        handle=runtime.launch(request)
+        while True:
+            if stop.is_set():
+                observed=runtime.cancel(handle)
+                break
+            if time.monotonic()>=deadline:
+                stop.set()
+                observed=runtime.timeout(handle)
+                break
+            if runtime.status(handle) is not RuntimeStatus.RUNNING:
+                observed=runtime.stream_or_collect(handle)
+                break
+            stop.wait(.05)
+        # Serialize the runtime's observations without relabelling doubles as a
+        # provider or promoting process completion into review/test acceptance.
+        result.update(asdict(observed))
+        result.update(status=observed.status.value,stdout_path=str(observed.stdout_path),
+                      stderr_path=str(observed.stderr_path),stdout=str(observed.stdout_path),
+                      stderr=str(observed.stderr_path),returncode=observed.exit_code,
+                      runtime_result_observed=True)
     except (OSError,ValueError) as exc:
         result["error"]=str(exc)
+    finally:
+        if runtime is not None and handle is not None:
+            try:
+                runtime.cleanup(handle)
+            except (OSError,ValueError) as exc:
+                result["cleanup_error"]=str(exc)
     return result
 
-def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minutes=60):
+def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minutes=60,
+            runtime_factory=None):
     state,meta=load(project,task_id)
     if task.get("task_id")!=task_id or task.get("kind") not in ("build","debug","refactor","optimize","migrate"):
         raise ValueError("task id/kind mismatch")
@@ -103,24 +121,30 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
         return report
     if not cost_ack:
         raise ValueError("--accept-unmetered-cost required")
-    logs=meta/"dev-logs"
-    if logs.is_symlink():
+    log_root=meta/"dev-logs"
+    if log_root.is_symlink():
         raise ValueError("symlink logs forbidden")
-    logs.mkdir(parents=True,exist_ok=True)
+    log_root.mkdir(parents=True,exist_ok=True)
+    logs=log_root/uuid.uuid4().hex
+    logs.mkdir(exist_ok=False)
+    if runtime_factory is None:
+        runtime_factory=create_runtime
     stop=threading.Event()
     deadline=time.monotonic()+minutes*60
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures=[pool.submit(run_worker,w,task,logs,deadline,stop) for w in state["workers"]]
+        futures=[pool.submit(run_worker,w,task,logs,deadline,stop,runtime_factory,cost_ack)
+                 for w in state["workers"]]
         for f in concurrent.futures.as_completed(futures):
             result=f.result()
             report["results"].append(result)
-            if result["status"]!="EXIT_ZERO_UNREVIEWED":
+            if result["status"]!="SUCCEEDED" or result.get("cleanup_error"):
                 stop.set()
     for r in report["results"]:
         message(project,task_id,r["role"],"WORKER_RESULT",
                 "Process "+r["status"]+"; not reviewed",Path(r["stdout"]).name)
     report["execution"]=("PROCESSES_FINISHED_UNREVIEWED" if
-                        all(r["status"]=="EXIT_ZERO_UNREVIEWED" for r in report["results"])
+                        all(r["status"]=="SUCCEEDED" and not r.get("cleanup_error")
+                            for r in report["results"])
                         else "PARTIAL_OR_FAILED")
     return report
 

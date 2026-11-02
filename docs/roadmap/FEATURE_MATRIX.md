@@ -2,7 +2,8 @@
 
 **Referencia:** commit base `908e35637518c4c1ab56c1f75138d194cadd3938`; auditoría 2026-11-02.
 **Incremento P1.1a:** endurecimiento contra evidencia autoafirmada; productor de evidencia canónica pendiente.
-**Estados:** `IMPLEMENTED | VERIFIED | EXPERIMENTAL | NOT_RUN | BLOCKED | PLANNED`.
+**Incremento runtime P1:** contrato tipado, adaptadores y dispatch de workers; P1 sigue pendiente.
+**Estados:** `IMPLEMENTED | VERIFIED | EXPERIMENTAL | NOT_RUN | UNVERIFIED | BLOCKED | PLANNED`.
 
 `VERIFIED` se limita a la afirmación de la fila y al entorno/comando citado. No implica independencia, seguridad completa, validez científica ni readiness de release.
 
@@ -16,16 +17,20 @@
 | Runner de auditoría con procesos fake | `EXPERIMENTAL` | Tests de fake CLI, timeout, ausencia de CLI y snapshot sin secretos. | Proveedor real, auth, sandbox efectivo, costos y perfil de cuenta siguen `NOT_RUN`; top-level CLI, no delegación nativa demostrada. |
 | Codex CLI instalado y opciones de ayuda | `VERIFIED` | `codex-cli 0.166.0-alpha.5.1`; `--version`/`codex exec --help` exit 0. | Sin prompt ni E2E real. No se inspeccionaron credenciales. |
 | Gemini CLI instalado y opciones de ayuda | `VERIFIED` | `0.64.0`; `--version`/`--help` exit 0. | Sin prompt ni E2E real. No se inspeccionaron credenciales. |
-| Codex-only real en SSEC | `NOT_RUN` | No hay invocación de modelo en baseline. | E2E opt-in, requiere autorización/costo medido y evidencia de proceso/runtime. |
-| Gemini-only real en SSEC | `NOT_RUN` | No hay invocación de modelo en baseline. | E2E opt-in, requiere autorización/costo medido y evidencia de proceso/runtime. |
+| Contrato AgentRuntime y FakeRuntime | `IMPLEMENTED` | Records tipados y tests de estados/contrato; FakeRuntime se identifica como fake. | Pruebas de contrato, no proveedor real ni evidencia científica. |
+| Adaptadores Codex/Gemini | `EXPERIMENTAL` | Tests offline de argv sin shell, ack, help/version acotados, JSONL, sesión/IDs hijos, fallos y logs exclusivos; Gemini Windows usa Node nativo. | Detectar flags no prueba sandbox, auth ni delegación; fixtures de parser no son E2E. |
+| Dispatch de workers por AgentRuntime | `EXPERIMENTAL` | FakeRuntime verifica provider persistido, preview sin runtime, ack, ausencia de fallback, timeout/cancel/cleanup y handoff WORKER_RESULT; un hijo Python local verifica logs/lifecycle. | Conserva resultados/paths/hashes/sesión/IDs sin otorgar aceptación. No son E2E de Codex/Gemini. |
+| Codex-only real en SSEC | `NOT_RUN` | No se invocó un modelo durante el incremento runtime. | E2E opt-in, requiere autorización/costo medido y evidencia de proceso/runtime. |
+| Gemini-only real en SSEC | `NOT_RUN` | No se invocó un modelo durante el incremento runtime. | E2E opt-in, requiere autorización/costo medido y evidencia de proceso/runtime. |
 | `both` real con coordinación cruzada | `NOT_RUN` | Tests solo validan asignación de proveedores; no hay intercambio runtime verificado. | Correlacionar IDs, contratos, estados y concurrencia de ambos runtimes. |
-| Subagentes nativos por proveedor | `NOT_RUN` | Docs oficiales actuales describen subagentes, pero la salida de help/version no es prueba de una delegación ejecutada. | Adaptador requiere detección de capacidades y traza real; distinguir de procesos CLI top-level. |
+| Subagentes nativos por proveedor | `UNVERIFIED` | Parser Codex puede conservar IDs hijos de spawn observado; ningún proveedor se ejecutó en estas pruebas. Help/version y sesión padre no prueban delegación. | Capacidad runtime UNKNOWN; falta traza real. E2E de subagentes NOT_RUN. |
+| Sandbox efectivo de los adaptadores | `UNVERIFIED` | Se solicitan flags de menor privilegio; sandbox_effective permanece None. | Worktree y argv no prueban aislamiento de SO; Gemini no garantiza workspace de solo lectura. |
 | Worktrees Git de roles y aislamiento de archivos | `EXPERIMENTAL` | Tests crean worktrees Git temporales y prueban independencia del árbol fuente. | Faltan ownership, limpieza transaccional, recovery, lock/idempotencia y prueba contra symlinks ancestro. Worktree no es sandbox de SO. |
 | Mailbox de worker/reviewer | `EXPERIMENTAL` | La API rechaza `REVIEW_ACCEPTED` y `TEST_RESULT` para workers y reviewers; las pruebas de regresión cubren ambos tipos y todos los roles planificados. | Las etiquetas de rol no autentican emisor/contexto. Solo se aceptan comunicaciones sin autoridad de aceptación. |
 | Verificación de tests/reviews del worktree gate | `BLOCKED` | La prueba de inyección directa de JSONL confirma que declaraciones de acceptance y `<check>:PASS` no elevan el gate. | Falta productor de evidencia canónica del coordinador; `gate()` permanece `BLOCKED` con `evidence_verified: false`. P1.1 sigue incompleta. |
 | Gate mecánico de evidencia de release | `BLOCKED` | Pruebas de hash/ruta/contextos conservadas; fixture con PASS/hash correcto e IDs distintos permanece `BLOCKED`, `provenance_verified: false`. | JSON y hashes no autentican ejecución. Falta registro canónico de ejecución; no se habilita `READY_FOR_MANUAL_REVIEW` mediante evidencia declarada. |
 | Orden tests deterministas → reviewer independiente → fix loop | `PLANNED` | No se observa en `development_runner`. | Secuencia completa es gate P1 pendiente. |
-| Tipos `AgentRuntime`, scheduler DAG, recuperación y semáforo central | `PLANNED` | No hay interfaz/runtime SPI central ni state machine durable. | Prioridad P1 tras el test de evidencia canónica. |
+| Scheduler DAG, recuperación y semáforo central | `PLANNED` | Ya existe AgentRuntime y routing del runner; faltan DAG y state machine durable. | P1 pendiente junto con procedencia canónica, review independiente y E2E reales. |
 | Tkinter visible, responsive E2E Windows/Linux | `NOT_RUN` | Solo check headless del modelo. | Se necesita runner con escritorio, pruebas de cancelación/progreso y evidencia visual. |
 | IDL Interactive Data Language + Python Bridge | `NOT_RUN` | Ninguna ejecución/licencia verificada. | Conservar `idl_integration=NOT_RUN`; validar dtypes/shapes/orden/NaN/errores en instalación licenciada. |
 | Biblioteca científica modular y opt-in | `PLANNED` | Referencias y ejemplos JSON; sin `scientific_core` ni solver ejecutable. | Issue #2: ODE/PDE, álgebra/dinámica/identificabilidad, optimización/ML/datos por demanda. |
