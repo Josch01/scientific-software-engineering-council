@@ -28,6 +28,8 @@
 - Salida JSONL malformada, sin evento terminal o con fallo explícito no puede reportar ejecución exitosa.
 - En Windows, ningún shim batch llega a `Popen`; Gemini usa Node nativo más la entrada instalada de su paquete o falla como `UNAVAILABLE`. Los metacaracteres del prompt siguen siendo un único argumento.
 - Una segunda ejecución no trunca ni reutiliza logs anteriores; stdout/stderr no pueden ser la misma ruta y las colisiones se rechazan antes de crear el proceso.
+- Recolección, cancelación y timeout concurrentes no pueden sobrescribir un resultado terminal ya elegido; cada run publica exactamente un resultado terminal.
+- Los IDs de hijos observados se excluyen si coinciden con el ID de sesión padre, incluso si el evento de spawn precede al evento que revela la sesión padre.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -80,6 +82,12 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Exclusively create run logs, reject stdout/stderr aliases and existing/reserved paths before spawn, and add a regression showing a second run cannot alter or relabel the first run's evidence.
 - [x] Run the focused provider adapter suite and record exact results in the task report.
 - [x] Obtain a scoped re-review against base `f791473bdab826a438f9035cf3842671ca6266c3` before continuing to Task 3.
+
+**Final branch review correction round 1:**
+- [ ] Add a two-thread regression that blocks collection, cancels the process, and proves both paths return the same `CANCELLED` result; make first terminal-result publication atomic.
+- [ ] Add a Codex fixture where a completed `spawn_agent` event reports the parent ID before `thread.started`; the result must not count that ID as a child.
+- [ ] Run focused adapter/worktree tests, full suite, structural validator, and `git diff --check`; record exact results.
+- [ ] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
