@@ -45,11 +45,11 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - Define `AgentRuntime` method signatures exactly: `discover_capabilities() -> RuntimeCapabilities`; `launch(request: RuntimeRequest) -> RuntimeHandle`; `stream_or_collect(handle: RuntimeHandle) -> RuntimeResult`; `cancel(handle: RuntimeHandle) -> RuntimeResult`; `timeout(handle: RuntimeHandle) -> RuntimeResult`; `status(handle: RuntimeHandle) -> RuntimeStatus`; `cleanup(handle: RuntimeHandle) -> None`.
 - Implement `FakeRuntime` for deterministic contract tests. It records invocations and exposes scripted status transitions; `stream_or_collect()` preserves an already terminal `CANCELLED`, `TIMED_OUT`, `FAILED`, or `UNAVAILABLE` status instead of converting it to success. It never identifies itself as Codex, Gemini, or a real provider run.
 
-- [ ] **Step 1: Write contract tests.** Add `test_fake_runtime_records_provider_request`, `test_fake_runtime_terminal_results_are_schema_versioned`, `test_timeout_and_cancel_statuses_are_distinct`, `test_collection_preserves_cancelled_and_timed_out_terminal_status`, `test_cleanup_is_idempotent`, and `test_runtime_request_rejects_nonfinite_timeout_and_nul_prompt`. Assert exact status/field values, not only non-emptiness.
-- [ ] **Step 2: Run `python -m unittest discover -s tests -p test_agent_runtime.py -v` and record expected missing-interface failures.**
-- [ ] **Step 3: Implement the records, protocol, and FakeRuntime in `scripts/agent_runtime.py`.** Use only the standard library and keep provider-specific parsing out of this module.
-- [ ] **Step 4: Run the focused tests and the full `python -m unittest discover -s tests -v` suite plus `python scripts/validate_skill.py`.** Report the two known local Windows symlink privilege errors separately if they recur.
-- [ ] **Step 5: Commit `feat: define agent runtime contract`.**
+- [x] **Step 1: Write contract tests.** Add `test_fake_runtime_records_provider_request`, `test_fake_runtime_terminal_results_are_schema_versioned`, `test_timeout_and_cancel_statuses_are_distinct`, `test_collection_preserves_cancelled_and_timed_out_terminal_status`, `test_cleanup_is_idempotent`, and `test_runtime_request_rejects_nonfinite_timeout_and_nul_prompt`. Assert exact status/field values, not only non-emptiness.
+- [x] **Step 2: Run `python -m unittest discover -s tests -p test_agent_runtime.py -v` and record expected missing-interface failures.**
+- [x] **Step 3: Implement the records, protocol, and FakeRuntime in `scripts/agent_runtime.py`.** Use only the standard library and keep provider-specific parsing out of this module.
+- [x] **Step 4: Run the focused tests and the full `python -m unittest discover -s tests -v` suite plus `python scripts/validate_skill.py`.** Report the two known local Windows symlink privilege errors separately if they recur.
+- [x] **Step 5: Commit `feat: define agent runtime contract`.**
 
 ### Task 2: Add Codex and Gemini CLI Runtime Adapters
 
