@@ -21,6 +21,16 @@ from scripts.agent_runtime import RuntimeRequest, RuntimeStatus
 from scripts.provider_runtimes import create_runtime
 from scripts.worktree_coordinator import load, inspect, message, git
 
+def artifact_reference(path,metadata):
+    """Return a bounded metadata-relative identity, never an escaping reference."""
+    try:
+        relative=Path(path).resolve().relative_to(metadata.resolve()).as_posix()
+    except (OSError,ValueError):
+        return ""
+    if relative=="." or len(relative)>300 or any(c in relative for c in "\r\n\x00"):
+        return ""
+    return relative
+
 def prompt(worker,task):
     return (
         "SSEC specialist role: "+worker["role"]+". This is YOUR own Git worktree. "
@@ -155,7 +165,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
                 stop.set()
     for r in report["results"]:
         message(project,task_id,r["role"],"WORKER_RESULT",
-                "Process "+r["status"]+"; not reviewed",Path(r["stdout"]).name)
+                "Process "+r["status"]+"; not reviewed",artifact_reference(r["stdout_path"],meta))
     report["execution"]=("PROCESSES_FINISHED_UNREVIEWED" if
                         all(r["status"]=="SUCCEEDED" and not r.get("cleanup_error")
                             for r in report["results"])

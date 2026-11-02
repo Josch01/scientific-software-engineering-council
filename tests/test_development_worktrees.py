@@ -322,4 +322,26 @@ class RuntimeRunnerTests(unittest.TestCase):
         for call in self.mailbox.call_args_list:
             self.assertEqual(call.args[3],"WORKER_RESULT")
             self.assertNotIn("REVIEW_ACCEPTED",call.args)
+            self.assertEqual(call.args[5],"")  # runtime log is outside task metadata
         self.assertEqual(report["release_status"],"NOT_APPROVED")
+
+    def test_repeated_execution_mailbox_artifacts_identify_each_actual_log(self):
+        self.state["workers"]=self.workers[:1]
+        class LoggedRuntime(FakeRuntime):
+            def launch(inner,request):
+                request.stdout_path.write_text(request.run_id,encoding="utf-8")
+                request.stderr_path.write_text("local fixture",encoding="utf-8")
+                return super().launch(request)
+        records=[]
+        for _ in range(2):
+            report=self.execute(launch=True,cost_ack=True,
+                runtime_factory=lambda provider: LoggedRuntime((RuntimeStatus.SUCCEEDED,)))
+            observed=report["results"][0]
+            handoff=self.mailbox.call_args
+            self.assertEqual(handoff.args[3],"WORKER_RESULT")
+            artifact=handoff.args[5]
+            self.assertFalse(Path(artifact).is_absolute())
+            self.assertEqual((self.meta/artifact).resolve(),Path(observed["stdout_path"]).resolve())
+            self.assertEqual((self.meta/artifact).read_text(),observed["run_id"])
+            records.append(artifact)
+        self.assertNotEqual(records[0],records[1])

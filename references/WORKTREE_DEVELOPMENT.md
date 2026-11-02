@@ -60,7 +60,12 @@ the record; it does not authenticate it or establish scientific validity.
 Timeout, cancellation and cleanup go through runtime methods. `SUCCEEDED` is a
 runtime outcome, while the overall successful execution remains
 `PROCESSES_FINISHED_UNREVIEWED` and release status remains `NOT_APPROVED`.
-Mailbox handoffs use only `WORKER_RESULT`; runtime output cannot grant test
+Mailbox handoffs use only `WORKER_RESULT`; their stdout artifact is relative to
+the task metadata root, for example `dev-logs/<execution-id>/<role>.stdout`.
+Repeated executions therefore refer to distinct logs. If the runtime returns a
+path outside that metadata root, the artifact reference is empty; the full
+observed path remains in the execution report. A reference identifies a log,
+not authenticated execution or acceptance. Runtime output cannot grant test
 acceptance or reviewer approval. FakeRuntime tests cover dispatch/control flow,
 JSONL fixtures cover parsers, and one local Python child-process test covers
 process/log lifecycle. None is provider E2E. Adapters start an OS process
