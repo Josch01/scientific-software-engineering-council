@@ -80,12 +80,20 @@ host cover natural root success/failure, cancellation and failure after resume.
 Detached/breakaway descendants and OS sandbox enforcement remain UNVERIFIED.
 The POSIX backend observes root exit with `waitid(..., WNOWAIT)` and retains the
 unreaped leader until group signalling and live-member confirmation finish; only
-then does it reap the root. This prevents a reused PID/PGID from becoming a kill
-target. Runtime callers must leave reaping of that child to the runtime. If root
+then does it reap the root. Under the host ownership precondition below, this
+retains the PID/PGID through signalling instead of targeting a reused identity.
+Runtime callers must leave reaping of that child to the runtime. If root
 identity is lost, no group signal is sent and evidence fails closed. This POSIX
 implementation requires non-reaping waitid plus procfs live-member inspection;
 missing support is unavailable before provider creation. Its native path remains
 unverified on this Windows host; offline order/concurrency regressions cover it.
+POSIX also has an explicit host precondition: `SIGCHLD` must have `SIG_DFL`
+disposition before launch. Ignored, custom or unknown dispositions make the
+runtime unavailable before `Popen`. While runs are active, the host must not
+change that disposition or run an external `waitpid(-1)`/other child reaper.
+The runtime keeps `Popen` private and owns its wait/poll operations. The check
+does not prevent a foreign reaper in another thread or later host changes; it
+is an ownership precondition, not general isolation.
 Confirmed identity loss means `ChildProcessError`/`ECHILD` or an unexpected PID.
 An observation `PermissionError`/other runtime error does not itself reap the
 exclusively owned leader: the runtime still signals, confirms and reaps its group,

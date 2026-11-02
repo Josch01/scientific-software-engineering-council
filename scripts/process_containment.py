@@ -163,6 +163,12 @@ class PosixGroup:
             raise OSError("POSIX containment requires non-reaping waitid/WNOWAIT support")
         if not Path("/proc").is_dir():
             raise OSError("POSIX live-group confirmation requires procfs in this implementation")
+        try:
+            disposition = signal.getsignal(signal.SIGCHLD)
+        except (AttributeError, ValueError, RuntimeError) as exc:
+            raise OSError("POSIX SIGCHLD disposition could not be confirmed") from exc
+        if disposition != signal.SIG_DFL:
+            raise OSError("POSIX containment requires the default SIGCHLD disposition")
 
     def root_exited(self, process):
         try:

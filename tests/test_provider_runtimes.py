@@ -688,6 +688,48 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, RuntimeStatus.UNAVAILABLE)
         spawn.assert_not_called()
 
+    def test_posix_sigchld_host_precondition_blocks_ignored_custom_and_unknown_handlers(self):
+        from scripts import process_containment
+        for disposition in (1, lambda signum, frame: None, None):
+            with self.subTest(disposition=disposition):
+                root = Path(tempfile.mkdtemp(dir=self.temp.name))
+                request = replace(self.request, stdout_path=root / "out", stderr_path=root / "err")
+                kernel = SimpleNamespace(name="posix", P_PID=1, WEXITED=4, WNOHANG=1,
+                                         WNOWAIT=0x100, waitid=Mock())
+                signals = SimpleNamespace(SIGCHLD=17, SIG_DFL=0, SIG_IGN=1,
+                                          getsignal=Mock(return_value=disposition))
+                with patch.object(process_containment, "os", kernel), \
+                        patch.object(process_containment, "signal", signals), \
+                        patch.object(process_containment, "Path", return_value=Mock(is_dir=Mock(return_value=True))), \
+                        patch.object(self.module, "_new_containment", side_effect=process_containment.new_containment), \
+                        patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                        self.discovery("codex"), patch.object(self.module.subprocess, "Popen") as spawn:
+                    runtime = self.module.CodexRuntime()
+                    handle = runtime.launch(request)
+                self.assertIsNone(handle.process_id)
+                self.assertEqual(runtime.stream_or_collect(handle).status, RuntimeStatus.UNAVAILABLE)
+                signals.getsignal.assert_called_once_with(signals.SIGCHLD)
+                spawn.assert_not_called()
+
+    def test_posix_default_sigchld_host_precondition_allows_runtime_creation(self):
+        from scripts import process_containment
+        kernel = SimpleNamespace(name="posix", P_PID=1, WEXITED=4, WNOHANG=1,
+                                 WNOWAIT=0x100, waitid=Mock())
+        signals = SimpleNamespace(SIGCHLD=17, SIG_DFL=0, SIG_IGN=1,
+                                  getsignal=Mock(return_value=0))
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "signal", signals), \
+                patch.object(process_containment, "Path", return_value=Mock(is_dir=Mock(return_value=True))), \
+                patch.object(self.module, "_new_containment", side_effect=process_containment.new_containment), \
+                patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
+                self.discovery("codex"), patch.object(self.module.subprocess, "Popen", return_value=Mock(pid=123)) as spawn:
+            runtime = self.module.CodexRuntime()
+            handle = runtime.launch(self.request)
+        self.assertEqual(handle.process_id, 123)
+        self.assertIsInstance(runtime._runs[handle.token].containment, process_containment.PosixGroup)
+        spawn.assert_called_once()
+        signals.getsignal.assert_called_once_with(signals.SIGCHLD)
+
     def test_posix_concurrent_collection_cancel_signals_before_the_only_reap(self):
         from scripts import process_containment
         group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
