@@ -30,6 +30,10 @@
 - Una segunda ejecución no trunca ni reutiliza logs anteriores; stdout/stderr no pueden ser la misma ruta y las colisiones se rechazan antes de crear el proceso.
 - Recolección, cancelación y timeout concurrentes no pueden sobrescribir un resultado terminal ya elegido; cada run publica exactamente un resultado terminal.
 - Los IDs de hijos observados se excluyen si coinciden con el ID de sesión padre, incluso si el evento de spawn precede al evento que revela la sesión padre.
+- Cancelar/agotar timeout termina y espera el proceso aislado en su grupo/sesión; una falla para terminar el árbol no se presenta como éxito o cancelación confirmada.
+- Si peer-stop o deadline vence durante discovery, no se inicia el modelo al terminar la consulta acotada; la verificación de stop/deadline ocurre antes del `Popen` billable.
+- `FakeRuntime` conserva el primer resultado terminal después de `SUCCEEDED`, `FAILED`, `UNAVAILABLE`, `CANCELLED` o `TIMED_OUT`, igual que un adaptador real.
+- Referencias de mailbox para stdout distinguen directorio de ejecución además del rol; ejecuciones repetidas no apuntan al mismo artifact.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -47,7 +51,7 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - Create `RuntimeCapabilityStatus` enum (`SUPPORTED`, `UNSUPPORTED`, `UNKNOWN`) and `RuntimeCapabilities(provider: str, available: bool, version: str | None, features: tuple[str, ...], sandbox_effective: bool | None, native_subagents: RuntimeCapabilityStatus)`; use explicit unknown values rather than inferring support from a prompt or process start.
 - Create `RuntimeStatus` enum (`RUNNING`, `SUCCEEDED`, `FAILED`, `TIMED_OUT`, `CANCELLED`, `UNAVAILABLE`), frozen `RuntimeHandle(token: str, run_id: str, provider: str, process_id: int | None)`, and frozen `RuntimeResult(schema_version: int, run_id: str, provider: str, status: RuntimeStatus, exit_code: int | None, provider_session_id: str | None, stdout_path: Path, stderr_path: Path, stdout_sha256: str, stderr_sha256: str, started_at_utc: str, finished_at_utc: str, observed_child_agent_ids: tuple[str, ...], error: str | None)`.
 - Define `AgentRuntime` method signatures exactly: `discover_capabilities() -> RuntimeCapabilities`; `launch(request: RuntimeRequest) -> RuntimeHandle`; `stream_or_collect(handle: RuntimeHandle) -> RuntimeResult`; `cancel(handle: RuntimeHandle) -> RuntimeResult`; `timeout(handle: RuntimeHandle) -> RuntimeResult`; `status(handle: RuntimeHandle) -> RuntimeStatus`; `cleanup(handle: RuntimeHandle) -> None`.
-- Implement `FakeRuntime` for deterministic contract tests. It records invocations and exposes scripted status transitions; `stream_or_collect()` preserves an already terminal `CANCELLED`, `TIMED_OUT`, `FAILED`, or `UNAVAILABLE` status instead of converting it to success. It never identifies itself as Codex, Gemini, or a real provider run.
+- Implement `FakeRuntime` for deterministic contract tests. It records invocations and exposes scripted status transitions; the first terminal status/result is immutable across `stream_or_collect()`, `cancel()`, and `timeout()`. It never identifies itself as Codex, Gemini, or a real provider run.
 
 - [x] **Step 1: Write contract tests.** Add `test_fake_runtime_records_provider_request`, `test_fake_runtime_terminal_results_are_schema_versioned`, `test_timeout_and_cancel_statuses_are_distinct`, `test_collection_preserves_cancelled_and_timed_out_terminal_status`, `test_cleanup_is_idempotent`, and `test_runtime_request_rejects_nonfinite_timeout_and_nul_prompt`. Assert exact status/field values, not only non-emptiness.
 - [x] **Step 2: Run `python -m unittest discover -s tests -p test_agent_runtime.py -v` and record expected missing-interface failures.**
@@ -88,6 +92,14 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Add a Codex fixture where a completed `spawn_agent` event reports the parent ID before `thread.started`; the result must not count that ID as a child.
 - [x] Run focused adapter/worktree tests, full suite, structural validator, and `git diff --check`; record exact results.
 - [x] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
+
+**Final branch review correction round 2:**
+- [ ] Start each provider child in its own OS process group/session and terminate/reap that group on cancel/timeout; add a local Python parent/child regression proving an ordinary inherited descendant stops before result/log hashing. Preserve the explicit limit that detached descendants and OS sandboxing are not proven.
+- [ ] Prevent billable launch if peer-stop/deadline arrives during bounded discovery: separate/cache discovery, check stop and remaining deadline after it and immediately before launch, and create no provider process when either has fired. Add deterministic blocked-discovery tests for both stop and timeout.
+- [ ] Make FakeRuntime preserve its first terminal result/status for later cancel/timeout/collection; add regressions for completed success and failure.
+- [ ] Store an execution-specific relative stdout artifact path in the mailbox (including `dev-logs/<execution-id>/`); prove repeated runs do not produce identical artifact references.
+- [ ] Run adapter/runner focused tests, full suite, validator and diff check; capture evidence and limitations.
+- [ ] Obtain independent scoped review of the fixes; address findings before moving to the coordinator evidence producer.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
