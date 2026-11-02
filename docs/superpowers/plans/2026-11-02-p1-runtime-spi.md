@@ -36,6 +36,8 @@
 - Referencias de mailbox para stdout distinguen directorio de ejecución además del rol; ejecuciones repetidas no apuntan al mismo artifact.
 - El mailbox no referencia un artifact inexistente cuando el worker no llegó a crear logs.
 - Si falla el comando de terminar el árbol, el runtime no bloquea indefinidamente ni presenta la terminación completa como confirmada.
+- La autorización de launch se sincroniza con stop/deadline hasta el punto de creación del proceso; una señal registrada antes de `Popen` impide spawn.
+- Tras terminar el proceso CLI principal, los miembros que sigan vivos en su grupo/Job Object se terminan antes de calcular/publicar hashes; un hijo ordinario no puede mutar logs después de SUCCEEDED.
 - Un `thread_id`/`session_id` del proceso principal no puede contarse como subagente nativo; solo IDs hijos observados pueden hacerlo.
 
 Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatgpt.com/docs/cli/reference), [Codex non-interactive JSONL](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Gemini headless JSONL](https://geminicli.com/docs/cli/headless/), [Gemini CLI reference](https://geminicli.com/docs/cli/cli-reference/) y [Gemini subagents](https://geminicli.com/docs/core/subagents/).
@@ -96,17 +98,22 @@ Referencias primarias consultadas el 2026-11-02: [Codex CLI](https://learn.chatg
 - [x] Obtain scoped independent re-review of both fixes and address any remaining findings before continuing.
 
 **Final branch review correction round 2:**
-- [ ] Start each provider child in its own OS process group/session and terminate/reap that group on cancel/timeout; add a local Python parent/child regression proving an ordinary inherited descendant stops before result/log hashing. Preserve the explicit limit that detached descendants and OS sandboxing are not proven.
-- [ ] Prevent billable launch if peer-stop/deadline arrives during bounded discovery: separate/cache discovery, check stop and remaining deadline after it and immediately before launch, and create no provider process when either has fired. Add deterministic blocked-discovery tests for both stop and timeout.
-- [ ] Make FakeRuntime preserve its first terminal result/status for later cancel/timeout/collection; add regressions for completed success and failure.
-- [ ] Store an execution-specific relative stdout artifact path in the mailbox (including `dev-logs/<execution-id>/`); prove repeated runs do not produce identical artifact references.
-- [ ] Run adapter/runner focused tests, full suite, validator and diff check; capture evidence and limitations.
-- [ ] Obtain independent scoped review of the fixes; address findings before moving to the coordinator evidence producer.
+- [x] Start each provider child in its own OS process group/session and terminate/reap that group on cancel/timeout; add a local Python parent/child regression proving an ordinary inherited descendant stops before result/log hashing. Preserve the explicit limit that detached descendants and OS sandboxing are not proven.
+- [x] Prevent billable launch if peer-stop/deadline arrives during bounded discovery: separate/cache discovery, check stop and remaining deadline after it and immediately before launch, and create no provider process when either has fired. Add deterministic blocked-discovery tests for both stop and timeout.
+- [x] Make FakeRuntime preserve its first terminal result/status for later cancel/timeout/collection; add regressions for completed success and failure.
+- [x] Store an execution-specific relative stdout artifact path in the mailbox (including `dev-logs/<execution-id>/`); prove repeated runs do not produce identical artifact references.
+- [x] Run adapter/runner focused tests, full suite, validator and diff check; capture evidence and limitations.
+- [x] Obtain independent scoped review of the fixes; address findings before moving to the coordinator evidence producer.
 
 **Final branch review correction round 3:**
-- [ ] Return an empty mailbox artifact reference when no log file exists; add a prelaunch-unavailable regression.
-- [ ] Handle nonzero/failed Windows process-tree termination without hanging in `wait()` or silently claiming confirmed cancellation; add offline failure-path coverage.
-- [ ] Run focused worktree/provider tests and `git diff --check`; append evidence and review this follow-up.
+- [x] Return an empty mailbox artifact reference when no log file exists; add a prelaunch-unavailable regression.
+- [x] Handle nonzero/failed Windows process-tree termination without hanging in `wait()` or silently claiming confirmed cancellation; add offline failure-path coverage.
+- [x] Run focused worktree/provider tests and `git diff --check`; append evidence and review this follow-up.
+
+**Final branch review correction round 4:**
+- [ ] Synchronize the final stop/deadline check with process creation across reservation, open, and `Popen` (shared launch gate/token); add barrier-controlled stop and timeout tests that previously reached `Popen` after stop.
+- [ ] Terminate residual process-group/job members even when the CLI parent exits first; on Windows use a job mechanism established before provider code runs, and on POSIX stop the isolated process group. Add a local Python parent-exits/child-mutates-stdout regression; hash only after descendants are stopped. Keep breakaway descendants and OS sandbox unverified.
+- [ ] Run focused/full tests, validator/help/diff checks, and obtain independent scoped review before continuing to coordinator evidence work.
 
 ### Task 3: Route Development Workers Through AgentRuntime
 
