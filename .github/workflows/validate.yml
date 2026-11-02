@@ -22,3 +22,5 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Router smoke test
         run: python scripts/route_task.py examples/seir_desktop_audit.json
+      - name: Headless desktop panel configuration check
+        run: python scripts/config_panel.py --check

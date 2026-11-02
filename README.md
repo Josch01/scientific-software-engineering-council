@@ -1,4 +1,4 @@
-# Scientific Software Engineering Council — v0.1.0
+# Scientific Software Engineering Council — v0.2.0-dev.2
 
 Skill portable de ingeniería de software científico orientada a auditorías, desarrollo, GUI de escritorio, IDL y experimentos reproducibles. **Repositorio nuevo y separado** de `Josch01/skill-investigacion-cientifica-rag`.
 
@@ -9,10 +9,6 @@ Skill portable de ingeniería de software científico orientada a auditorías, d
 - El gate comprueba estructura e integridad de evidencias aportadas, pero no comprueba la honestidad de un log ni certifica algoritmos.
 - Para contextos realmente separados: configurar en v0.2 un adaptador al runtime de Codex, Gemini CLI o Antigravity con sesiones/worktrees reales, permisos y presupuestos.
 - IDL significa *Interactive Data Language* de NV5; si se usa otro significado de IDL, cambiar el adaptador.
-
-## Instalar en Gemini CLI y Codex
-
-Consulta [INSTALLATION.md](INSTALLATION.md) para instalarla desde GitHub y comprobar su funcionamiento.
 
 ## Inicio rápido
 
@@ -38,14 +34,17 @@ El último comando debe bloquear (exit code 2) porque se incluyen verificaciones
 
 Documentación de referencia: https://agentskills.io/specification , https://doc.qt.io/qtforpython-6/ , https://www.nv5geospatialsoftware.com/docs/Python.html
 
-## Modos de subagentes (v0.2-dev)
+## Panel gráfico SSEC (v0.2-dev.2)
 
-Elegir **solo Gemini**, **solo Codex** o **ambos**. El router escoge los especialistas; `prepare_agents.py` genera perfiles nativos y paquetes por rol, sin ejecutarlos:
+Control local para **Gemini / Codex / ambos**, máximo simultáneo planificado de subagentes, política de permisos, presupuesto estimado y auditoría. Requiere escritorio Windows o Linux y Python 3.11+ con Tkinter:
 
 ```bash
-python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode gemini --project /ruta/al/proyecto
-python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode codex --project /ruta/al/proyecto --apply
-python scripts/prepare_agents.py examples/seir_desktop_audit.json --mode both --project /ruta/al/proyecto --apply
+python scripts/config_panel.py
 ```
 
-Ver [modos y límites](references/PROVIDER_MODES.md). La coordinación automática entre proveedores sigue pendiente.
+- **Previsualizar**: plan de roles y tandas sin escribir.
+- **Guardar configuración**: solo `.ssec/config.json` bajo el proyecto elegido.
+- **Preparar perfiles**: definición nativa y contexto mínimo para cada rol seleccionado, previa confirmación; no arranca modelos.
+- **Sin GUI**: `python scripts/config_panel.py --check` valida el modelo sin abrir ventana.
+
+Documentación y límites: [Panel y control de seguridad](references/CONFIG_PANEL.md). El coste/tiempo y permisos son políticas **solicitadas, no aplicadas**. El runner real queda pendiente.

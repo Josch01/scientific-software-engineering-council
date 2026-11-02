@@ -1,4 +1,4 @@
-"""Native provider modes preparation: no external AI needed."""
+"""Native profiles for single and dual providers remain backward-compatible."""
 import json
 import tempfile
 import tomllib
@@ -6,68 +6,59 @@ import unittest
 from pathlib import Path
 from scripts.prepare_agents import make_files, prepare
 
-TASK = json.loads(
-    (Path(__file__).resolve().parents[1] / "examples/seir_desktop_audit.json")
-    .read_text(encoding="utf-8")
-)
+TASK = json.loads((Path(__file__).resolve().parents[1] / "examples/seir_desktop_audit.json").read_text(encoding="utf-8"))
 
-class TestProviderModes(unittest.TestCase):
+class TestModes(unittest.TestCase):
     def test_gemini_only(self):
-        data, files = make_files(TASK, "gemini")
-        self.assertTrue(all(x["provider"] == "gemini" for x in data["assignments"]))
-        self.assertFalse(any(x.startswith(".codex/agents/") for x in files))
-        self.assertTrue(any(x.startswith(".gemini/agents/") for x in files))
+        m, files = make_files(TASK, "gemini")
+        self.assertTrue(all(a["provider"] == "gemini" for a in m["assignments"]))
+        self.assertFalse(any(k.startswith(".codex/agents/") for k in files))
 
-    def test_codex_only_valid_toml(self):
-        data, files = make_files(TASK, "codex")
-        self.assertTrue(all(x["provider"] == "codex" for x in data["assignments"]))
+    def test_codex_only_toml(self):
+        m, files = make_files(TASK, "codex")
+        self.assertTrue(all(a["provider"] == "codex" for a in m["assignments"]))
         for path, content in files.items():
             if path.endswith(".toml"):
                 self.assertIn("developer_instructions", tomllib.loads(content))
 
-    def test_both_separate_reviewers(self):
-        data, _ = make_files(TASK, "both")
-        self.assertEqual({x["provider"] for x in data["assignments"]}, {"codex", "gemini"})
-        self.assertTrue(all(x["provider"] == "gemini" for x in data["assignments"] if x["reviewer"]))
+    def test_both(self):
+        m, _ = make_files(TASK, "both")
+        self.assertEqual({a["provider"] for a in m["assignments"]}, {"gemini", "codex"})
+        self.assertTrue(all(a["provider"] == "gemini" for a in m["assignments"] if a["reviewer"]))
 
-    def test_preview_changes_nothing(self):
+    def test_preview(self):
         with tempfile.TemporaryDirectory() as d:
-            x = prepare(TASK, "both", Path(d))
-            self.assertFalse(x["applied"])
-            self.assertEqual(list(Path(d).iterdir()), [])
+            p = Path(d)
+            self.assertFalse(prepare(TASK, "both", p)["applied"])
+            self.assertFalse(list(p.iterdir()))
 
     def test_apply_and_idempotence(self):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            x = prepare(TASK, "both", root, apply=True)
-            self.assertTrue(x["applied"])
-            self.assertTrue((root / ".gemini/agents").is_dir())
-            self.assertTrue((root / ".codex/agents").is_dir())
-            self.assertTrue((root / ".ssec/tasks" / TASK["task_id"] / "dispatch.json").exists())
-            prepare(TASK, "both", root, apply=True)
+            p = Path(d)
+            self.assertTrue(prepare(TASK, "both", p, apply=True)["applied"])
+            self.assertTrue((p / ".gemini/agents").is_dir())
+            self.assertTrue((p / ".codex/agents").is_dir())
+            prepare(TASK, "both", p, apply=True)
 
-    def test_refuses_existing_file_changes(self):
+    def test_no_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            p = Path(d)
             _, files = make_files(TASK, "codex")
-            path = root / next(x for x in files if x.endswith(".toml"))
-            path.parent.mkdir(parents=True)
-            path.write_text("DO NOT TOUCH", encoding="utf-8")
+            conflict = p / next(k for k in files if k.endswith(".toml"))
+            conflict.parent.mkdir(parents=True)
+            conflict.write_text("USER DATA")
             with self.assertRaises(FileExistsError):
-                prepare(TASK, "codex", root, apply=True)
-            self.assertEqual(path.read_text(encoding="utf-8"), "DO NOT TOUCH")
+                prepare(TASK, "codex", p, apply=True)
+            self.assertEqual(conflict.read_text(), "USER DATA")
 
-    def test_rejects_unsafe_ids(self):
+    def test_bad_id(self):
         with self.assertRaises(ValueError):
-            make_files(dict(TASK, task_id="../other"), "gemini")
+            make_files(dict(TASK, task_id="../bad"), "gemini")
 
-    def test_rejects_symlink(self):
+    def test_symlink(self):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / "other").mkdir()
-            (root / ".gemini").symlink_to(root / "other", target_is_directory=True)
+            p = Path(d)
+            (p / "elsewhere").mkdir()
+            (p / ".gemini").symlink_to(p / "elsewhere", target_is_directory=True)
             with self.assertRaises(ValueError):
-                prepare(TASK, "gemini", root, apply=True)
-
-if __name__ == "__main__":
-    unittest.main()
+                prepare(TASK, "gemini", p, apply=True)

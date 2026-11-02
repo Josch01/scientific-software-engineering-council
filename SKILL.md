@@ -2,7 +2,7 @@
 name: scientific-software-engineering-council
 description: "Diseña, implementa, audita, moderniza y libera software científico reproducible en Python o IDL, incluyendo algoritmos matemáticos, optimización, ML, datos y GUI Windows/Linux. Úsala ante solicitudes de crear programas, revisar código existente, corregir errores numéricos, diseñar arquitectura modular, coordinar especialistas, ejecutar pruebas o preparar versiones verificadas."
 metadata:
-  version: "0.2.0-dev.1"
+  version: "0.2.0-dev.2"
   language: "es"
 ---
 
@@ -64,6 +64,8 @@ El arquitecto elige **roles**, no modelos específicos. Los workers no autocerti
 
 `OBJETIVO | ARQUITECTURA/ADR | ROLES ACTIVADOS | CONTRATOS | DIFF | TEST EVIDENCE | SCIENTIFIC SCOPE | RIESGOS | RELEASE STATUS | PROXIMA EVOLUCION`
 
-## Modos seleccionables de subagentes (v0.2-dev)
+## Panel de configuración v0.2-dev.2
 
-Para cada tarea, permitir `gemini`, `codex` o `both` (sin exigir varios proveedores). Aplicar `references/PROVIDER_MODES.md` y preparar definiciones con `scripts/prepare_agents.py`. Cada subagente recibe un Task Packet acotado al rol. Solo generar perfiles con consentimiento (`--apply`). En modo unico, el padre CLI delega en sus agentes nativos. En `both`, perfiles generados no implican que se hayan arrancado dos CLIs: requiere runner externo aun pendiente. No confundir separacion de contexto con revision independiente ni con sandbox.
+Si el usuario quiere elegir proveedor, concurrencia, permisos, presupuesto o revisión sin editar JSON, usar `scripts/config_panel.py` y consultar `references/CONFIG_PANEL.md`. Respetar siempre la elección `gemini | codex | both` en cada tarea y no forzar segundo proveedor. Los roles se seleccionan automáticamente con `route_task.py`; el plan de ejecución por tandas preserva todas las revisiones obligatorias, independientemente del límite de concurrencia deseado.
+
+El botón de preparación crea perfiles/packets de contexto y un dispatch; **no inicia procesos de Gemini/Codex ni sus subagentes**. Los límites de tiempo, coste y permisos son orientativos, no aplicados por un sandbox ni un medidor. No declarar cumplimiento real hasta conectar un runner que haga cumplir dichas políticas. En auditorías con riesgo R2/R3, conservar los requisitos de evidencia científica y revisión independiente incluso si el usuario elige auditoría basic.
