@@ -1,0 +1,25 @@
+{
+  "task_id": "EXAMPLE-SEIR-AUDIT",
+  "gate_status": "BLOCKED",
+  "checks_required": [
+    "unit_tests",
+    "static_analysis",
+    "regression",
+    "scientific_validation",
+    "independent_review",
+    "security_audit",
+    "gui_smoke",
+    "cross_platform"
+  ],
+  "issues": [
+    "unit_tests: missing check",
+    "static_analysis: missing check",
+    "regression: missing check",
+    "scientific_validation: missing check",
+    "independent_review: missing check",
+    "security_audit: missing check",
+    "gui_smoke: missing check",
+    "cross_platform: missing check"
+  ],
+  "warning": "A log hash validates integrity, not provenance, adequacy of tests, review independence or mathematical truth."
+}

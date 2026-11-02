@@ -1,0 +1,32 @@
+{
+  "task_id": "EXAMPLE-SEIR-AUDIT",
+  "kind": "audit",
+  "risk": "R2",
+  "runtime_mode": "SINGLE_CONTEXT_SEQUENTIAL",
+  "implementation_or_domain_roles": [
+    "software_architect",
+    "numerical_analyst",
+    "mathematical_model_specialist",
+    "optimization_ml_engineer",
+    "gui_engineer"
+  ],
+  "review_roles": [
+    "software_auditor",
+    "security_reviewer",
+    "independent_reviewer",
+    "release_engineer"
+  ],
+  "scientific_bridge": "REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW",
+  "required_evidence": [
+    "unit_tests",
+    "static_analysis",
+    "regression",
+    "scientific_validation",
+    "independent_review",
+    "security_audit",
+    "gui_smoke",
+    "cross_platform"
+  ],
+  "next_action": "READ_ONLY_INVENTORY",
+  "note": "Plan only. No subagents executed, no tests run, no software certified."
+}

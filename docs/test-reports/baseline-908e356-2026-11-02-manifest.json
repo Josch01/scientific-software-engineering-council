@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "report_id": "baseline-908e356-2026-11-02",
+  "commit_sha": "908e35637518c4c1ab56c1f75138d194cadd3938",
+  "branch": "codex/p0-baseline-audit-phase2",
+  "os": "Microsoft Windows 10.0.26300",
+  "python": "3.14.0",
+  "git": "2.49.0.windows.1",
+  "timezone": "UTC timestamps from NTFS log creation/last-write metadata",
+  "commands": [
+    {
+      "command": [
+        "python",
+        "scripts/validate_skill.py"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: structural validator",
+      "started_utc": "2026-11-02T18:04:31.8824511Z",
+      "finished_utc": "2026-11-02T18:04:31.8844664Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-validate-skill.log",
+      "sha256": "FE6296FD79B50E9C53053C744957702F9BC53269FB51764FC8907A22440C7E78",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "exit_code": 1,
+      "test_count": 45,
+      "outcome": "ERROR: 43 passed; 2 Windows symlink setup errors",
+      "started_utc": "2026-11-02T18:04:32.6907228Z",
+      "finished_utc": "2026-11-02T18:05:48.2901749Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-unittest.log",
+      "sha256": "3BB88639A5E812ABD8AD8EC7BF7F10CDC04F6BA2E4385EC306E97D13C01482A8",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "python",
+        "scripts/route_task.py",
+        "examples/seir_desktop_audit.json"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: deterministic routing output",
+      "started_utc": "2026-11-02T18:07:02.128932Z",
+      "finished_utc": "2026-11-02T18:07:02.1474147Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-router-smoke.log",
+      "sha256": "58CF6F365F6C00E57FB82533974CD5DD27C9B76B70DE67DC0CF14C68D798C344",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "python",
+        "scripts/config_panel.py",
+        "--check"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: headless config model only",
+      "started_utc": "2026-11-02T18:07:03.462296Z",
+      "finished_utc": "2026-11-02T18:07:03.4633142Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-config-panel-check.log",
+      "sha256": "F0A185FE38A62B41767046FC377B9B2E6F10586128679F7B23F66AF86D1DF09C",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "python",
+        "scripts/release_gate.py",
+        "--task",
+        "examples/seir_desktop_audit.json",
+        "--evidence",
+        "examples/release_evidence_not_run.json"
+      ],
+      "exit_code": 2,
+      "test_count": null,
+      "outcome": "EXPECTED_BLOCKED",
+      "started_utc": "2026-11-02T18:07:03.9623618Z",
+      "finished_utc": "2026-11-02T18:07:03.9722216Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-release-gate-not-run-example.log",
+      "sha256": "B637A006F0D73814965A84080FC6B44BF613A55BD840F8CACA03A079E91A8CB0",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "codex",
+        "--version"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: codex-cli 0.166.0-alpha.5.1; no model call",
+      "started_utc": "2026-11-02T18:07:32.1647673Z",
+      "finished_utc": "2026-11-02T18:07:32.1699016Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-codex-version.log",
+      "sha256": "757DA76996755D1184FC47EF1CF5530C61EF15A8DCF90F8DB5D2D20E60E69276",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "codex",
+        "exec",
+        "--help"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: help/capability inspection; no model call",
+      "started_utc": "2026-11-02T18:07:32.2401035Z",
+      "finished_utc": "2026-11-02T18:07:32.2765452Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-codex-exec-help.log",
+      "sha256": "FF5A00D7F3926A45D9B58EC703A45D6972B1664C0FA465156C48577BB4CEEAF4",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "gemini",
+        "--version"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: Gemini CLI 0.64.0; no model call",
+      "started_utc": "2026-11-02T18:07:38.0959194Z",
+      "finished_utc": "2026-11-02T18:07:38.0970632Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-gemini-version.log",
+      "sha256": "BA800D24CE0D5479E0531A2F5441D48833F2871E4A5A4C2B606DB58606E35B5D",
+      "provider_invoked": false
+    },
+    {
+      "command": [
+        "gemini",
+        "--help"
+      ],
+      "exit_code": 0,
+      "test_count": null,
+      "outcome": "PASS: help/capability inspection; no model call",
+      "started_utc": "2026-11-02T18:07:43.7435779Z",
+      "finished_utc": "2026-11-02T18:07:43.760004Z",
+      "log_path": "docs/test-reports/baseline-908e356-2026-11-02-gemini-help.log",
+      "sha256": "7E15A18C398C2AB4FBC80FC552F41B901D890DF1B361E5782AFFCF603AAA0BB0",
+      "provider_invoked": false
+    }
+  ],
+  "github_actions": {
+    "run_id": 41496442300,
+    "url": "https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41496442300",
+    "event": "push",
+    "commit_sha": "908e35637518c4c1ab56c1f75138d194cadd3938",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "id": 125452535840,
+        "name": "validate (windows-latest, 3.12)",
+        "conclusion": "success"
+      },
+      {
+        "id": 125452536188,
+        "name": "validate (windows-latest, 3.11)",
+        "conclusion": "success"
+      },
+      {
+        "id": 125452536466,
+        "name": "validate (ubuntu-latest, 3.11)",
+        "conclusion": "success"
+      },
+      {
+        "id": 125452536536,
+        "name": "validate (ubuntu-latest, 3.12)",
+        "conclusion": "success"
+      }
+    ],
+    "annotations": "GitHub page reports four warnings and two notices: actions tagged for Node.js 20 are forced to Node.js 24; ubuntu-latest migration notice.",
+    "run_number": 29,
+    "workflow_file": ".github/workflows/validate.yml",
+    "artifacts": "none",
+    "test_count": "NOT_COLLECTED_FROM_REMOTE_LOGS",
+    "created_at_utc": "2026-11-02T18:00:27Z"
+  },
+  "environment_record": {
+    "log_path": "docs/test-reports/baseline-908e356-2026-11-02-environment.txt",
+    "sha256": "F256B6E01FFCA98D74002E882D2FB353F791BD2D533DA543EA8CF450C8A2C38A",
+    "timestamp_utc": "2026-11-02T18:04:29.6898526Z"
+  }
+}
