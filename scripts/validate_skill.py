@@ -12,9 +12,9 @@ MANDATORY = [
     "references/SCIENTIFIC_BOUNDARY.md", "references/TEST_MATRIX.md",
     "references/GUI_DESKTOP.md", "references/IDL_ADAPTER.md",
     "references/DEPENDENCY_SKILLS.md", "references/RELEASE_POLICY.md",
-    "references/ARCHITECTURE.md", "references/PROVIDER_MODES.md",
+    "references/ARCHITECTURE.md", "references/PROVIDER_MODES.md", "references/RUNNER.md",
     "references/CONFIG_PANEL.md", "scripts/configuration.py",
-    "scripts/config_panel.py", "scripts/prepare_agents.py", "scripts/route_task.py", "scripts/release_gate.py",
+    "scripts/config_panel.py", "scripts/prepare_agents.py", "scripts/run_agents.py", "scripts/route_task.py", "scripts/release_gate.py",
     "templates/TASK_PACKET.json", ".github/workflows/validate.yml",
 ]
 
