@@ -24,7 +24,10 @@ from scripts.worktree_coordinator import load, inspect, message, git
 def artifact_reference(path,metadata):
     """Return a bounded metadata-relative identity, never an escaping reference."""
     try:
-        relative=Path(path).resolve().relative_to(metadata.resolve()).as_posix()
+        resolved=Path(path).resolve()
+        relative=resolved.relative_to(metadata.resolve()).as_posix()
+        if not resolved.is_file():
+            return ""
     except (OSError,ValueError):
         return ""
     if relative=="." or len(relative)>300 or any(c in relative for c in "\r\n\x00"):

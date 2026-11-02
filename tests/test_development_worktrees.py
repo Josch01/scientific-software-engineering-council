@@ -345,3 +345,16 @@ class RuntimeRunnerTests(unittest.TestCase):
             self.assertEqual((self.meta/artifact).read_text(),observed["run_id"])
             records.append(artifact)
         self.assertNotEqual(records[0],records[1])
+
+    def test_unavailable_prelaunch_worker_has_no_nonexistent_mailbox_artifact(self):
+        self.state["workers"]=self.workers[:1]
+        class UnavailableRuntime(FakeRuntime):
+            def discover_capabilities(inner):
+                return replace(super().discover_capabilities(),available=False)
+        runtime=UnavailableRuntime()
+        report=self.execute(launch=True,cost_ack=True,runtime_factory=lambda provider: runtime)
+        self.assertEqual(report["results"][0]["status"],"UNAVAILABLE")
+        self.assertNotIn("launch",[name for name,_ in runtime.invocations])
+        self.assertFalse(Path(report["results"][0]["stdout_path"]).exists())
+        self.assertEqual(self.mailbox.call_args.args[3],"WORKER_RESULT")
+        self.assertEqual(self.mailbox.call_args.args[5],"")

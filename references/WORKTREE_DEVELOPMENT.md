@@ -63,7 +63,8 @@ runtime outcome, while the overall successful execution remains
 Mailbox handoffs use only `WORKER_RESULT`; their stdout artifact is relative to
 the task metadata root, for example `dev-logs/<execution-id>/<role>.stdout`.
 Repeated executions therefore refer to distinct logs. If the runtime returns a
-path outside that metadata root, the artifact reference is empty; the full
+path outside that metadata root or no existing regular log file, the artifact
+reference is empty; the full
 observed path remains in the execution report. A reference identifies a log,
 not authenticated execution or acceptance. Runtime output cannot grant test
 acceptance or reviewer approval. FakeRuntime tests cover dispatch/control flow,
