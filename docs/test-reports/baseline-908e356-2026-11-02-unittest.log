@@ -1,0 +1,74 @@
+test_audit_basic_never_removes_high_risk_reviewers (test_configuration.ConfigTests.test_audit_basic_never_removes_high_risk_reviewers) ... ok
+test_cap_does_not_drop_reviews (test_configuration.ConfigTests.test_cap_does_not_drop_reviews) ... ok
+test_defaults_valid (test_configuration.ConfigTests.test_defaults_valid) ... ok
+test_headless_gui_check (test_configuration.ConfigTests.test_headless_gui_check) ... ok
+test_mode_config_mismatch (test_configuration.ConfigTests.test_mode_config_mismatch) ... ok
+test_policy_propagated_into_profiles (test_configuration.ConfigTests.test_policy_propagated_into_profiles) ... ok
+test_prepare_dry_run_doesnt_write_settings (test_configuration.ConfigTests.test_prepare_dry_run_doesnt_write_settings) ... ok
+test_reject_bool_as_limit_and_nan (test_configuration.ConfigTests.test_reject_bool_as_limit_and_nan) ... ok
+test_reject_unknown_fields (test_configuration.ConfigTests.test_reject_unknown_fields) ... ok
+test_save_load_explicit (test_configuration.ConfigTests.test_save_load_explicit) ... ok
+test_strict_adds_review_for_low_risk (test_configuration.ConfigTests.test_strict_adds_review_for_low_risk) ... ok
+test_symlink_refusal (test_configuration.ConfigTests.test_symlink_refusal) ... ERROR
+test_user_input (test_configuration.ConfigTests.test_user_input) ... ok
+test_execute_requires_explicit_ack (test_development_worktrees.WorktreeTests.test_execute_requires_explicit_ack) ... ok
+test_expected_cli_flags (test_development_worktrees.WorktreeTests.test_expected_cli_flags) ... ok
+test_fake_cli_processes_do_not_change_source (test_development_worktrees.WorktreeTests.test_fake_cli_processes_do_not_change_source) ... ok
+test_gate_blocks_missing_checks_and_collisions (test_development_worktrees.WorktreeTests.test_gate_blocks_missing_checks_and_collisions) ... ok
+test_mailbox_rejects_worker_self_review (test_development_worktrees.WorktreeTests.test_mailbox_rejects_worker_self_review) ... ok
+test_plan_is_read_only (test_development_worktrees.WorktreeTests.test_plan_is_read_only) ... ok
+test_real_branches_are_independent (test_development_worktrees.WorktreeTests.test_real_branches_are_independent) ... ok
+test_wrong_task_or_dirty_source_rejected (test_development_worktrees.WorktreeTests.test_wrong_task_or_dirty_source_rejected) ... ok
+test_apply_and_idempotence (test_provider_modes.TestModes.test_apply_and_idempotence) ... ok
+test_bad_id (test_provider_modes.TestModes.test_bad_id) ... ok
+test_both (test_provider_modes.TestModes.test_both) ... ok
+test_codex_only_toml (test_provider_modes.TestModes.test_codex_only_toml) ... ok
+test_gemini_only (test_provider_modes.TestModes.test_gemini_only) ... ok
+test_no_overwrite (test_provider_modes.TestModes.test_no_overwrite) ... ok
+test_preview (test_provider_modes.TestModes.test_preview) ... ok
+test_symlink (test_provider_modes.TestModes.test_symlink) ... ERROR
+test_missing_evidence_blocks (test_release_gate.ReleaseGateTests.test_missing_evidence_blocks) ... ok
+test_path_traversal_blocks (test_release_gate.ReleaseGateTests.test_path_traversal_blocks) ... ok
+test_success_is_not_final_approval (test_release_gate.ReleaseGateTests.test_success_is_not_final_approval) ... ok
+test_idl_must_have_licensed_integration_evidence (test_routing.RoutingTests.test_idl_must_have_licensed_integration_evidence) ... ok
+test_low_risk_no_unneeded_review (test_routing.RoutingTests.test_low_risk_no_unneeded_review) ... ok
+test_reject_bad_domain (test_routing.RoutingTests.test_reject_bad_domain) ... ok
+test_seir_routing_preserves_audit_mode (test_routing.RoutingTests.test_seir_routing_preserves_audit_mode) ... ok
+test_audit_only (test_runner.RunnerTests.test_audit_only) ... ok
+test_fake_cli_executes_all_waves (test_runner.RunnerTests.test_fake_cli_executes_all_waves) ... ok
+test_fake_cli_timeout_and_abort (test_runner.RunnerTests.test_fake_cli_timeout_and_abort) ... ok
+test_missing_cli_blocks_and_logs (test_runner.RunnerTests.test_missing_cli_blocks_and_logs) ... ok
+test_needs_cost_acknowledgement (test_runner.RunnerTests.test_needs_cost_acknowledgement) ... ok
+test_preview_has_no_side_effects (test_runner.RunnerTests.test_preview_has_no_side_effects) ... ok
+test_safe_commands (test_runner.RunnerTests.test_safe_commands) ... ok
+test_snapshot_excludes_known_secrets (test_runner.RunnerTests.test_snapshot_excludes_known_secrets) ... ok
+test_valid_structure (test_structure.StructureTests.test_valid_structure) ... ok
+
+======================================================================
+ERROR: test_symlink_refusal (test_configuration.ConfigTests.test_symlink_refusal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\artur\Documents\Skill\scientific-software-engineering-council\tests\test_configuration.py", line 51, in test_symlink_refusal
+    (root / ".ssec").symlink_to(root / "elsewhere", target_is_directory=True)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\pathlib\__init__.py", line 1218, in symlink_to
+    os.symlink(target, self, target_is_directory)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [WinError 1314] El cliente no dispone de un privilegio requerido: 'C:\\Users\\artur\\AppData\\Local\\Temp\\tmpp9mpbnn_\\elsewhere' -> 'C:\\Users\\artur\\AppData\\Local\\Temp\\tmpp9mpbnn_\\.ssec'
+
+======================================================================
+ERROR: test_symlink (test_provider_modes.TestModes.test_symlink)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\artur\Documents\Skill\scientific-software-engineering-council\tests\test_provider_modes.py", line 62, in test_symlink
+    (p / ".gemini").symlink_to(p / "elsewhere", target_is_directory=True)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\pathlib\__init__.py", line 1218, in symlink_to
+    os.symlink(target, self, target_is_directory)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [WinError 1314] El cliente no dispone de un privilegio requerido: 'C:\\Users\\artur\\AppData\\Local\\Temp\\tmpf5abizif\\elsewhere' -> 'C:\\Users\\artur\\AppData\\Local\\Temp\\tmpf5abizif\\.gemini'
+
+----------------------------------------------------------------------
+Ran 45 tests in 75.590s
+
+FAILED (errors=2)

@@ -1,0 +1,9 @@
+validate_skill.py=0
+unittest_discover=1
+router-smoke=0
+config-panel-check=0
+release-gate-not-run-example=2
+codex-version=0
+codex-exec-help=0
+gemini-version=0
+gemini-help=0
