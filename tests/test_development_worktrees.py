@@ -9,7 +9,9 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
+from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256
 from scripts.configuration import DEFAULT_CONFIG
+from scripts.prepare_agents import choose_roles
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
 from scripts.development_runner import execute,run_worker
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
@@ -19,6 +21,34 @@ TASK={"task_id":"SSEC-TEST","kind":"build","request":"Implement a scientific sol
       "domains":["numerical"],"languages":["python"],"interfaces":["cli"],
       "targets":["linux"],"risk":"R1","runtime":{}}
 POLICY=dict(DEFAULT_CONFIG,provider_mode="both")
+
+def task_with_checks():
+    task=dict(TASK,domains=["general"],check_specs=[
+        {"check_id":"unit_tests","argv":[sys.executable,"-P","-m","unittest","discover","-s","tests","-t",".","-v"],
+         "cwd":".","timeout_seconds":20,"protocol":"unittest"},
+        {"check_id":"static_analysis","argv":[sys.executable,"-c",
+         "compile(open('solver.py',encoding='utf-8').read(),'solver.py','exec')"],
+         "cwd":".","timeout_seconds":20,"protocol":"exit_code"},
+    ])
+    return task
+
+
+class LocalPythonRuntime(GeminiRuntime):
+    """Real local Python child process for offline integration tests; not provider E2E."""
+    provider="local-python"
+
+    def discover_capabilities(self):
+        self._command=(sys.executable,)
+        return RuntimeCapabilities("local-python",True,None,(),None,
+                                   RuntimeCapabilityStatus.UNKNOWN)
+
+    def build_argv(self,request):
+        code=("from pathlib import Path;import json,sys;"
+              "Path('solver.py').write_text('x=2\\n');"
+              "print(json.dumps({'type':'init','session_id':'local-python-session'}));"
+              "print(json.dumps({'type':'result','status':'success','stats':{}}));"
+              "print('local diagnostic',file=sys.stderr)")
+        return (sys.executable,"-c",code)
 
 def git(root,*args):
     return subprocess.run(["git","-C",str(root),*args],check=True,
@@ -34,6 +64,15 @@ class WorktreeTests(unittest.TestCase):
         git(self.root,"config","user.email","test@example.invalid")
         git(self.root,"config","user.name","SSEC Test")
         (self.root/"solver.py").write_text("x=1\n",encoding="utf-8")
+        (self.root/".gitignore").write_text("__pycache__/\n",encoding="utf-8")
+        tests=self.root/"tests"
+        tests.mkdir()
+        (tests/"__init__.py").write_text("",encoding="utf-8")
+        (tests/"test_solver.py").write_text(
+            "import unittest\nimport solver\n\n"
+            "class SolverTests(unittest.TestCase):\n"
+            "    def test_positive_value(self):\n"
+            "        self.assertGreater(solver.x, 0)\n",encoding="utf-8")
         git(self.root,"add",".")
         git(self.root,"commit","-m","initial")
 
@@ -111,45 +150,205 @@ class WorktreeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"unmetered"):
             execute(self.root,TASK["task_id"],TASK,launch=True)
 
+    def test_initialize_binds_complete_packet_revision_and_digest(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        self.assertEqual(state["task_packet"],task)
+        self.assertEqual(state["task_sha256"],canonical_task_sha256(task))
+        self.assertEqual(state["task_revision"],"revision-1")
+        loaded,_=load(self.root,task["task_id"])
+        self.assertEqual(loaded["task_packet"]["check_specs"],task["check_specs"])
+
+    def test_execute_rejects_task_digest_drift_before_runtime_launch(self):
+        task=task_with_checks()
+        initialize(task,POLICY,self.root,apply=True)
+        changed=dict(task,request="a different request with the same id")
+        calls=[]
+        def runtime_factory(provider):
+            calls.append(provider)
+            return FakeRuntime((RuntimeStatus.SUCCEEDED,))
+        with self.assertRaisesRegex(ValueError,"digest|packet"):
+            execute(self.root,task["task_id"],changed,launch=True,cost_ack=True,
+                    runtime_factory=runtime_factory)
+        self.assertEqual(calls,[])
+
+    def test_real_local_execution_runs_per_worker_checks_and_gate_stays_blocked(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
+                       minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED",
+                         report["results"])
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
+                         report["check_evidence"])
+        self.assertEqual(report["release_status"],"NOT_APPROVED")
+        evidence=report["check_evidence"]
+        self.assertEqual({item["role"] for item in evidence},{w["role"] for w in state["workers"]})
+        self.assertTrue(all(item["status"]=="PASSED" for item in evidence))
+        self.assertEqual(len({item["manifest_path"] for item in evidence}),len(evidence))
+        self.assertTrue(all(item["verified_process_check_ids"]==["unit_tests","static_analysis"]
+                            for item in evidence))
+        gate_result=gate(self.root,task["task_id"])
+        self.assertEqual(gate_result["status"],"BLOCKED")
+        self.assertTrue(gate_result["checks_verified"])
+        self.assertFalse(gate_result["evidence_verified"])
+        self.assertEqual(gate_result["release_status"],"NOT_APPROVED")
+        self.assertEqual({item["role"] for item in gate_result["verified_process_check_ids"]},
+                         {w["role"] for w in state["workers"]})
+
+    def test_high_risk_process_checks_do_not_satisfy_other_evidence_obligations(self):
+        task=task_with_checks()
+        task.update(risk="R2",interfaces=["desktop_gui"],targets=["windows","linux"],
+                    languages=["python","idl"])
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=4,
+                       minutes=2,runtime_factory=lambda provider: LocalPythonRuntime())
+        expected={"software_review","independent_review","security_audit","release_review",
+                  "scientific_validation","gui_smoke","cross_platform","idl_integration"}
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(set(report["pending_evidence_ids"]),expected)
+        self.assertTrue(all(set(item["verified_process_check_ids"])==
+                            {"unit_tests","static_analysis"} for item in report["check_evidence"]))
+        gate_result=gate(self.root,task["task_id"])
+        self.assertTrue(gate_result["checks_verified"])
+        self.assertEqual(set(gate_result["pending_evidence_ids"]),expected)
+        self.assertEqual(gate_result["status"],"BLOCKED")
+        self.assertFalse(gate_result["evidence_verified"])
+        self.assertEqual(gate_result["release_status"],"NOT_APPROVED")
+        self.assertEqual(len(state["workers"]),len(report["check_evidence"]))
+
+    def test_pending_evidence_matches_task_and_policy_requirements(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        expected=set(state["required_evidence"]) - {"unit_tests","static_analysis","regression"}
+        self.assertEqual(expected,{"software_review","independent_review"})
+
+        report=execute(self.root,task["task_id"],task)
+        self.assertEqual(set(report["pending_evidence_ids"]),expected)
+        result=gate(self.root,task["task_id"])
+        self.assertEqual(set(result["pending_evidence_ids"]),expected)
+
+    def test_basic_policy_reports_software_review_without_inventing_other_obligations(self):
+        task=task_with_checks()
+        task["task_id"]="SSEC-BASIC-TEST"
+        policy=dict(POLICY,audit_level="basic")
+        state=initialize(task,policy,self.root,apply=True)
+        expected={"software_review"}
+        self.assertEqual(set(state["required_evidence"]) -
+                         {"unit_tests","static_analysis","regression"},expected)
+
+        report=execute(self.root,task["task_id"],task)
+        self.assertEqual(set(report["pending_evidence_ids"]),expected)
+        result=gate(self.root,task["task_id"])
+        self.assertEqual(set(result["pending_evidence_ids"]),expected)
+
+    def test_load_rejects_removed_policy_required_independent_review(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        self.assertIn("independent_reviewer",state["review_roles"])
+        self.assertIn("independent_review",state["required_evidence"])
+
+        persisted,metadata=load(self.root,task["task_id"])
+        persisted["review_roles"].remove("independent_reviewer")
+        persisted["required_evidence"].remove("independent_review")
+        (metadata/"state.json").write_text(json.dumps(persisted),encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError,"review roles|policy"):
+            load(self.root,task["task_id"])
+
+    def test_load_rejects_omitted_expected_implementation_worker(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        self.assertGreaterEqual(len(state["workers"]),2)
+
+        persisted,metadata=load(self.root,TASK["task_id"])
+        persisted["workers"].pop()
+        (metadata/"state.json").write_text(json.dumps(persisted),encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError,"worker"):
+            load(self.root,TASK["task_id"])
+
+    def test_gate_rejects_post_run_snapshot_tampering(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
+                       minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
+                         report["check_evidence"])
+        _,metadata=load(self.root,task["task_id"])
+        evidence=next(item for item in report["check_evidence"]
+                      if item["role"]==state["workers"][0]["role"])
+        snapshot=(metadata/Path(evidence["manifest_path"])).parent/"snapshot"
+        (snapshot/"post-run-tamper.txt").write_text("tampered archived snapshot\n",encoding="utf-8")
+
+        result=gate(self.root,task["task_id"])
+
+        self.assertFalse(result["checks_verified"])
+        self.assertTrue(result["invalid_check_manifests"])
+        self.assertEqual(result["status"],"BLOCKED")
+        self.assertFalse(result["evidence_verified"])
+        self.assertEqual(result["release_status"],"NOT_APPROVED")
+
+    def test_process_check_specs_cannot_claim_review_or_scientific_obligations(self):
+        task=task_with_checks()
+        task["risk"]="R2"
+        task["check_specs"].append({"check_id":"independent_review","argv":[sys.executable,"-c","print('PASS')"],
+                                    "cwd":".","timeout_seconds":20,"protocol":"exit_code"})
+        with self.assertRaisesRegex(ValueError,"process check|obligation"):
+            plan(task,POLICY,self.root)
+
+    def test_gate_rejects_manifest_tampering_and_tracked_or_untracked_candidate_drift(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
+                       minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+
+        _,metadata=load(self.root,task["task_id"])
+        manifest=metadata/Path(report["check_evidence"][0]["manifest_path"])
+        original=manifest.read_text(encoding="utf-8")
+        data=json.loads(original)
+        data["checks"][0]["argv"][0]="forged-worker-command"
+        manifest.write_text(json.dumps(data),encoding="utf-8")
+        result=gate(self.root,task["task_id"])
+        self.assertFalse(result["checks_verified"])
+        self.assertTrue(result["invalid_check_manifests"])
+        self.assertEqual(result["release_status"],"NOT_APPROVED")
+        manifest.write_text(original,encoding="utf-8")
+
+        worker=next(w for w in state["workers"] if w["role"]==report["check_evidence"][0]["role"])
+        folder=Path(worker["path"])
+        baseline=candidate_tree_sha256(folder)
+        (folder/"new-candidate.txt").write_text("untracked edit\n",encoding="utf-8")
+        self.assertNotEqual(candidate_tree_sha256(folder),baseline)
+        result=gate(self.root,task["task_id"])
+        self.assertFalse(result["checks_verified"])
+        self.assertIn(worker["role"],{item["role"] for item in result["invalid_check_manifests"]})
+        (folder/"new-candidate.txt").unlink()
+        (folder/"solver.py").write_text("x=99\n",encoding="utf-8")
+        result=gate(self.root,task["task_id"])
+        self.assertFalse(result["checks_verified"])
+        self.assertIn(worker["role"],{item["role"] for item in result["invalid_check_manifests"]})
+
     def test_local_python_child_process_and_log_lifecycle_not_provider_e2e(self):
         x=initialize(TASK,POLICY,self.root,apply=True)
-        state, meta=load(self.root,TASK["task_id"])
-        state["workers"]=state["workers"][:1]
-        (meta/"state.json").write_text(json.dumps(state),encoding="utf-8")
-
-        class LocalPythonRuntime(GeminiRuntime):
-            """Actual local Python process/log check, never a provider session."""
-            provider="local-python"
-
-            def discover_capabilities(self):
-                self._command=(sys.executable,)
-                return RuntimeCapabilities("local-python",True,None,(),None,
-                                           RuntimeCapabilityStatus.UNKNOWN)
-
-            def build_argv(self,request):
-                code=("from pathlib import Path;import json,sys;"
-                      "Path('solver.py').write_text('x=8\\n');"
-                      "print(json.dumps({'type':'init','session_id':'local-python-session'}));"
-                      "print(json.dumps({'type':'result','status':'success','stats':{}}));"
-                      "print('local diagnostic',file=sys.stderr)")
-                return (sys.executable,"-c",code)
 
         result=execute(self.root,TASK["task_id"],TASK,launch=True,
                        cost_ack=True,parallel=1,minutes=1,
                        runtime_factory=lambda provider: LocalPythonRuntime())
-        self.assertEqual(result["execution"],"PROCESSES_FINISHED_UNREVIEWED")
+        self.assertEqual(result["execution"],"NOT_RUN")
+        self.assertEqual(result["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
         self.assertEqual((self.root/"solver.py").read_text(),"x=1\n")
-        self.assertEqual((Path(x["workers"][0]["path"])/"solver.py").read_text(),"x=8\n")
-        self.assertEqual(len(result["results"]),1)
-        observed=result["results"][0]
-        self.assertEqual(observed["provider"],"local-python")
-        self.assertEqual(observed["status"],"SUCCEEDED")
-        self.assertEqual(observed["exit_code"],0)
-        self.assertEqual(observed["provider_session_id"],"local-python-session")
-        self.assertEqual(observed["observed_child_agent_ids"],())
-        for name in ("stdout","stderr"):
-            payload=Path(observed[name+"_path"]).read_bytes()
-            self.assertEqual(observed[name+"_sha256"],hashlib.sha256(payload).hexdigest())
+        self.assertEqual((Path(x["workers"][0]["path"])/"solver.py").read_text(),"x=2\n")
+        self.assertEqual(len(result["results"]),len(x["workers"]))
+        for observed in result["results"]:
+            self.assertEqual(observed["provider"],"local-python")
+            self.assertEqual(observed["status"],"SUCCEEDED")
+            self.assertEqual(observed["exit_code"],0)
+            self.assertEqual(observed["provider_session_id"],"local-python-session")
+            self.assertEqual(observed["observed_child_agent_ids"],())
+            for name in ("stdout","stderr"):
+                payload=Path(observed[name+"_path"]).read_bytes()
+                self.assertEqual(observed[name+"_sha256"],hashlib.sha256(payload).hexdigest())
         self.assertFalse(gate(self.root,TASK["task_id"])["automatic_merge"])
 
 
@@ -169,6 +368,11 @@ class RuntimeRunnerTests(unittest.TestCase):
             self.workers.append({"role":"worker_"+str(index),"provider":provider,
                                  "path":str(folder),"branch":"branch_"+str(index)})
         self.state={"status":"WORKTREES_READY_UNREVIEWED","mode":"both","workers":self.workers}
+        self.state.update(task_id=TASK["task_id"],task_packet=TASK,
+                          task_sha256=canonical_task_sha256(TASK),task_revision="revision-1",
+                          base_commit="0"*40)
+        _implementers,review_roles,required_evidence=choose_roles(TASK,POLICY)
+        self.state.update(review_roles=review_roles,required_evidence=required_evidence)
         self.addCleanup(patch.stopall)
         patch("scripts.development_runner.load",return_value=(self.state,self.meta)).start()
         patch("scripts.development_runner.inspect",return_value={"base_unchanged":True,"source_clean":True}).start()
@@ -201,7 +405,9 @@ class RuntimeRunnerTests(unittest.TestCase):
                 return runtime
             report=self.execute(launch=True,cost_ack=True,runtime_factory=factory)
             self.assertEqual(selected,list(providers))
-            self.assertEqual(report["execution"],"PROCESSES_FINISHED_UNREVIEWED")
+            self.assertEqual(report["execution"],"NOT_RUN")
+            self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
+            self.assertEqual(report["check_status"],"NOT_RUN")
             for runtime in runtimes:
                 request=next(value for method,value in runtime.invocations if method=="launch")
                 self.assertEqual(request.task_id,TASK["task_id"])
@@ -222,8 +428,22 @@ class RuntimeRunnerTests(unittest.TestCase):
                 return FakeRuntime((RuntimeStatus.UNAVAILABLE,))
             report=self.execute(launch=True,cost_ack=True,runtime_factory=factory)
             self.assertEqual(report["results"][0]["status"],"UNAVAILABLE")
-            self.assertEqual(report["execution"],"PARTIAL_OR_FAILED")
+            self.assertEqual(report["execution"],"NOT_RUN")
+            self.assertEqual(report["process_execution"],"PARTIAL_OR_FAILED")
             self.assertEqual(selected,[] if provider=="unknown" else [provider])
+
+    def test_global_process_failure_reports_checks_not_run_without_launching_them(self):
+        task=task_with_checks()
+        self.state.update(task_packet=task,task_sha256=canonical_task_sha256(task))
+        runtimes={"codex":FakeRuntime((RuntimeStatus.FAILED,)),
+                  "gemini":FakeRuntime((RuntimeStatus.SUCCEEDED,))}
+        with patch("scripts.development_runner.run_checks") as run_checks:
+            report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
+                           runtime_factory=lambda provider: runtimes[provider])
+        run_checks.assert_not_called()
+        self.assertEqual(report["execution"],"NOT_RUN")
+        self.assertEqual(report["process_execution"],"PARTIAL_OR_FAILED")
+        self.assertTrue(all(item["status"]=="NOT_RUN" for item in report["check_evidence"]))
 
     def test_timeout_calls_runtime_timeout_and_cleanup(self):
         self.state["workers"]=self.workers[:1]

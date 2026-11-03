@@ -254,7 +254,7 @@ class PosixGroup:
                 continue
             try:
                 stat = (directory / "stat").read_text(encoding="utf-8", errors="replace")
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue
             fields = stat[stat.rfind(")") + 2:].split()
             if len(fields) < 3:

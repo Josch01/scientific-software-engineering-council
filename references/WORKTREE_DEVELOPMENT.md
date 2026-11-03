@@ -1,10 +1,10 @@
 # SSEC worktree development (experimental v0.2-dev.4)
 
-This feature is separate from the existing read-only audit runner. It prepares actual linked Git worktrees and may launch real Gemini or Codex CLI processes when explicitly requested. **It does not do automated review, merges, pushes, commits, releases, authentication or scientific certification.**
+This feature is separate from the existing read-only audit runner. It prepares actual linked Git worktrees, may launch real Gemini or Codex CLI processes when explicitly requested, and runs task-declared deterministic checks against each worker's separate candidate snapshot. **It does not do automated review, merges, pushes, commits, releases, authentication or scientific certification.**
 
 ## Safety
 
-Worktrees isolate checked-out files and branches, **not filesystem permissions**. They share Git object storage and metadata. A provider may access files outside its worktree unless its OS sandbox actually prevents that. Use trusted Git repositories, check for symlinks and secrets, and confirm the sandbox backend is operational. Providers may incur real costs; SSEC does not enforce money limits. Worker outputs and mailbox messages are not cryptographically authenticated or verified test logs.
+Worktrees isolate checked-out files and branches, **not filesystem permissions**. They share Git object storage and metadata. A provider may access files outside its worktree unless its OS sandbox actually prevents that. Use trusted Git repositories, check for symlinks and secrets, and confirm the sandbox backend is operational. Providers may incur real costs; SSEC does not enforce money limits. Hashes detect content changes but do not authenticate evidence against another process running as the same user.
 
 ## Sequence
 
@@ -57,9 +57,11 @@ test double is not relabelled as a real provider. A parent session ID is never
 added to the child-ID list. `runtime_result_observed` means the runtime returned
 the record; it does not authenticate it or establish scientific validity.
 
-Timeout, cancellation and cleanup go through runtime methods. `SUCCEEDED` is a
-runtime outcome, while the overall successful execution remains
-`PROCESSES_FINISHED_UNREVIEWED` and release status remains `NOT_APPROVED`.
+Timeout, cancellation and cleanup go through runtime methods. Process completion
+is reported separately from check results. `CHECKS_VERIFIED_AWAITING_REVIEW`
+means the declared checks passed; `CHECKS_FAILED_NOT_REVIEWED` means check
+evidence failed; `NOT_RUN` covers legacy packets without specs and executions
+where checks could not start. None is a review or release approval.
 Mailbox handoffs use only `WORKER_RESULT`; their stdout artifact is relative to
 the task metadata root, for example `dev-logs/<execution-id>/<role>.stdout`.
 Repeated executions therefore refer to distinct logs. If the runtime returns a
@@ -116,6 +118,67 @@ withholds session/child evidence and log hashes because surviving processes may
 still modify those logs. Such a result does not confirm cancellation or cleanup;
 remaining processes may require external intervention.
 
+## Coordinator check evidence (P1.1b)
+
+Initialization stores the complete original task packet, its canonical SHA-256
+and stable task revision in task metadata. `execute` rejects a changed packet
+before launching workers and uses only the stored packet for worker prompts and
+check specs. Coordinator state schema version 3 also persists `audit_level` and
+re-derives reviewer roles and evidence obligations from the task plus that
+level whenever state is loaded. It also re-derives the complete implementation
+role set and checks each worker's provider, branch and canonical worktree path;
+omitting a worker from `state.json` cannot make the gate verify only a subset.
+Removing a policy-required reviewer and its obligation is rejected. Version-2
+coordinator state must be reinitialized; no migration is provided because it
+did not bind the audit level or validate the worker inventory. This detects
+inconsistent state but does not authenticate metadata against a same-user
+writer: a coherent edit to both the saved audit level and obligations is outside
+the protection this JSON metadata provides. Reusing a legacy task ID also needs
+manual review and cleanup of its existing worktrees, branches and metadata;
+`initialize` will not overwrite them. Do not remove them until their ownership
+and remaining work are confirmed. Only `unit_tests`,
+`static_analysis` and `regression` are
+executable process checks. A spec cannot claim review, scientific validation,
+security, GUI, IDL or cross-platform evidence; declaring one of those IDs as a
+command is rejected before worktree creation. A `unit_tests` spec must invoke
+Python with `-P` or `-I` before `-m unittest`, so a candidate-local `unittest`
+package cannot replace the runner at interpreter startup. Use explicit unittest
+discovery options such as `-s tests -t .` when tests need the project root on
+`sys.path`; the start directory must be importable. Tasks without `check_specs`
+remain compatible and report `NOT_RUN`.
+
+After all worker processes succeed without a global cancellation, the runner
+executes each task-declared check once per worker using a separate snapshot of
+that worker's tracked and non-ignored untracked Git-visible files. A process
+failure or global cancellation skips checks for all workers and reports
+`NOT_RUN`. Check commands come only from validated `check_specs`; mailbox text
+is never executed. Terminal manifests and their logs live under
+`metadata/check-runs/<execution-id>/<role>/`. Timeout, cancellation, snapshot
+drift, nonzero exit, invalid unittest summary, spawn failure or unconfirmed
+process quiescence cannot produce `PASSED`.
+
+`gate` reads manifests only under that task's metadata and checks task identity,
+revision, digest, base commit, role, branch, command specs, snapshot/log paths,
+current log hashes, the full archived snapshot artifact hash, and the current
+candidate tree hash. Any snapshot file change during a check, including a
+Git-ignored addition, fails that check; editing the archived snapshot after a
+run invalidates its manifest. Editing tracked or non-ignored untracked candidate
+files after a run also invalidates that run. Each
+manifest covers one worker's candidate; the worktrees are not combined or
+tested as an integration result. Terminal manifests use schema version 2 to
+include the archived snapshot integrity hash; earlier version-1 manifests are
+rejected and must be regenerated. Checks remain limited evidence: a deliberately
+misleading test inside a real unittest suite may still lie. Hashes do not prove
+who created evidence, and checks do not replace independent review, security or
+scientific validation. Therefore `gate` remains `BLOCKED`,
+`evidence_verified: false`, and `release_status: NOT_APPROVED` even when all
+configured process checks pass. Reports keep `missing_spec_ids` for process
+checks separate from `pending_evidence_ids` derived from the task and initialized
+review policy: software review follows `software_auditor`, independent/security/
+release review IDs follow their assigned reviewer roles, and scientific
+validation follows high risk or a scientific-claim route. The local Python
+integration fixture is offline and is not provider E2E.
+
 ## Inter-agent mailbox
 
 Only known specialist roles can record structured communication: worker handoffs, review findings, change requests, and blockers. The mailbox API rejects `REVIEW_ACCEPTED` and `TEST_RESULT` for every sender, including reviewer roles. Role labels do not authenticate an execution or an independent context. Reviews should run separately on candidate worktree copies using the read-only `run_agents.py` audit process. The structured event is merely a record:
@@ -124,12 +187,13 @@ Only known specialist roles can record structured communication: worker handoffs
 python scripts/worktree_coordinator.py message --project /path/to/my-git-project --task-id SEIR-BUILD-01 --sender software_auditor --kind REVIEW_FINDING --summary "Falta prueba de regresión del solver"
 ```
 
-The `gate` checks for role handoffs, overlapping changed filenames, clean base and Git diff problems. It treats mailbox content as untrusted, including privileged event types inserted directly into `mailbox.jsonl`. No mailbox declaration can establish test success or reviewer acceptance. The gate currently remains `BLOCKED` with `evidence_verified: false` because the coordinator execution/evidence producer is not implemented. No statement about software/scientific correctness is inferred from exit status 0 or self-reported reviews.
+The `gate` checks for role handoffs, overlapping changed filenames, clean base and Git diff problems, and verifies per-worker check manifests as described above. It treats mailbox content as untrusted, including privileged event types inserted directly into `mailbox.jsonl`. No mailbox declaration can establish test success or reviewer acceptance. The gate remains `BLOCKED` with `evidence_verified: false` because this increment does not supply independent review, security or scientific evidence. No statement about software/scientific correctness is inferred from exit status 0 or self-reported reviews.
 
-P1.1a closes the declaration-based readiness path, and the runtime SPI increment
-adds adapters and worker routing. Neither completes P1.1 or the multiagent
-consortium: deterministic tests, separate-context review, and acceptance still
-need coordinator-produced execution evidence. P1 remains pending.
+P1.1a closes the declaration-based readiness path, the runtime SPI increment
+adds adapters and worker routing, and P1.1b produces and verifies task-bound
+per-worker deterministic check evidence. These increments do not complete P1.1
+or the multiagent consortium: separate-context review and acceptance remain
+pending. P1 remains pending.
 
 ## Remaining phase-2 work
 

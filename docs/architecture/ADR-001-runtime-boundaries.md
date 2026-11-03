@@ -65,6 +65,7 @@ Los schemas son compatibles por versión explícita; migraciones leen el schema 
 - Las capacidades de subagentes de Codex/Gemini se detectan por runtime. Un proceso CLI top-level no se etiqueta como subagente nativo; los adapters deben observar y correlacionar la delegación real o informar `NOT_RUN`.
 - Los worktrees separan árboles Git. No separan por sí mismos cuentas, secretos, red, procesos hijos ni sistema operativo.
 - La migración es incremental y reversible: conservar lectores de `schema_version` anterior, escribir a nuevos contratos y mantener pruebas de contrato por versión. No crear bases de datos o dependencias científicas hasta que un módulo P2 las justifique.
+- Excepción acotada: coordinator state v3 rechaza state v2 y exige re-inicializar la tarea; v2 no guardaba `audit_level` ni permitía validar el inventario completo de workers. No se puede reconstruir esa política de manera confiable a partir del state mutable. Reusar su task ID requiere revisar y limpiar manualmente worktrees/branches/metadata viejos; no se eliminan automáticamente. La migración/recuperación de ramas antiguas queda pendiente de P1; esta ruptura aplica antes de un release y se reporta como tal.
 
 ## Evidencia y referencias
 

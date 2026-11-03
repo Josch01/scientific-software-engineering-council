@@ -17,7 +17,7 @@ SCIENCE_CLAIM_DOMAINS = {"identifiability", "dynamics", "differential_algebra", 
 NUMERICAL_DOMAINS = {"numerical", "identifiability", "dynamics", "optimization", "ml"}
 
 
-def validate_task(task: dict[str, Any]) -> None:
+def _validate_task_fields(task: dict[str, Any]) -> None:
     if not isinstance(task, dict):
         raise ValueError("The task must be a JSON object")
     for name in ("task_id", "request"):
@@ -39,8 +39,8 @@ def validate_task(task: dict[str, Any]) -> None:
         raise ValueError("runtime must be an object with boolean capabilities")
 
 
-def required_checks(task: dict[str, Any]) -> list[str]:
-    validate_task(task)
+def _required_checks_for_valid_task(task: dict[str, Any]) -> list[str]:
+    """Derive required checks without calling either public validator."""
     result = ["unit_tests", "static_analysis"]
     if task["kind"] in {"audit", "debug", "refactor", "optimize", "migrate"}:
         result.append("regression")
@@ -53,6 +53,21 @@ def required_checks(task: dict[str, Any]) -> list[str]:
     if "idl" in task["languages"]:
         result.append("idl_integration")
     return result
+
+
+def validate_task(task: dict[str, Any]) -> None:
+    _validate_task_fields(task)
+    if "check_specs" in task:
+        try:
+            from .execution_evidence import validate_check_specs
+        except ImportError:  # Support direct execution/import from scripts directory.
+            from execution_evidence import validate_check_specs
+        validate_check_specs(task)
+
+
+def required_checks(task: dict[str, Any]) -> list[str]:
+    validate_task(task)
+    return _required_checks_for_valid_task(task)
 
 
 def route(task: dict[str, Any]) -> dict[str, Any]:
@@ -86,7 +101,7 @@ def route(task: dict[str, Any]) -> dict[str, Any]:
         "implementation_or_domain_roles": list(dict.fromkeys(primary)),
         "review_roles": list(dict.fromkeys(reviewers)),
         "scientific_bridge": "REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW" if d & SCIENCE_CLAIM_DOMAINS else "CONDITIONAL_ON_CLAIMS",
-        "required_evidence": required_checks(task),
+        "required_evidence": _required_checks_for_valid_task(task),
         "next_action": "READ_ONLY_INVENTORY" if task["kind"] == "audit" else "INVENTORY_AND_ADR_BEFORE_IMPLEMENTATION",
         "note": "Plan only. No subagents executed, no tests run, no software certified.",
     }
