@@ -46,6 +46,7 @@ El arquitecto elige **roles**, no modelos específicos. Los workers no autocerti
 - GUI y Windows/Linux: `references/GUI_DESKTOP.md`.
 - IDL (Interactive Data Language) y Python Bridge: `references/IDL_ADAPTER.md`.
 - Numéricos, identificabilidad, dinámica, optimización/ML: `references/TEST_MATRIX.md` y puente científico.
+- Núcleo numérico experimental de EDO/RK4: `references/SCIENCE_NUMERICS.md` y `scripts/scientific_core.py`.
 - Agentes/contextos: `references/MULTI_AGENT.md`.
 - Descarga segura de skills y APIs actuales: `references/DEPENDENCY_SKILLS.md`.
 - Auditoría y release: `references/RELEASE_POLICY.md`.
