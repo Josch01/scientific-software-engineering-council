@@ -17,6 +17,7 @@ Deliver the first reusable scientific computation component behind SSEC: a deter
 - No model-specific SIR equations, experimental-data claims, parameter fitting, uncertainty, sensitivity, stiffness handling, adaptive error control, GUI, or provider orchestration.
 - No external dependency installation and no solver-generated `SCIENTIFIC_VALIDITY=PASS` claim.
 - Do not infer positivity, conservation, units, identifiability, stability, or scientific correctness without model-specific contracts and evidence.
+- The callback runs in-process; this API is not a sandbox and must not be used to execute untrusted agent-generated model code inside the future GUI process.
 
 ## Approaches considered
 

@@ -38,6 +38,13 @@ class ODERK4Tests(unittest.TestCase):
         self.assertEqual(solution.method, "RK4_FIXED_STEP")
         self.assertAlmostEqual(solution.states[-1][0], math.exp(-1.0), delta=1e-8)
 
+    def test_solution_reports_uniform_substeps_when_max_step_does_not_divide_span(self):
+        solution = self.core.solve_rk4(self.decay_problem(), max_step=0.3)
+
+        self.assertEqual(solution.step_count, 4)
+        self.assertEqual(solution.step_size, 0.25)
+        self.assertEqual(solution.times, (0.0, 0.25, 0.5, 0.75, 1.0))
+
     def test_halving_step_exhibits_fourth_order_global_convergence(self):
         problem = self.decay_problem()
         coarse = self.core.solve_rk4(problem, max_step=0.2)
@@ -132,6 +139,34 @@ class ODERK4Tests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "finite"):
             self.core.solve_rk4(problem, max_step=0.1)
+
+    def test_solver_avoids_overflow_in_weighted_average_of_finite_derivatives(self):
+        problem = self.core.OdeProblem(
+            rhs=lambda *_: (1.0e308,),
+            t_span=(0.0, 1.0e-308),
+            initial_state=(0.0,),
+        )
+
+        try:
+            solution = self.core.solve_rk4(problem, max_step=1.0e-308)
+        except ValueError as exc:
+            self.fail(f"finite weighted derivative should remain representable: {exc}")
+
+        self.assertAlmostEqual(solution.states[-1][0], 1.0, delta=1e-15)
+
+    def test_problem_rejects_nonsequence_state_names_with_value_error(self):
+        try:
+            self.core.OdeProblem(
+                rhs=lambda *_: (0.0,),
+                t_span=(0.0, 1.0),
+                initial_state=(0.0,),
+                state_names=42,
+            )
+        except Exception as exc:
+            self.assertIsInstance(exc, ValueError)
+            self.assertIn("state_names", str(exc))
+        else:
+            self.fail("non-sequence state_names should be rejected")
 
     def test_solver_enforces_step_count_budget(self):
         with self.assertRaisesRegex(ValueError, "max_steps"):

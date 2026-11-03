@@ -18,6 +18,8 @@ payload = result.to_dict()
 
 The internal grid is uniform, reaches the requested end time, and uses no more than `max_steps` (default 1,000,000). The solver rejects malformed dimensions and non-finite values at every derivative stage. It does not interpolate, estimate local error, adapt the step, detect stiffness, check positivity/conservation/units, or certify equations.
 
+The supplied `rhs` callable executes in the caller's Python process. This API is **not a code-execution sandbox** and does not authenticate model code. Do not load agent-generated or otherwise untrusted Python callbacks into the desktop application's process; using untrusted model code requires a separate, verified execution boundary.
+
 ## Evidence and validity boundaries
 
 - **Software validity:** API input checks and result serialization are covered by unit tests.

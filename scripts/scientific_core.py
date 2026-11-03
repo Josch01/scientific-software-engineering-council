@@ -82,7 +82,10 @@ class OdeProblem:
         else:
             if isinstance(self.state_names, (str, bytes, bytearray)):
                 raise ValueError("state_names must be a sequence of labels, not text")
-            names = tuple(self.state_names)
+            try:
+                names = tuple(self.state_names)
+            except TypeError as exc:
+                raise ValueError("state_names must be a sequence of labels") from exc
             if len(names) != len(state):
                 raise ValueError("state_names dimension must match initial_state")
             if any(not isinstance(name, str) or not name.strip() for name in names):
@@ -184,8 +187,10 @@ def solve_rk4(
         state = _finite_vector(
             tuple(
                 value
-                + (step_size / 6.0)
-                * (first + 2.0 * second + 2.0 * third + fourth)
+                + step_size
+                * math.fsum(
+                    (first / 6.0, second / 3.0, third / 3.0, fourth / 6.0)
+                )
                 for value, first, second, third, fourth in zip(state, k1, k2, k3, k4)
             ),
             f"state after step {index + 1}",
