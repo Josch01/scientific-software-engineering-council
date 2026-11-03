@@ -360,14 +360,10 @@ def _check_json_depth(raw: bytes) -> None:
             depth -= 1
 
 
-def load_workspace_manifest(path: str | Path) -> Mapping[str, object]:
-    """Read and parse only the selected manifest, with bounded memory use."""
-    manifest_path = Path(path)
-    try:
-        with manifest_path.open("rb") as stream:
-            raw = stream.read(_MAX_MANIFEST_BYTES + 1)
-    except OSError as exc:
-        raise ValueError(f"cannot read workspace manifest: {exc}") from exc
+def parse_workspace_manifest_bytes(raw: bytes) -> Mapping[str, object]:
+    """Parse already-read bytes using the manifest CLI's strict JSON policy."""
+    if not isinstance(raw, bytes):
+        raise TypeError("manifest bytes must be bytes")
     if len(raw) > _MAX_MANIFEST_BYTES:
         _fail(f"manifest exceeds the {_MAX_MANIFEST_BYTES}-byte limit")
     _check_json_depth(raw)
@@ -387,6 +383,17 @@ def load_workspace_manifest(path: str | Path) -> Mapping[str, object]:
     if not isinstance(payload, Mapping):
         _fail("workspace manifest root must be an object")
     return payload
+
+
+def load_workspace_manifest(path: str | Path) -> Mapping[str, object]:
+    """Read and parse only the selected manifest, with bounded memory use."""
+    manifest_path = Path(path)
+    try:
+        with manifest_path.open("rb") as stream:
+            raw = stream.read(_MAX_MANIFEST_BYTES + 1)
+    except OSError as exc:
+        raise ValueError(f"cannot read workspace manifest: {exc}") from exc
+    return parse_workspace_manifest_bytes(raw)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

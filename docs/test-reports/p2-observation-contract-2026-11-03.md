@@ -1,6 +1,6 @@
 # P2.4 observation/residual bridge evidence
 
-**State:** local verification and independent review complete; branch CI pending. The real SIR case is `NOT_RUN` because no equations or data were supplied.
+**State:** local verification, independent review, and branch CI complete. The real SIR case is `NOT_RUN` because no equations or data were supplied.
 
 ## Implemented
 
@@ -16,6 +16,7 @@
 | Docker/Linux, `python:3.14.0-bookworm` | Same unittest command | PASS, 50 tests |
 | Windows, local Python 3.14.0 | `python -m py_compile scripts/scientific_core.py tests/test_scientific_observations.py` | PASS |
 | Windows, local Python 3.14.0 | `git diff --check` | PASS |
+| GitHub Actions | [Run #98](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41691928404), Windows/Ubuntu × Python 3.11/3.12 | PASS, 4/4 jobs |
 
 Coverage includes hash round-trip through sorted JSON, mutation isolation, disabled unvalidated construction, schema errors, sparse rows, explicit order and matching digest, exact irregular-time sampling, unit/name/time-range checks, preflight budgets with zero RHS calls on failure, and composition through RK4 into least-squares fitting on synthetic decay data.
 
@@ -26,8 +27,8 @@ Coverage includes hash round-trip through sorted JSON, mutation isolation, disab
 - Segmented fixed-step RK4 does not estimate local or global error, enforce positivity/invariants, or establish model validity.
 - The source metadata is user-declared. The digest detects content changes; it is not a signature or provenance verification.
 - No modified SIR equations or experimental data were provided; SIR-specific simulation/fitting/audit is `NOT_RUN`.
-- Independent review found and led to fixes for digest/order mismatch and constructor bypass; the final read-only review found no additional important findings. The 3.11/3.12 branch CI matrix is pending.
+- Independent review found and led to fixes for digest/order mismatch and constructor bypass; the final read-only review found no additional important findings. Branch CI run #98 passed all four Windows/Ubuntu × Python 3.11/3.12 jobs.
 
 ## Next increment
 
-Continue with a reusable scientific workspace contract only when it is needed for the SIR end-to-end case. The equations, parameter definitions, initial conditions, units, and observations must come from the user; no domain-specific template is inferred here.
+P3.1 supplies the reusable scientific workspace contract; P3.2 adds its safe resource loader in a separate draft PR. The equations, parameter definitions, initial conditions, units, and observations must come from the user; no domain-specific template is inferred here.

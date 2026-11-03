@@ -1,6 +1,6 @@
 # P3.1 scientific workspace manifest evidence
 
-**State:** experimental contract and validator; local Windows/Linux verification and independent review complete. Branch CI pending. No SIR-specific workspace was built.
+**State:** experimental contract and validator; local Windows/Linux verification, independent review, and branch CI complete. No SIR-specific workspace was built.
 
 ## Implemented
 
@@ -17,6 +17,7 @@ The validator bounds input to 1 MiB and limits nesting, cardinalities, paths, ID
 | Windows, Python 3.14.0 | `python -m py_compile scripts/scientific_workspace.py tests/test_scientific_workspace.py` | PASS |
 | Windows, Python 3.14.0 | `python scripts/scientific_workspace.py examples/scientific_workspace_template.json` | PASS, `status=VALID`; 8 resources, 4 sections, 9 components |
 | Windows, Python 3.14.0 | `git diff --check` | PASS |
+| GitHub Actions | [Run #104](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41694267712), Windows/Ubuntu × Python 3.11/3.12 | PASS, 4/4 jobs |
 
 An independent read-only review found and reproduced a DOS 8.3 alias gap for names such as `DATA$~1.CSV` and `DATA!~1.CSV`. Regression tests now reject both, including aliases in directory segments, while accepting ordinary `ordinary~1-copy.csv`. The final reviewer reported no critical or important findings.
 
@@ -26,7 +27,7 @@ An independent read-only review found and reproduced a DOS 8.3 alias gap for nam
 - Before any future loader reads a resource it must enforce workspace-root containment, symlink-safe resolution, and any declared content digest. That boundary is not implemented here.
 - No desktop GUI, agent-driven workspace configuration, project-specific generated code, SIR equations/data, simulation plots, fitting, or audit workflow is included in P3.1.
 - The template is a schema example only; it makes no mathematical, numerical, identifiability, or scientific-validity claim.
-- Branch Actions for Python 3.11/3.12 Windows/Linux remain pending until GitHub reports their result. The AGY provider E2E is unrelated and remains `NOT_RUN`.
+- Branch Actions run #104 passed all four Windows/Ubuntu × Python 3.11/3.12 jobs. The AGY provider E2E is unrelated and remains `NOT_RUN`.
 
 ## Next increment
 
