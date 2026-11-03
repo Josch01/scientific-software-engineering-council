@@ -123,7 +123,21 @@ remaining processes may require external intervention.
 Initialization stores the complete original task packet, its canonical SHA-256
 and stable task revision in task metadata. `execute` rejects a changed packet
 before launching workers and uses only the stored packet for worker prompts and
-check specs. Only `unit_tests`, `static_analysis` and `regression` are
+check specs. Coordinator state schema version 3 also persists `audit_level` and
+re-derives reviewer roles and evidence obligations from the task plus that
+level whenever state is loaded. It also re-derives the complete implementation
+role set and checks each worker's provider, branch and canonical worktree path;
+omitting a worker from `state.json` cannot make the gate verify only a subset.
+Removing a policy-required reviewer and its obligation is rejected. Version-2
+coordinator state must be reinitialized; no migration is provided because it
+did not bind the audit level or validate the worker inventory. This detects
+inconsistent state but does not authenticate metadata against a same-user
+writer: a coherent edit to both the saved audit level and obligations is outside
+the protection this JSON metadata provides. Reusing a legacy task ID also needs
+manual review and cleanup of its existing worktrees, branches and metadata;
+`initialize` will not overwrite them. Do not remove them until their ownership
+and remaining work are confirmed. Only `unit_tests`,
+`static_analysis` and `regression` are
 executable process checks. A spec cannot claim review, scientific validation,
 security, GUI, IDL or cross-platform evidence; declaring one of those IDs as a
 command is rejected before worktree creation. A `unit_tests` spec must invoke

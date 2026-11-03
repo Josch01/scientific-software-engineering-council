@@ -241,6 +241,31 @@ class WorktreeTests(unittest.TestCase):
         result=gate(self.root,task["task_id"])
         self.assertEqual(set(result["pending_evidence_ids"]),expected)
 
+    def test_load_rejects_removed_policy_required_independent_review(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        self.assertIn("independent_reviewer",state["review_roles"])
+        self.assertIn("independent_review",state["required_evidence"])
+
+        persisted,metadata=load(self.root,task["task_id"])
+        persisted["review_roles"].remove("independent_reviewer")
+        persisted["required_evidence"].remove("independent_review")
+        (metadata/"state.json").write_text(json.dumps(persisted),encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError,"review roles|policy"):
+            load(self.root,task["task_id"])
+
+    def test_load_rejects_omitted_expected_implementation_worker(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        self.assertGreaterEqual(len(state["workers"]),2)
+
+        persisted,metadata=load(self.root,TASK["task_id"])
+        persisted["workers"].pop()
+        (metadata/"state.json").write_text(json.dumps(persisted),encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError,"worker"):
+            load(self.root,TASK["task_id"])
+
     def test_gate_rejects_post_run_snapshot_tampering(self):
         task=task_with_checks()
         state=initialize(task,POLICY,self.root,apply=True)
@@ -305,9 +330,6 @@ class WorktreeTests(unittest.TestCase):
 
     def test_local_python_child_process_and_log_lifecycle_not_provider_e2e(self):
         x=initialize(TASK,POLICY,self.root,apply=True)
-        state, meta=load(self.root,TASK["task_id"])
-        state["workers"]=state["workers"][:1]
-        (meta/"state.json").write_text(json.dumps(state),encoding="utf-8")
 
         result=execute(self.root,TASK["task_id"],TASK,launch=True,
                        cost_ack=True,parallel=1,minutes=1,
@@ -316,16 +338,16 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(result["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
         self.assertEqual((self.root/"solver.py").read_text(),"x=1\n")
         self.assertEqual((Path(x["workers"][0]["path"])/"solver.py").read_text(),"x=2\n")
-        self.assertEqual(len(result["results"]),1)
-        observed=result["results"][0]
-        self.assertEqual(observed["provider"],"local-python")
-        self.assertEqual(observed["status"],"SUCCEEDED")
-        self.assertEqual(observed["exit_code"],0)
-        self.assertEqual(observed["provider_session_id"],"local-python-session")
-        self.assertEqual(observed["observed_child_agent_ids"],())
-        for name in ("stdout","stderr"):
-            payload=Path(observed[name+"_path"]).read_bytes()
-            self.assertEqual(observed[name+"_sha256"],hashlib.sha256(payload).hexdigest())
+        self.assertEqual(len(result["results"]),len(x["workers"]))
+        for observed in result["results"]:
+            self.assertEqual(observed["provider"],"local-python")
+            self.assertEqual(observed["status"],"SUCCEEDED")
+            self.assertEqual(observed["exit_code"],0)
+            self.assertEqual(observed["provider_session_id"],"local-python-session")
+            self.assertEqual(observed["observed_child_agent_ids"],())
+            for name in ("stdout","stderr"):
+                payload=Path(observed[name+"_path"]).read_bytes()
+                self.assertEqual(observed[name+"_sha256"],hashlib.sha256(payload).hexdigest())
         self.assertFalse(gate(self.root,TASK["task_id"])["automatic_merge"])
 
 

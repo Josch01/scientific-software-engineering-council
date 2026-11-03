@@ -28,6 +28,8 @@
 - Check command exits 0 after printing `PASS` or running zero tests: `unit_tests` must fail because the unittest count is absent/zero.
 - Snapshot writes, including ignored files, and later archive edits: fail the run or make the manifest invalid.
 - Replayed or modified manifest, logs outside the evidence root, wrong base/task/candidate/argv, or a changed candidate: gate must reject the record.
+- Removing a policy-required reviewer and its evidence ID from persisted task state: state loading must reject the mismatch by re-deriving roles from the stored audit level.
+- Removing an implementation worker from persisted task state: state loading must reject it by re-deriving worker roles, provider, branch, and canonical path from the task.
 - All configured deterministic checks pass but reviewer/scientific evidence is absent: gate remains `BLOCKED`, with `evidence_verified: false` and release not approved.
 
 ---

@@ -15,19 +15,19 @@ from pathlib import Path
 if __package__:
     from .configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from .prepare_agents import choose_roles, provider_for
-    from .route_task import validate_task, required_checks, route
+    from .route_task import validate_task, required_checks
     from .execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from .check_runner import read_check_manifest
 else:
     from configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from prepare_agents import choose_roles, provider_for
-    from route_task import validate_task, required_checks, route
+    from route_task import validate_task, required_checks
     from execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from check_runner import read_check_manifest
 
 KINDS = {"build","debug","refactor","optimize","migrate"}
 EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REQUEST_CHANGES","BLOCKED"}
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 PROCESS_CHECK_IDS = frozenset({"unit_tests","static_analysis","regression"})
 
 def check_requirements(task, policy_evidence=None):
@@ -86,18 +86,40 @@ def _validate_state_packet(state,task_id):
         raise ValueError("task metadata packet digest mismatch")
     if state.get("task_revision")!=_task_revision(packet):
         raise ValueError("task metadata revision mismatch")
+    audit_level=state.get("audit_level")
+    if type(audit_level) is not str or audit_level not in {"basic","standard","strict"}:
+        raise ValueError("task metadata audit policy is invalid")
+    mode=state.get("mode")
+    if type(mode) is not str or mode not in {"codex","gemini","both"}:
+        raise ValueError("task metadata provider mode is invalid")
     review_roles=state.get("review_roles")
-    if type(review_roles) is not list or any(type(role) is not str for role in review_roles):
+    if (type(review_roles) is not list or any(type(role) is not str for role in review_roles) or
+            len(review_roles)!=len(set(review_roles))):
         raise ValueError("task metadata review roles are invalid")
-    expected_evidence=set(required_checks(packet))
-    reviewer_evidence={"software_auditor":"software_review",
-                       "independent_reviewer":"independent_review",
-                       "security_reviewer":"security_audit",
-                       "release_engineer":"release_review"}
-    expected_evidence.update(reviewer_evidence[role] for role in review_roles
-                             if role in reviewer_evidence)
-    if route(packet)["scientific_bridge"]=="REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW":
-        expected_evidence.add("scientific_validation")
+    expected_primary_roles,expected_review_roles,expected_policy_evidence=choose_roles(
+        packet,{"audit_level":audit_level})
+    workers=state.get("workers")
+    if type(workers) is not list or any(type(worker) is not dict for worker in workers):
+        raise ValueError("task metadata workers are invalid")
+    roles=[worker.get("role") for worker in workers]
+    if (any(type(role) is not str for role in roles) or
+            len(roles)!=len(set(roles)) or
+            set(roles)!=set(dict.fromkeys(expected_primary_roles))):
+        raise ValueError("task metadata workers differ from task implementation roles")
+    root=Path(state["project_root"])
+    parent=root.parent/("."+root.name+"-ssec-worktrees")
+    expected_worker_fields={"role","provider","branch","path"}
+    for worker in workers:
+        role=worker["role"]
+        expected_worker={"role":role,
+                         "provider":provider_for(role,mode),
+                         "branch":"ssec/"+task_id+"/"+role.replace("_","-"),
+                         "path":str(parent/task_id/role)}
+        if set(worker)!=expected_worker_fields or worker!=expected_worker:
+            raise ValueError("task metadata worker binding is invalid")
+    if set(review_roles)!=set(expected_review_roles):
+        raise ValueError("task metadata review roles differ from initialized audit policy")
+    expected_evidence=set(expected_policy_evidence)
     required_evidence=state.get("required_evidence")
     if (type(required_evidence) is not list or
             any(type(item) is not str or not item for item in required_evidence) or
@@ -165,7 +187,8 @@ def plan(task, policy, project):
     return {"schema_version":STATE_SCHEMA_VERSION,"task_packet":packet,
             "task_sha256":task_digest,"task_revision":task_revision,
             "task_id":task["task_id"],"project_root":str(root),"base_commit":base,
-            "mode":policy["provider_mode"],"workers":workers,"review_roles":reviewers,
+            "mode":policy["provider_mode"],"audit_level":policy["audit_level"],
+            "workers":workers,"review_roles":reviewers,
             "required_evidence":evidence,"status":"PREVIEW_NOT_STARTED",
             "auto_merge":False,"note":"Git worktrees share metadata; they are NOT OS sandboxes."}
 
