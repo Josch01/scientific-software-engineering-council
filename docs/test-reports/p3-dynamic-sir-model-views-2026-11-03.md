@@ -23,7 +23,7 @@
 | Docker/Linux, Python 3.14.0 | Suite completa `python -m unittest discover -s tests -v` | PASS: 442 tests, 6 omitidos. Log en [`p3-dynamic-sir-model-views-2026-11-03-docker-full.log`](p3-dynamic-sir-model-views-2026-11-03-docker-full.log) |
 | Windows, Python 3.14.0 | `py_compile` de módulos/tests y `git diff --check` | PASS |
 | Revisión independiente | Proyección, renderers y fallback JSON | PASS: un hallazgo P2 de colisión del marker JSON se reprodujo y corrigió con dataclasses internas; el revisor confirmó ambos casos; smoke Tk ejecutado localmente |
-| GitHub Actions de P3.8 | Requiere push/PR | `NOT_RUN` |
+| GitHub Actions de P3.8 | PR borrador #30, SHA `61ef7b9` | En curso: runs [41737649443](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41737649443) y [41737623315](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41737623315), matriz Windows/Ubuntu × Python 3.11/3.12 |
 
 ## Limitaciones
 
@@ -38,4 +38,4 @@ La primera versión utilizaba el campo de datos `view_kind` para seleccionar el 
 
 ## Entrega Git
 
-Rama `codex/p3-dynamic-sir-model-views`, apilada sobre PR borrador #29 (`codex/p3-sir-declarative-ode`). Commit/PR y CI remota pendientes. Sin merge ni release.
+Rama `codex/p3-dynamic-sir-model-views`, commit `61ef7b9`, PR borrador [#30](https://github.com/Josch01/scientific-software-engineering-council/pull/30) apilado sobre PR borrador #29 (`codex/p3-sir-declarative-ode`). CI remota en curso. Sin merge ni release.
