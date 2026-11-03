@@ -296,6 +296,15 @@ class IntegrationCandidateTests(unittest.TestCase):
             ("wrong role", lambda data: data.update(integration_role="worker")),
             ("wrong branch", lambda data: data.update(candidate_branch="ssec/integration/wrong")),
             ("wrong base", lambda data: data.update(base_commit="f" * 40)),
+            ("invented worker tree hash", lambda data: data["worker_tree_hashes"].update(
+                {next(iter(data["worker_tree_hashes"])): "f" * 64})),
+            ("empty required input bindings", lambda data: data.update(input_manifests=[])),
+            ("missing reviewer binding", lambda data: data.update(input_manifests=[
+                item for item in data["input_manifests"] if item["kind"] != "review"])),
+            ("wrong execution binding", lambda data: data.update(execution_id="another-launch")),
+            ("wrong worker binding", lambda data: data["input_manifests"][0].update(
+                role=next(role for role in self.state["workers"]
+                          if role["role"] != data["input_manifests"][0]["role"])["role"])),
             ("extra check spec", lambda data: data["check_specs"].append(
                 dict(check_id="extra", argv=[sys.executable, "-c", "pass"], cwd=".",
                      timeout_seconds=1, protocol="exit_code"))),
@@ -427,6 +436,8 @@ class IntegrationCandidateTests(unittest.TestCase):
 
     def test_crash_after_built_publication_cannot_pass_gate(self):
         self.evidence()
+        previous = self.build()
+        self.assertEqual(previous.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", previous.blockers)
         with patch("scripts.integration_candidate.run_checks", side_effect=SystemExit("simulated process crash")):
             with self.assertRaisesRegex(SystemExit, "simulated process crash"):
                 self.build()
@@ -440,6 +451,24 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertTrue(result_gate["invalid_integration_manifests"])
         self.assertTrue(any("terminal check manifest" in item["error"]
                             for item in result_gate["invalid_integration_manifests"]))
+
+    def test_invalid_historical_attempt_does_not_hide_latest_valid_integrated_checks(self):
+        self.evidence()
+        latest = self.build()
+        self.assertEqual(latest.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", latest.blockers)
+
+        historical_id = "v2-00000000000000000000-" + "0" * 32
+        historical = self.meta / "integrations" / historical_id
+        historical.mkdir()
+        (historical / "manifest.json").write_text("{}", encoding="utf-8")
+
+        result_gate = gate(self.root, self.task["task_id"])
+
+        self.assertTrue(result_gate["integrated_checks_verified"], result_gate)
+        self.assertTrue(result_gate["invalid_integration_manifests"])
+        self.assertTrue(any(item["path"].startswith("integrations/" + historical_id)
+                            for item in result_gate["invalid_integration_manifests"]))
+        self.assertEqual(result_gate["status"], "BLOCKED")
 
     def test_missing_reviewer_and_missing_check_are_rejected(self):
         self.evidence()

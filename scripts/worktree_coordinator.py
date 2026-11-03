@@ -481,8 +481,7 @@ def gate(project,task_id):
                     "error":"latest integration attempt has no validated terminal check manifest"})
             integrated_checks_verified=(
                 latest_data["status"]=="CHECKED_AWAITING_INTEGRATED_REVIEW" and
-                latest_check is not None and latest_check["status"]=="PASSED" and
-                not invalid_integration_manifests
+                latest_check is not None and latest_check["status"]=="PASSED"
             )
             if not integrated_checks_verified:
                 errors.append("latest integrated candidate checks are missing, failed, or unverified")

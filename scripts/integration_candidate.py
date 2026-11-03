@@ -418,6 +418,14 @@ def validate_integration_manifest(manifest_path, metadata, state, specs):
         raise ValueError("integration worker tree hashes are invalid")
     if type(data["input_manifests"]) is not list:
         raise ValueError("integration input manifests are invalid")
+    contracts = validate_work_items(state["task_packet"], [worker["role"] for worker in state["workers"]],
+                                    state["review_roles"], [spec.check_id for spec in specs])
+    expected_worker_hashes, expected_inputs = _evidence(
+        state, metadata, data["execution_id"], contracts, specs)
+    if worker_hashes != expected_worker_hashes:
+        raise ValueError("integration worker tree hashes do not match persisted worker evidence")
+    if data["input_manifests"] != expected_inputs:
+        raise ValueError("integration input bindings do not match required workers, checks, reviewers, and execution")
     seen_inputs = set()
     for item in data["input_manifests"]:
         if type(item) is not dict or set(item) not in (
@@ -438,8 +446,6 @@ def validate_integration_manifest(manifest_path, metadata, state, specs):
         raise ValueError("integration operation record is invalid")
     if data["operations"] != sorted(data["operations"], key=lambda item: (item.get("role", ""), item.get("path", ""))):
         raise ValueError("integration operations are not in canonical order")
-    contracts = validate_work_items(state["task_packet"], [worker["role"] for worker in state["workers"]],
-                                    state["review_roles"], [spec.check_id for spec in specs])
     operation_paths = []
     candidate_entries = {entry.relative_path: entry for entry in _candidate_tree_entries(candidate)}
     for item in data["operations"]:
