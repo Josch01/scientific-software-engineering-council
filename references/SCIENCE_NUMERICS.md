@@ -36,6 +36,8 @@ The contract validates nonnegative finite initial populations with positive tota
 
 `examples/sir_model_demo.json` and `examples/run_sir_model_demo.py` are a deterministic synthetic software fixture. The output is explicitly marked `scientific_validity: NOT_ASSESSED`; it exercises the contract and solver only. The user's modified SIR, its equations, parameters, units, initial conditions, observations, and scientific review remain `NOT_RUN` until supplied.
 
+The dynamic workspace's `equation_view` and `parameter_table` components recognize this validated contract. They render the fixed equations, declared units, initial conditions, integration interval/settings, and constant or piecewise-linear rate profiles as reusable views selected by the manifest. Other model resources remain bounded, inert JSON; no renderer imports project modules. The example manifest at `examples/sir_scientific_workspace.json` combines these views with the existing simulation plot and human-confirmed run action.
+
 Adaptive/stiff solvers, general equation languages, unit conversion, parameter fitting through the workspace, uncertainty, PDEs, and scientific audit automation remain outside this increment.
 
 ## Local ODE parameter sensitivities (experimental P2.2)

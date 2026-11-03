@@ -23,8 +23,17 @@
           "resource_refs": [
             "sir-model"
           ],
-          "title": "Ecuaciones y parámetros",
+          "title": "Ecuaciones",
           "type": "equation_view"
+        },
+        {
+          "config": {},
+          "id": "parameters",
+          "resource_refs": [
+            "sir-model"
+          ],
+          "title": "Parámetros y condiciones iniciales",
+          "type": "parameter_table"
         }
       ],
       "id": "model",
