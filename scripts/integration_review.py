@@ -146,19 +146,42 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
             successful=data["process_execution"] == "PROCESSES_FINISHED_UNREVIEWED")
         reviews = run / "reviews"
         _ensure_no_symlink_path(reviews)
+        corroborated = set()
         if reviews.exists():
             for worker in reviews.iterdir():
                 _ensure_no_symlink_path(worker)
+                if not worker.is_dir() or worker.name not in {w["role"] for w in state["workers"]}:
+                    raise ValueError("historical worker review has an invalid worker directory")
                 for reviewer in worker.iterdir():
                     _ensure_no_symlink_path(reviewer)
+                    if not reviewer.is_dir() or reviewer.name not in state["review_roles"]:
+                        raise ValueError("historical worker review has an invalid reviewer directory")
                     manifest = reviewer / "manifest.json"
+                    stdout = reviewer / "stdout.jsonl"
                     _ensure_no_symlink_path(manifest)
-                    if manifest.exists():
-                        review = _json_file(manifest)
-                        session = review.get("provider_session_id")
-                        if session is not None and worker_reviews.get((run.name, worker.name, reviewer.name)) != (
-                                review.get("observed_provider"), session):
+                    _ensure_no_symlink_path(stdout)
+                    if not manifest.is_file() or not stdout.is_file() or stdout.stat().st_size > _MAX_LOG_BYTES:
+                        raise ValueError("historical worker review is incomplete: missing or invalid canonical artifacts")
+                    digest = _sha256(manifest)
+                    review = validate_review_manifest(_json_file(manifest), metadata)
+                    if (any(review[key] != state[key] for key in _IDENTITY) or
+                            review["worker_role"] != worker.name or review["reviewer_role"] != reviewer.name or
+                            review["reviewer_provider"] != provider_for(reviewer.name, state["mode"]) or
+                            review["stdout_path"] != stdout.relative_to(metadata).as_posix() or
+                            review["stdout_sha256"] != _sha256(stdout)):
+                        raise ValueError("historical worker review evidence binding mismatch")
+                    key = (run.name, worker.name, reviewer.name)
+                    session = review["provider_session_id"]
+                    if session is not None:
+                        if worker_reviews.get(key) != (review["observed_provider"], session):
                             raise ValueError("worker review session is absent or misbound in runtime inventory")
+                        corroborated.add(key)
+                    elif stdout.stat().st_size or key in worker_reviews:
+                        raise ValueError("historical worker review output has no corroborated session")
+                    if _sha256(manifest) != digest:
+                        raise ValueError("historical worker review manifest changed during validation")
+        if corroborated != {key for key in worker_reviews if key[0] == run.name}:
+            raise ValueError("historical worker review inventory has no corroborated canonical evidence")
     # Each previous attempt's bundle is also an incremental session journal.
     for candidate in (metadata / "integrations").iterdir():
         _ensure_no_symlink_path(candidate)

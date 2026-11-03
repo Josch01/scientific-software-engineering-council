@@ -64,3 +64,27 @@ python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests
 ```
 
 Result: OK — 10 tests in 254.829s, no skips or failures. Also ran `python -m py_compile scripts/integration_review.py tests/test_integration_candidate.py` and `git diff --cached --check`: both pass. Only the requested affected/focused/regression cases were run; no broad repository suite.
+
+## Final review fix wave — interrupted historical worker reviews
+
+Base: `7c1e12ef9aa809ed7a49f2ba8d52d702fc0ae4c9`. Confirmed the missing-manifest/null-session branch skipped canonical worker-review output in an earlier REVIEW_INCOMPLETE run, allowing a later valid candidate and integrated PASS bundle to remain eligible.
+
+The fix requires guarded canonical manifest.json and bounded regular stdout.jsonl for each historical worker-review directory; validates review evidence and exact task/worker/reviewer/provider/stdout bindings; checks persisted session identities against worker_review_sessions and requires canonical evidence for every inventoried worker-review session. Nonempty output without a corroborated session blocks. No session is recovered by parsing untrusted output.
+
+Exact RED and GREEN command:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_prior_worker_review_missing_manifest_blocks_later_valid_candidate tests.test_integration_candidate.IntegrationCandidateTests.test_prior_worker_review_null_session_with_output_blocks_later_valid_candidate
+```
+
+RED: FAILED (failures=10), 2 tests in 131.404s. Each case showed gate NEEDS_HUMAN rather than BLOCKED, accepted bundle/preview, execution reaching runtime factory, and a nonempty factory-call list. GREEN: OK, 2 tests in 113.311s; no failures/errors/skips. Both tests first prove the later candidate and complete PASS bundle are eligible, then add distinct complete prior implementation sessions and interrupted worker-review artifacts; gate/bundle/preview/execution all block with zero runtime-factory calls.
+
+Logs: `final-history-red.log`, `final-history-green.log`, `final-history-regressions.log` in this ignored metadata directory. Legacy history with missing/unbound canonical artifacts or null-session nonempty output conservatively blocks later reviews; use a fresh task/workspace with complete history after manual review rather than automatic migration/deletion. Provider E2E NOT_RUN; fixture launches are local Python only. No broad suite, merge, or publication.
+
+Exact affected Task2/history/preview/roster and shared gate regression command:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_incomplete_implementation_history tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_interrupted_launch_without_manifest tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_preview_makes_no_provider_call tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_requires_latest_checked_candidate tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_reused_runtime_session tests.test_integration_candidate.IntegrationCandidateTests.test_review_bundle_rejects_incomplete_or_misbound_roster tests.test_integration_candidate.IntegrationCandidateTests.test_latest_incomplete_review_does_not_reuse_previous_pass tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_metadata_reparse_path tests.test_integration_candidate.IntegrationCandidateTests.test_gate_needs_human_after_valid_integrated_review tests.test_integration_candidate.IntegrationCandidateTests.test_decision_rejects_incomplete_reviewer_results tests.test_integration_candidate.IntegrationCandidateTests.test_gate_rejects_decision_bound_to_incomplete_reviewer_results tests.test_release_gate
+```
+
+Result: OK — 14 tests in 425.837s, no failures/errors/skips. Together with the two new GREEN regressions, 16 focused tests passed. `python -m py_compile scripts/integration_review.py tests/test_integration_candidate.py` and `git diff --check` also pass. The earlier broad-suite outcome in the Task4 report remains historical evidence; it was not rerun in this authorized final fix wave.

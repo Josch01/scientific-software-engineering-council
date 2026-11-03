@@ -2,7 +2,7 @@
 
 ## Alcance y revisión
 
-Rama: `codex/p1-integrated-review-approval`; base de integración propuesta: `codex/p1-integration-candidate`. Fuente verificada antes de esta entrega documental: `2f76bb09af5ebc2d13307035e3890afc4ffd656f`. El HEAD final añade únicamente informe, matriz y estado del plan; no cambia el software probado. No se hizo merge, tag, release ni publicación.
+Rama: `codex/p1-integrated-review-approval`; base de integración propuesta: `codex/p1-integration-candidate`. Fuente de la verificación original: `2f76bb09af5ebc2d13307035e3890afc4ffd656f`; el commit documental `7c1e12e` añadió informe, matriz y estado del plan. La corrección posterior de revisión final y su evidencia enfocada se registran al final de este informe. No se hizo merge, tag, release ni publicación.
 
 | Commit | Cambio y revisión |
 |---|---|
@@ -79,3 +79,21 @@ Review completa PASS produce `NEEDS_HUMAN`. `APPROVE_FOR_MANUAL_INTEGRATION` exi
 `operator` es un nombre declarado, sin autenticación ni firma. Quien puede editar coherentemente el almacén local puede alterar evidencia; hashes verifican bindings/contenido local. Aprobar solo registra consideración para integración manual: siempre `automatic_merge=false` y `release_status=NOT_APPROVED`.
 
 El retry es manual y acotado: un finding exige cambios de workers y una nueva integración con ID nuevo; no existe fix loop autónomo ni recuperación durable general. Un nuevo intento incompleto no hereda PASS ni aprobación anterior. P2/P3/P4 no se declaran completados; GUI, ciencia y release quedan fuera del incremento.
+
+## Corrección de revisión final: historial de worker reviews incompleto
+
+Sobre `7c1e12ef9aa809ed7a49f2ba8d52d702fc0ae4c9`, se reprodujo que un run anterior `REVIEW_INCOMPLETE` podía contener stdout de una worker review sin manifest, o un manifest `FAILED` con sesión nula, y quedar fuera del control de reutilización. Un candidato posterior válido con bundle PASS seguía siendo elegible.
+
+`_historical_sessions` ahora exige manifest y stdout canónicos, regulares y protegidos por las guardas reparse; valida el manifest completo y sus bindings de task/worker/reviewer/provider/stdout; exige correspondencia de cada sesión con el inventario y evidencia canónica para cada entrada inventariada. Salida no vacía sin sesión corroborada bloquea. No se recuperan IDs desde contenido no confiable.
+
+RED y GREEN usan exactamente:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_prior_worker_review_missing_manifest_blocks_later_valid_candidate tests.test_integration_candidate.IntegrationCandidateTests.test_prior_worker_review_null_session_with_output_blocks_later_valid_candidate
+```
+
+RED: `FAILED (failures=10)`, 2 tests en 131.404 s. Ambos casos reprodujeron gate `NEEDS_HUMAN`, aceptación de bundle/preview y llegada indebida a runtime factory. GREEN: `OK`, 2 tests en 113.311 s, sin fallos, errores ni skips. Cada caso parte de un candidato posterior y bundle válidos, confirma `NEEDS_HUMAN` antes de introducir el historial interrumpido y después exige gate `BLOCKED`, rechazo de bundle/preview/ejecución y cero llamadas al runtime factory.
+
+Regresiones afectadas: `OK`, 14 tests en 425.837 s, sin fallos, errores ni skips: los ocho casos Task 2 de historial/preview/latest/reutilización/roster/reparse, `test_gate_needs_human_after_valid_integrated_review`, `test_decision_rejects_incomplete_reviewer_results`, `test_gate_rejects_decision_bound_to_incomplete_reviewer_results` y los tres tests de `tests.test_release_gate`. Comando exacto conservado en el informe Task 2. Total de esta corrección: 16 tests enfocados GREEN. `python -m py_compile scripts/integration_review.py tests/test_integration_candidate.py` y `git diff --check`: PASS. No se repitió la suite amplia; su resultado original arriba permanece sin cambios.
+
+Límite operativo: historial legacy con manifest/stdout ausente, evidencia no ligada o salida no vacía con sesión nula ahora bloquea incluso si una ejecución posterior es válida. No se migra ni descarta automáticamente; puede requerir un task/workspace nuevo con historial completo tras revisión manual. Fixtures locales exclusivamente; provider E2E sigue `NOT_RUN`, independencia/sandbox siguen `UNVERIFIED`. No merge ni publicación.

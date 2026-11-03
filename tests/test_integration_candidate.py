@@ -408,6 +408,58 @@ class IntegrationCandidateTests(unittest.TestCase):
             with self.subTest(status=interrupted["status"]), self.assertRaisesRegex(ValueError, "historical.*incomplete|historical.*manifest"):
                 run_integration_review(self.root, self.task["task_id"], result.integration_id)
 
+    def interrupted_worker_review_history(self, *, missing_manifest):
+        from scripts.integration_review import run_integration_review, validate_integration_review_bundle
+        result, bundle = self.decision_fixture()
+        self.assertEqual(gate(self.root, self.task["task_id"])["status"], "NEEDS_HUMAN")
+        prior = self.meta / "dev-logs" / "earlier-interrupted-run"
+        prior.mkdir()
+        inventory = json.loads((self.meta / "dev-logs" / self.run_id / "runtime-sessions.json").read_text())
+        inventory.update(run_id=prior.name, run_status="REVIEW_INCOMPLETE", review_status="REVIEW_INCOMPLETE",
+                         worker_review_sessions=[])
+        for item in inventory["implementation_sessions"]:
+            item["provider_session_id"] = "prior-" + item["role"]
+            event = (dict(type="thread.started", thread_id=item["provider_session_id"])
+                     if item["provider"] == "codex" else dict(type="init", session_id=item["provider_session_id"]))
+            (prior / (item["role"] + ".stdout")).write_text(json.dumps(event) + "\n", encoding="utf-8")
+        (prior / "runtime-sessions.json").write_text(json.dumps(inventory), encoding="utf-8")
+        review = json.loads(self.reviews[0].read_text())
+        directory = prior / "reviews" / review["worker_role"] / review["reviewer_role"]
+        directory.mkdir(parents=True)
+        stdout = directory / "stdout.jsonl"
+        stdout.write_text(json.dumps(dict(type="init", session_id="unrecorded-interrupted-worker-review")) + "\n",
+                          encoding="utf-8")
+        if not missing_manifest:
+            review.update(status="FAILED", observed_provider=None, provider_session_id=None,
+                          verdict=None, review_report=None, review_report_sha256=None, exit_code=None,
+                          error="collection interrupted after output", stdout_path=stdout.relative_to(self.meta).as_posix(),
+                          stdout_sha256=digest(stdout))
+            validate_review_manifest(review, self.meta)
+            (directory / "manifest.json").write_text(json.dumps(review), encoding="utf-8")
+        with self.subTest(consumer="gate"):
+            value = gate(self.root, self.task["task_id"])
+            self.assertEqual(value["status"], "BLOCKED", value)
+            self.assertFalse(value["integrated_review_verified"])
+        with self.subTest(consumer="bundle"), self.assertRaisesRegex(ValueError, "worker review"):
+            validate_integration_review_bundle(bundle, self.meta, self.state,
+                json.loads(Path(result.integration_manifest_path).read_text()),
+                read_check_manifest(result.check_manifest_path, self.meta))
+        calls = []
+        def forbidden(provider):
+            calls.append(provider)
+            raise AssertionError("incomplete worker history reached runtime factory")
+        for launch in (False, True):
+            with self.subTest(consumer="launch" if launch else "preview"), self.assertRaisesRegex(ValueError, "worker review"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                       launch=launch, cost_ack=True, runtime_factory=forbidden)
+        self.assertEqual(calls, [])
+
+    def test_prior_worker_review_missing_manifest_blocks_later_valid_candidate(self):
+        self.interrupted_worker_review_history(missing_manifest=True)
+
+    def test_prior_worker_review_null_session_with_output_blocks_later_valid_candidate(self):
+        self.interrupted_worker_review_history(missing_manifest=False)
+
     def test_integrated_review_requires_latest_checked_candidate(self):
         from scripts.integration_review import run_integration_review
         first = self.integrated_fixture()
