@@ -85,6 +85,40 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(x["status"],"PREVIEW_NOT_STARTED")
         self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
 
+    def test_plan_validates_role_owned_work_items_before_initializing(self):
+        task=task_with_checks()
+        roles,reviewers,_=choose_roles(task,POLICY)
+        from tests.test_work_items import work_item
+        task["work_items"]=[work_item(role,required_reviewers=reviewers) for role in roles]
+        state=plan(task,POLICY,self.root)
+        self.assertEqual(state["task_packet"]["work_items"],task["work_items"])
+        for bad_items in (task["work_items"][:-1],
+                          [dict(item,tests=["undeclared"]) for item in task["work_items"]]):
+            with self.subTest(items=bad_items),self.assertRaises(ValueError):
+                plan(dict(task,work_items=bad_items),POLICY,self.root)
+        self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
+
+    def test_load_revalidates_work_items_even_with_recomputed_packet_digest(self):
+        task=task_with_checks()
+        roles,reviewers,_=choose_roles(task,POLICY)
+        from tests.test_work_items import work_item
+        task["work_items"]=[work_item(role,required_reviewers=reviewers) for role in roles]
+        state=initialize(task,POLICY,self.root,apply=True)
+        _,dest=load(self.root,task["task_id"])
+        state["task_packet"]["work_items"][0]["dependencies"]=["unsupported"]
+        state["task_sha256"]=canonical_task_sha256(state["task_packet"])
+        (dest/"state.json").write_text(json.dumps(state),encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"dependencies"):
+            load(self.root,task["task_id"])
+
+    def test_legacy_packet_loads_but_gate_explicitly_blocks_missing_work_items(self):
+        initialize(TASK,POLICY,self.root,apply=True)
+        state,_=load(self.root,TASK["task_id"])
+        self.assertNotIn("work_items",state["task_packet"])
+        result=gate(self.root,TASK["task_id"])
+        self.assertEqual(result["status"],"BLOCKED")
+        self.assertTrue(any("work_items" in reason for reason in result["blockers"]))
+
     def test_real_branches_are_independent(self):
         x=initialize(TASK,POLICY,self.root,apply=True)
         self.assertGreaterEqual(len(x["workers"]),2)

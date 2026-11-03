@@ -18,12 +18,14 @@ if __package__:
     from .route_task import validate_task, required_checks
     from .execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from .check_runner import read_check_manifest
+    from .work_items import validate_work_items
 else:
     from configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from prepare_agents import choose_roles, provider_for
     from route_task import validate_task, required_checks
     from execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from check_runner import read_check_manifest
+    from work_items import validate_work_items
 
 KINDS = {"build","debug","refactor","optimize","migrate"}
 EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REQUEST_CHANGES","BLOCKED"}
@@ -98,6 +100,9 @@ def _validate_state_packet(state,task_id):
         raise ValueError("task metadata review roles are invalid")
     expected_primary_roles,expected_review_roles,expected_policy_evidence=choose_roles(
         packet,{"audit_level":audit_level})
+    if "work_items" in packet:
+        validate_work_items(packet,expected_primary_roles,expected_review_roles,
+                            [spec.check_id for spec in validate_check_specs(packet)])
     workers=state.get("workers")
     if type(workers) is not list or any(type(worker) is not dict for worker in workers):
         raise ValueError("task metadata workers are invalid")
@@ -169,7 +174,10 @@ def plan(task, policy, project):
     root = repository(project, clean=True)
     directory(root,task["task_id"])
     base = git(root,"rev-parse","HEAD")
-    impl, reviewers, evidence = choose_roles(task,policy)
+    impl, reviewers, evidence = choose_roles(packet,policy)
+    if "work_items" in packet:
+        validate_work_items(packet,impl,reviewers,
+                            [spec.check_id for spec in validate_check_specs(packet)])
     parent = root.parent / ("." + root.name + "-ssec-worktrees")
     if parent.is_symlink():
         raise ValueError("worktree storage symlink forbidden")
@@ -342,6 +350,8 @@ def gate(project,task_id):
     status=inspect(project,task_id)
     errors=[]
     packet=state["task_packet"]
+    if "work_items" not in packet:
+        errors.append("integration blocked: task packet has no role-owned work_items")
     specs=validate_check_specs(packet)
     required,pending_evidence,unsupported_specs=check_requirements(packet,state["required_evidence"])
     configured={spec.check_id for spec in specs if spec.check_id in PROCESS_CHECK_IDS}
