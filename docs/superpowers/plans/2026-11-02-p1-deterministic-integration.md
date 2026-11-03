@@ -175,7 +175,7 @@ Document commits, tests, defects, architectural decisions, `NOT_RUN` provider E2
 
 Commit as `docs: record deterministic integration verification`.
 
-- [ ] **Step 5: Push the P1.3 branch and create a separate draft PR**
+- [x] **Step 5: Push the P1.3 branch and create a separate draft PR**
 
 Base it on `codex/p1-windows-review-mode`; do not merge to `main` or release.
 

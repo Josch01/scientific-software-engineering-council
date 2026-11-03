@@ -5,7 +5,7 @@
 **Base:** `206d59ccba65ecbff6fc4a5fabc52781184dae3f` (`codex/p1-windows-review-mode`).
 **Branch:** `codex/p1-integration-candidate`.
 **HEAD de código:** `dd9f5ba7e5b14ce7b247d92e34543b06c853c08d`.
-**Entrega:** no se hizo merge ni release.
+**PR:** [borrador #15](https://github.com/Josch01/scientific-software-engineering-council/pull/15), apilado sobre `codex/p1-windows-review-mode`. No se hizo merge ni release.
 
 ## Implementación y decisiones
 
