@@ -213,11 +213,12 @@ def _is_direct_python_unittest_cli(argv: tuple[str, ...]) -> bool:
     if name == "py" and arguments and re.fullmatch(r"-\d+(?:\.\d+)*", arguments[0]):
         arguments.pop(0)
     flags_without_values = {"-b", "-B", "-d", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v"}
+    safe_path = False
     index = 0
     while index < len(arguments):
         argument = arguments[index]
         if argument == "-m":
-            return index + 1 < len(arguments) and arguments[index + 1] == "unittest"
+            return safe_path and index + 1 < len(arguments) and arguments[index + 1] == "unittest"
         if argument in ("-c", "-", "--", "-h", "-V", "-i", "-x", "--help", "--version"):
             return False
         if argument in ("-W", "-X"):
@@ -227,6 +228,8 @@ def _is_direct_python_unittest_cli(argv: tuple[str, ...]) -> bool:
         elif argument.startswith(("-W", "-X")) and len(argument) > 2:
             index += 1
         elif argument in flags_without_values:
+            if argument in ("-I", "-P"):
+                safe_path = True
             index += 1
         else:
             return False
@@ -281,7 +284,7 @@ def validate_check_specs(task: Mapping[str, Any]) -> tuple[CheckSpec, ...]:
         if check_id == "unit_tests" and spec.protocol != "unittest":
             raise ValueError("unit_tests requires the unittest protocol")
         if check_id == "unit_tests" and not _is_direct_python_unittest_cli(spec.argv):
-            raise ValueError("unit_tests must invoke a Python interpreter directly with -m unittest")
+            raise ValueError("unit_tests must invoke Python with -P or -I before -m unittest")
         seen.add(check_id)
         result.append(spec)
     return tuple(result)

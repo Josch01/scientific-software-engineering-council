@@ -47,7 +47,7 @@ class RoutingTests(unittest.TestCase):
     def test_check_specs_are_validated_as_part_of_task_validation(self):
         task = copy.deepcopy(self.task)
         task["check_specs"] = [
-            {"check_id": "unit_tests", "argv": ["python", "-m", "unittest"], "cwd": ".",
+            {"check_id": "unit_tests", "argv": ["python", "-P", "-m", "unittest"], "cwd": ".",
              "timeout_seconds": 30, "protocol": "unittest"},
         ]
         validate_task(task)

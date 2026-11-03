@@ -126,7 +126,11 @@ before launching workers and uses only the stored packet for worker prompts and
 check specs. Only `unit_tests`, `static_analysis` and `regression` are
 executable process checks. A spec cannot claim review, scientific validation,
 security, GUI, IDL or cross-platform evidence; declaring one of those IDs as a
-command is rejected before worktree creation. Tasks without `check_specs`
+command is rejected before worktree creation. A `unit_tests` spec must invoke
+Python with `-P` or `-I` before `-m unittest`, so a candidate-local `unittest`
+package cannot replace the runner at interpreter startup. Use explicit unittest
+discovery options such as `-s tests -t .` when tests need the project root on
+`sys.path`; the start directory must be importable. Tasks without `check_specs`
 remain compatible and report `NOT_RUN`.
 
 After all worker processes succeed without a global cancellation, the runner
@@ -141,18 +145,25 @@ process quiescence cannot produce `PASSED`.
 
 `gate` reads manifests only under that task's metadata and checks task identity,
 revision, digest, base commit, role, branch, command specs, snapshot/log paths,
-current log hashes, and the current candidate tree hash. Editing tracked or
-non-ignored untracked candidate files after a run invalidates that run. Each
+current log hashes, the full archived snapshot artifact hash, and the current
+candidate tree hash. Any snapshot file change during a check, including a
+Git-ignored addition, fails that check; editing the archived snapshot after a
+run invalidates its manifest. Editing tracked or non-ignored untracked candidate
+files after a run also invalidates that run. Each
 manifest covers one worker's candidate; the worktrees are not combined or
-tested as an integration result. Checks remain limited evidence: a deliberately
+tested as an integration result. Terminal manifests use schema version 2 to
+include the archived snapshot integrity hash; earlier version-1 manifests are
+rejected and must be regenerated. Checks remain limited evidence: a deliberately
 misleading test inside a real unittest suite may still lie. Hashes do not prove
 who created evidence, and checks do not replace independent review, security or
 scientific validation. Therefore `gate` remains `BLOCKED`,
 `evidence_verified: false`, and `release_status: NOT_APPROVED` even when all
 configured process checks pass. Reports keep `missing_spec_ids` for process
-checks separate from `pending_evidence_ids` for review/science/security and
-task-specific GUI/IDL/platform obligations. The local Python integration
-fixture is offline and is not provider E2E.
+checks separate from `pending_evidence_ids` derived from the task and initialized
+review policy: software review follows `software_auditor`, independent/security/
+release review IDs follow their assigned reviewer roles, and scientific
+validation follows high risk or a scientific-claim route. The local Python
+integration fixture is offline and is not provider E2E.
 
 ## Inter-agent mailbox
 

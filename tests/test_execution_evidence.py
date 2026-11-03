@@ -117,7 +117,7 @@ class CheckSpecValidationTests(unittest.TestCase):
     def setUp(self):
         self.task = json.loads((ROOT / "examples/seir_desktop_audit.json").read_text(encoding="utf-8"))
         self.task["check_specs"] = [
-            {"check_id": "unit_tests", "argv": ["python", "-m", "unittest"], "cwd": ".",
+            {"check_id": "unit_tests", "argv": ["python", "-P", "-m", "unittest"], "cwd": ".",
              "timeout_seconds": 30, "protocol": "unittest"},
             {"check_id": "static_analysis", "argv": ["python", "-m", "compileall", "scripts"],
              "cwd": "scripts", "timeout_seconds": 15.5, "protocol": "exit_code"},
@@ -126,7 +126,7 @@ class CheckSpecValidationTests(unittest.TestCase):
     def test_accepts_typed_specs_for_required_checks(self):
         specs = validate_check_specs(self.task)
         self.assertEqual(specs, (
-            CheckSpec("unit_tests", ("python", "-m", "unittest"), ".", 30.0, "unittest"),
+            CheckSpec("unit_tests", ("python", "-P", "-m", "unittest"), ".", 30.0, "unittest"),
             CheckSpec("static_analysis", ("python", "-m", "compileall", "scripts"), "scripts", 15.5, "exit_code"),
         ))
 
@@ -193,11 +193,13 @@ class CheckSpecValidationTests(unittest.TestCase):
         for command in ("python", "python3", "python3.14", "pypy", "pypy3", "py", sys.executable):
             with self.subTest(command=command):
                 task = copy.deepcopy(self.task)
-                task["check_specs"][0]["argv"] = [command, "-m", "unittest", "discover"]
-                self.assertEqual(validate_check_specs(task)[0].argv[:3], (command, "-m", "unittest"))
+                task["check_specs"][0]["argv"] = [command, "-P", "-m", "unittest", "discover"]
+                self.assertEqual(validate_check_specs(task)[0].argv[:4], (command, "-P", "-m", "unittest"))
 
         forged_commands = (
+            [sys.executable, "-m", "unittest", "discover"],
             [sys.executable, "-c", "print('Ran 1 test in 0.01s\\n\\nOK')"],
+            [sys.executable, "-P", "-c", "print('Ran 1 test in 0.01s\\n\\nOK')"],
             [sys.executable, "-"],
             [sys.executable, "test_runner.py"],
             ["pytest", "tests"],

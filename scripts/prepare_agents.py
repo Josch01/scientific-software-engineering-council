@@ -91,10 +91,19 @@ def choose_roles(task: dict, policy: dict) -> tuple[list[str], list[str], list[s
     if policy["audit_level"] == "strict" and "security_reviewer" not in reviews:
         reviews.append("security_reviewer")
     required = list(plan["required_evidence"])
-    if "independent_reviewer" in reviews and "independent_review" not in required:
-        required.append("independent_review")
-    if "security_reviewer" in reviews and "security_audit" not in required:
-        required.append("security_audit")
+    reviewer_evidence = {
+        "software_auditor": "software_review",
+        "independent_reviewer": "independent_review",
+        "security_reviewer": "security_audit",
+        "release_engineer": "release_review",
+    }
+    for reviewer in reviews:
+        obligation = reviewer_evidence.get(reviewer)
+        if obligation is not None and obligation not in required:
+            required.append(obligation)
+    if (plan["scientific_bridge"] == "REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW" and
+            "scientific_validation" not in required):
+        required.append("scientific_validation")
     return primary, reviews, required
 
 

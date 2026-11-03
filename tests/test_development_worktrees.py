@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock,patch
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256
 from scripts.configuration import DEFAULT_CONFIG
+from scripts.prepare_agents import choose_roles
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
 from scripts.development_runner import execute,run_worker
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
@@ -23,7 +24,7 @@ POLICY=dict(DEFAULT_CONFIG,provider_mode="both")
 
 def task_with_checks():
     task=dict(TASK,domains=["general"],check_specs=[
-        {"check_id":"unit_tests","argv":[sys.executable,"-m","unittest","discover","-s","tests","-v"],
+        {"check_id":"unit_tests","argv":[sys.executable,"-P","-m","unittest","discover","-s","tests","-t",".","-v"],
          "cwd":".","timeout_seconds":20,"protocol":"unittest"},
         {"check_id":"static_analysis","argv":[sys.executable,"-c",
          "compile(open('solver.py',encoding='utf-8').read(),'solver.py','exec')"],
@@ -66,6 +67,7 @@ class WorktreeTests(unittest.TestCase):
         (self.root/".gitignore").write_text("__pycache__/\n",encoding="utf-8")
         tests=self.root/"tests"
         tests.mkdir()
+        (tests/"__init__.py").write_text("",encoding="utf-8")
         (tests/"test_solver.py").write_text(
             "import unittest\nimport solver\n\n"
             "class SolverTests(unittest.TestCase):\n"
@@ -176,7 +178,8 @@ class WorktreeTests(unittest.TestCase):
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
         self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
-        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
+                         report["check_evidence"])
         self.assertEqual(report["release_status"],"NOT_APPROVED")
         evidence=report["check_evidence"]
         self.assertEqual({item["role"] for item in evidence},{w["role"] for w in state["workers"]})
@@ -199,8 +202,8 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=4,
                        minutes=2,runtime_factory=lambda provider: LocalPythonRuntime())
-        expected={"scientific_validation","independent_review","security_audit",
-                  "gui_smoke","cross_platform","idl_integration"}
+        expected={"software_review","independent_review","security_audit","release_review",
+                  "scientific_validation","gui_smoke","cross_platform","idl_integration"}
         self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
         self.assertEqual(set(report["pending_evidence_ids"]),expected)
         self.assertTrue(all(set(item["verified_process_check_ids"])==
@@ -212,6 +215,52 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(gate_result["evidence_verified"])
         self.assertEqual(gate_result["release_status"],"NOT_APPROVED")
         self.assertEqual(len(state["workers"]),len(report["check_evidence"]))
+
+    def test_pending_evidence_matches_task_and_policy_requirements(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        expected=set(state["required_evidence"]) - {"unit_tests","static_analysis","regression"}
+        self.assertEqual(expected,{"software_review","independent_review"})
+
+        report=execute(self.root,task["task_id"],task)
+        self.assertEqual(set(report["pending_evidence_ids"]),expected)
+        result=gate(self.root,task["task_id"])
+        self.assertEqual(set(result["pending_evidence_ids"]),expected)
+
+    def test_basic_policy_reports_software_review_without_inventing_other_obligations(self):
+        task=task_with_checks()
+        task["task_id"]="SSEC-BASIC-TEST"
+        policy=dict(POLICY,audit_level="basic")
+        state=initialize(task,policy,self.root,apply=True)
+        expected={"software_review"}
+        self.assertEqual(set(state["required_evidence"]) -
+                         {"unit_tests","static_analysis","regression"},expected)
+
+        report=execute(self.root,task["task_id"],task)
+        self.assertEqual(set(report["pending_evidence_ids"]),expected)
+        result=gate(self.root,task["task_id"])
+        self.assertEqual(set(result["pending_evidence_ids"]),expected)
+
+    def test_gate_rejects_post_run_snapshot_tampering(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
+                       minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
+                         report["check_evidence"])
+        _,metadata=load(self.root,task["task_id"])
+        evidence=next(item for item in report["check_evidence"]
+                      if item["role"]==state["workers"][0]["role"])
+        snapshot=(metadata/Path(evidence["manifest_path"])).parent/"snapshot"
+        (snapshot/"post-run-tamper.txt").write_text("tampered archived snapshot\n",encoding="utf-8")
+
+        result=gate(self.root,task["task_id"])
+
+        self.assertFalse(result["checks_verified"])
+        self.assertTrue(result["invalid_check_manifests"])
+        self.assertEqual(result["status"],"BLOCKED")
+        self.assertFalse(result["evidence_verified"])
+        self.assertEqual(result["release_status"],"NOT_APPROVED")
 
     def test_process_check_specs_cannot_claim_review_or_scientific_obligations(self):
         task=task_with_checks()
@@ -299,6 +348,8 @@ class RuntimeRunnerTests(unittest.TestCase):
         self.state.update(task_id=TASK["task_id"],task_packet=TASK,
                           task_sha256=canonical_task_sha256(TASK),task_revision="revision-1",
                           base_commit="0"*40)
+        _implementers,review_roles,required_evidence=choose_roles(TASK,POLICY)
+        self.state.update(review_roles=review_roles,required_evidence=required_evidence)
         self.addCleanup(patch.stopall)
         patch("scripts.development_runner.load",return_value=(self.state,self.meta)).start()
         patch("scripts.development_runner.inspect",return_value={"base_unchanged":True,"source_clean":True}).start()

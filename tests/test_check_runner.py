@@ -48,6 +48,7 @@ def make_repo(parent: Path, *, unittest_source: str | None = None) -> Path:
     if unittest_source is not None:
         tests = repo / "tests"
         tests.mkdir()
+        (tests / "__init__.py").write_text("", encoding="utf-8")
         (tests / "test_real.py").write_text(unittest_source, encoding="utf-8")
     (repo / "untracked.txt").write_text("included candidate\n", encoding="utf-8")
     (repo / "ignored.txt").write_text("excluded candidate\n", encoding="utf-8")
@@ -58,7 +59,7 @@ def task_for(repo: Path, specs: list[dict] | None = None) -> dict:
     if specs is None:
         specs = [{
             "check_id": "unit_tests",
-            "argv": [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+            "argv": [sys.executable, "-P", "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-v"],
             "cwd": ".",
             "timeout_seconds": 20,
             "protocol": "unittest",
@@ -118,6 +119,15 @@ import unittest
 class MutatingCandidateTests(unittest.TestCase):
     def test_mutates_snapshot(self):
         pathlib.Path('tracked.txt').write_text('changed by test')
+        self.assertTrue(True)
+"""
+
+IGNORED_MUTATING_TEST = """import pathlib
+import unittest
+
+class IgnoredMutationTests(unittest.TestCase):
+    def test_creates_ignored_candidate_file(self):
+        pathlib.Path('ignored.txt').write_text('hidden mutation')
         self.assertTrue(True)
 """
 
@@ -288,7 +298,7 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertIsNotNone(manifest_path)
             self.assertTrue(manifest_path.resolve().is_relative_to(metadata.resolve()))
             manifest = read_check_manifest(manifest_path, metadata)
-            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["schema_version"], 2)
             self.assertIs(manifest["terminal"], True)
             self.assertEqual(manifest["status"], "PASSED")
             self.assertEqual(manifest["worker_role"], worker["role"])
@@ -342,12 +352,37 @@ class CheckExecutionTests(unittest.TestCase):
             (repo / "empty_tests").mkdir()
             (repo / "empty_tests" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
             spec = {"check_id": "unit_tests",
-                    "argv": [sys.executable, "-m", "unittest", "discover", "-s", "empty_tests"],
+                    "argv": [sys.executable, "-P", "-m", "unittest", "discover", "-s", "empty_tests"],
                     "cwd": ".", "timeout_seconds": 10, "protocol": "unittest"}
             result, _metadata, _worker = self.run_task(parent, task_for(repo, [spec]), repo)
             self.assertEqual(result.status, "FAILED")
             self.assertFalse(result.records[0].passed)
             self.assertEqual(result.records[0].unittest_count, 0)
+
+    def test_unittest_protocol_refuses_candidate_module_shadowing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            repo = make_repo(parent)
+            shadow = repo / "unittest"
+            shadow.mkdir()
+            (shadow / "__init__.py").write_text("\n", encoding="utf-8")
+            (shadow / "__main__.py").write_text(
+                "print('Ran 1 test in 0.01s')\nprint('\\nOK')\n", encoding="utf-8"
+            )
+            spec = {"check_id": "unit_tests", "argv": [sys.executable, "-m", "unittest"],
+                    "cwd": ".", "timeout_seconds": 10, "protocol": "unittest"}
+            task = task_for(repo, [spec])
+            metadata = parent / "metadata"
+            state, worker = context_for(repo, task, metadata)
+
+            try:
+                result = run_checks(task, state, worker, metadata,
+                                    stop_event=threading.Event(), deadline=time.monotonic() + 10)
+            except ValueError as exc:
+                self.assertRegex(str(exc), r"-P or -I|safe path|isolat")
+            else:
+                self.assertNotEqual(result.status, "PASSED",
+                                    "candidate unittest shadowing produced passing evidence")
 
     def test_timeout_quiesces_parent_and_child_and_is_recorded_failed(self):
         child_code = "import pathlib,time; time.sleep(1); pathlib.Path('survived.txt').write_text('alive')"
@@ -407,7 +442,7 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertFalse((snapshot / "survived.txt").exists())
 
     def test_check_that_mutates_snapshot_fails_and_later_check_does_not_run(self):
-        mutating_argv = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+        mutating_argv = [sys.executable, "-P", "-m", "unittest", "discover", "-s", "tests", "-v"]
         later_argv = [sys.executable, "-c", "open('later-ran.txt','w').write('bad')"]
         specs = [
             {"check_id": "unit_tests", "argv": mutating_argv, "cwd": ".", "timeout_seconds": 10, "protocol": "unittest"},
@@ -429,6 +464,17 @@ class CheckExecutionTests(unittest.TestCase):
             snapshot = metadata / Path(manifest["snapshot"]["path"])
             self.assertFalse((snapshot / "later-ran.txt").exists())
 
+    def test_check_that_adds_ignored_file_to_snapshot_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            repo = make_repo(parent, unittest_source=IGNORED_MUTATING_TEST)
+            task = task_for(repo)
+            result, _metadata, _worker = self.run_task(parent, task, repo)
+
+            self.assertEqual(result.status, "FAILED")
+            self.assertFalse(result.records[0].passed)
+            self.assertTrue(any("snapshot" in error.lower() for error in result.errors))
+
     def test_tampered_log_and_partial_manifest_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             parent = Path(temp)
@@ -445,6 +491,14 @@ class CheckExecutionTests(unittest.TestCase):
             partial.write_text('{"schema_version":1', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "manifest|JSON|invalid"):
                 read_check_manifest(partial, metadata)
+
+            legacy_data = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            legacy_data["schema_version"] = 1
+            legacy_data["snapshot"].pop("artifact_sha256")
+            legacy = result.manifest_path.parent / "legacy-v1.json"
+            legacy.write_text(json.dumps(legacy_data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema_version"):
+                read_check_manifest(legacy, metadata)
 
     def test_legacy_task_without_specs_is_explicit_not_run(self):
         with tempfile.TemporaryDirectory() as temp:

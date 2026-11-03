@@ -15,13 +15,13 @@ from pathlib import Path
 if __package__:
     from .configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from .prepare_agents import choose_roles, provider_for
-    from .route_task import validate_task, required_checks
+    from .route_task import validate_task, required_checks, route
     from .execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from .check_runner import read_check_manifest
 else:
     from configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from prepare_agents import choose_roles, provider_for
-    from route_task import validate_task, required_checks
+    from route_task import validate_task, required_checks, route
     from execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from check_runner import read_check_manifest
 
@@ -29,14 +29,17 @@ KINDS = {"build","debug","refactor","optimize","migrate"}
 EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REQUEST_CHANGES","BLOCKED"}
 STATE_SCHEMA_VERSION = 2
 PROCESS_CHECK_IDS = frozenset({"unit_tests","static_analysis","regression"})
-ALWAYS_PENDING_EVIDENCE_IDS = frozenset({"scientific_validation","independent_review","security_audit"})
 
-def check_requirements(task):
+def check_requirements(task, policy_evidence=None):
     """Separate executable process checks from non-process acceptance obligations."""
     required=set(required_checks(task))
+    if policy_evidence is not None:
+        if type(policy_evidence) is not list or any(type(item) is not str or not item for item in policy_evidence):
+            raise ValueError("initialized required_evidence must be a list of nonempty strings")
+        required.update(policy_evidence)
     specs=validate_check_specs(task)
     process_required=required & PROCESS_CHECK_IDS
-    pending_evidence=(required - PROCESS_CHECK_IDS) | ALWAYS_PENDING_EVIDENCE_IDS
+    pending_evidence=required - PROCESS_CHECK_IDS
     unsupported={spec.check_id for spec in specs if spec.check_id not in PROCESS_CHECK_IDS}
     return process_required,pending_evidence,unsupported
 
@@ -83,6 +86,25 @@ def _validate_state_packet(state,task_id):
         raise ValueError("task metadata packet digest mismatch")
     if state.get("task_revision")!=_task_revision(packet):
         raise ValueError("task metadata revision mismatch")
+    review_roles=state.get("review_roles")
+    if type(review_roles) is not list or any(type(role) is not str for role in review_roles):
+        raise ValueError("task metadata review roles are invalid")
+    expected_evidence=set(required_checks(packet))
+    reviewer_evidence={"software_auditor":"software_review",
+                       "independent_reviewer":"independent_review",
+                       "security_reviewer":"security_audit",
+                       "release_engineer":"release_review"}
+    expected_evidence.update(reviewer_evidence[role] for role in review_roles
+                             if role in reviewer_evidence)
+    if route(packet)["scientific_bridge"]=="REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW":
+        expected_evidence.add("scientific_validation")
+    required_evidence=state.get("required_evidence")
+    if (type(required_evidence) is not list or
+            any(type(item) is not str or not item for item in required_evidence) or
+            len(required_evidence)!=len(set(required_evidence))):
+        raise ValueError("task metadata required_evidence is invalid")
+    if set(required_evidence)!=expected_evidence:
+        raise ValueError("task metadata required_evidence differs from task and review policy")
 
 def git(root, *args, check=True):
     proc = subprocess.run(["git","-C",str(root),*args], text=True, encoding="utf-8",
@@ -298,7 +320,7 @@ def gate(project,task_id):
     errors=[]
     packet=state["task_packet"]
     specs=validate_check_specs(packet)
-    required,pending_evidence,unsupported_specs=check_requirements(packet)
+    required,pending_evidence,unsupported_specs=check_requirements(packet,state["required_evidence"])
     configured={spec.check_id for spec in specs if spec.check_id in PROCESS_CHECK_IDS}
     missing_specs=required-configured
     paths,invalid_manifests=_discover_check_manifests(metadata)
@@ -377,7 +399,7 @@ def gate(project,task_id):
     if not checks_verified:
         errors.append("deterministic check evidence is missing, incomplete, or invalid")
     # Deterministic checks cannot replace an independent review or authorize release.
-    errors.append("coordinator cannot infer independent review/security/scientific evidence from checks")
+    errors.append("coordinator cannot infer non-process review or release acceptance from deterministic checks")
     events=status["events"]
     for w in state["workers"]:
         if not any(e["sender"]==w["role"] and e["kind"]=="WORKER_RESULT" for e in events):

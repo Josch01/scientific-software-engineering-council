@@ -191,7 +191,8 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
         raise ValueError("task id or canonical packet digest differs from initialized task")
     packet=state["task_packet"]
     specs=validate_check_specs(packet)
-    required_ids,pending_evidence_ids,unsupported_specs=check_requirements(packet)
+    required_ids,pending_evidence_ids,unsupported_specs=check_requirements(
+        packet,state["required_evidence"])
     if unsupported_specs:
         raise ValueError("check_specs cannot represent evidence obligations: "+
                          ", ".join(sorted(unsupported_specs)))

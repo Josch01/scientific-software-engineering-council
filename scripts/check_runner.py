@@ -27,6 +27,7 @@ try:
         SnapshotReference,
         _candidate_tree_entries,
         _hash_candidate_entries,
+        _hash_file_into,
         _lstat_candidate,
         candidate_tree_sha256,
         canonical_task_sha256,
@@ -43,6 +44,7 @@ except ImportError:  # Support direct imports from the scripts directory.
         SnapshotReference,
         _candidate_tree_entries,
         _hash_candidate_entries,
+        _hash_file_into,
         _lstat_candidate,
         candidate_tree_sha256,
         canonical_task_sha256,
@@ -58,6 +60,7 @@ _ROLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _UNITTEST_RAN_RE = re.compile(rb"(?m)^Ran ([0-9]+) tests? in [0-9.]+s\r?$")
 _UNITTEST_OK_RE = re.compile(rb"(?m)^OK(?:\s|$)")
 _PROTOCOLS = frozenset({"exit_code", "unittest"})
+_MANIFEST_SCHEMA_VERSION = 2
 _MANIFEST_FIELDS = frozenset({
     "schema_version",
     "terminal",
@@ -282,6 +285,20 @@ def _walk_snapshot(snapshot: Path, original: tuple[_CandidateTreeEntry, ...]) ->
     visit(snapshot, ())
     files.sort(key=lambda item: item.raw_path)
     return tuple(files)
+
+
+def _snapshot_artifact_sha256(snapshot: Path) -> str:
+    """Hash every regular file in the archived snapshot, including ignored outputs."""
+    entries = _walk_snapshot(Path(snapshot), ())
+    digest = hashlib.sha256(b"ssec-snapshot-artifact-v1\x00")
+    for entry in entries:
+        path_bytes = entry.raw_path
+        digest.update(len(path_bytes).to_bytes(8, "big", signed=False))
+        digest.update(path_bytes)
+        digest.update(b"\x01" if entry.executable else b"\x00")
+        initial_stat = entry.path.lstat()
+        _hash_file_into(digest, entry.path, initial_stat, entry.relative_path)
+    return digest.hexdigest()
 
 
 def _snapshot_tree_sha256(
@@ -655,6 +672,7 @@ def _check_result(
         candidate_before = _snapshot_tree_sha256(
             snapshot, initial_entries, source, snapshot_reference.source_tree_sha256
         )
+        artifact_before = _snapshot_artifact_sha256(snapshot)
         cwd = _safe_cwd(snapshot, spec.cwd)
     except ValueError as exc:
         item["error"] = f"snapshot verification failed before check: {exc}"
@@ -714,12 +732,13 @@ def _check_result(
         candidate_after = _snapshot_tree_sha256(
             snapshot, initial_entries, source, snapshot_reference.source_tree_sha256
         )
+        artifact_after = _snapshot_artifact_sha256(snapshot)
     except ValueError as exc:
         item["error"] = f"snapshot verification failed after check: {exc}"
         return item, None, True
-    snapshot_changed = candidate_before != candidate_after
+    snapshot_changed = candidate_before != candidate_after or artifact_before != artifact_after
     if snapshot_changed:
-        process_error = process_error or "check changed the candidate snapshot"
+        process_error = process_error or "check changed the candidate snapshot or its archived files"
 
     if spec.protocol == "unittest" and not unittest_success_summary:
         process_error = process_error or "unittest success summary was absent or not successful"
@@ -767,6 +786,7 @@ def _manifest_snapshot(reference: SnapshotReference | None, metadata: Path):
         "path": reference.snapshot_path.relative_to(metadata).as_posix(),
         "source_tree_sha256": reference.source_tree_sha256,
         "snapshot_tree_sha256": reference.snapshot_tree_sha256,
+        "artifact_sha256": _snapshot_artifact_sha256(reference.snapshot_path),
         "file_count": reference.file_count,
         "total_bytes": reference.total_bytes,
     }
@@ -811,8 +831,8 @@ def _validate_log(root: Path, path_value: Any, hash_value: Any, label: str) -> N
 def _validate_manifest_data(data: Any, metadata_root: Path) -> dict[str, Any]:
     if type(data) is not dict or set(data) != _MANIFEST_FIELDS:
         raise _manifest_error("fields are missing or extra")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
-        raise _manifest_error("schema_version must be integer 1")
+    if type(data["schema_version"]) is not int or data["schema_version"] != _MANIFEST_SCHEMA_VERSION:
+        raise _manifest_error(f"unsupported schema_version; expected {_MANIFEST_SCHEMA_VERSION}")
     if type(data["terminal"]) is not bool or data["terminal"] is not True:
         raise _manifest_error("manifest is not terminal")
     if data["status"] not in ("PASSED", "FAILED"):
@@ -832,7 +852,8 @@ def _validate_manifest_data(data: Any, metadata_root: Path) -> dict[str, Any]:
         raise _manifest_error("errors must be a string array")
     snapshot = data["snapshot"]
     if snapshot is not None:
-        required = {"path", "source_tree_sha256", "snapshot_tree_sha256", "file_count", "total_bytes"}
+        required = {"path", "source_tree_sha256", "snapshot_tree_sha256", "artifact_sha256",
+                    "file_count", "total_bytes"}
         if type(snapshot) is not dict or set(snapshot) != required:
             raise _manifest_error("snapshot fields are invalid")
         _resolve_evidence_path(metadata_root, snapshot["path"], directory=True)
@@ -842,8 +863,13 @@ def _validate_manifest_data(data: Any, metadata_root: Path) -> dict[str, Any]:
         for name in ("file_count", "total_bytes"):
             if type(snapshot[name]) is not int or snapshot[name] < 0:
                 raise _manifest_error(f"snapshot {name} is invalid")
+        if type(snapshot["artifact_sha256"]) is not str or not _SHA256_RE.fullmatch(snapshot["artifact_sha256"]):
+            raise _manifest_error("snapshot artifact_sha256 is invalid")
         if snapshot["source_tree_sha256"] != data["candidate_tree_sha256"]:
             raise _manifest_error("snapshot source digest does not match candidate digest")
+        snapshot_path = _resolve_evidence_path(metadata_root, snapshot["path"], directory=True)
+        if _snapshot_artifact_sha256(snapshot_path) != snapshot["artifact_sha256"]:
+            raise _manifest_error("snapshot artifact hash mismatch or tampering detected")
     checks = data["checks"]
     if type(checks) is not list:
         raise _manifest_error("checks must be an array")
@@ -984,10 +1010,18 @@ def _publish_run(
     started_at_utc: str,
     errors: list[str],
 ) -> dict[str, Any]:
+    published_status = status
+    published_errors = list(errors)
+    try:
+        snapshot_data = _manifest_snapshot(snapshot, metadata)
+    except (OSError, ValueError) as exc:
+        snapshot_data = None
+        published_status = "FAILED"
+        published_errors.append(f"snapshot artifact could not be verified: {exc}")
     data = {
-        "schema_version": 1,
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
         "terminal": True,
-        "status": status,
+        "status": published_status,
         "task_id": str(task["task_id"]),
         "task_revision": task_revision,
         "task_sha256": task_sha256,
@@ -996,20 +1030,20 @@ def _publish_run(
         "worker_branch": str(worker["branch"]),
         "base_commit": str(state["base_commit"]),
         "candidate_tree_sha256": candidate_tree,
-        "snapshot": _manifest_snapshot(snapshot, metadata),
+        "snapshot": snapshot_data,
         "started_at_utc": started_at_utc,
         "finished_at_utc": _utc_now(),
         "checks": checks,
-        "errors": errors,
+        "errors": published_errors,
     }
     try:
         _validate_manifest_data(data, metadata)
         _write_atomic_manifest(manifest_path, data)
         return read_check_manifest(manifest_path, metadata)
     except (OSError, TypeError, ValueError) as exc:
-        if status == "PASSED":
+        if published_status == "PASSED":
             data["status"] = "FAILED"
-            data["errors"] = [*errors, f"manifest verification/publication failed: {exc}"]
+            data["errors"] = [*published_errors, f"manifest verification/publication failed: {exc}"]
             data["finished_at_utc"] = _utc_now()
             try:
                 _validate_manifest_data(data, metadata)
