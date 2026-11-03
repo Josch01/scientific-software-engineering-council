@@ -1,6 +1,6 @@
 # P3.2 loader seguro de recursos de espacios científicos
 
-**Estado:** implementación experimental, suite enfocada y revisión independiente completas; CI de la rama pendiente. No se construyó GUI ni se ejecutó un modelo SIR.
+**Estado:** implementación experimental; suite enfocada, suite completa Linux, revisión independiente y CI de la rama completas. No se construyó GUI en este incremento ni se ejecutó un modelo SIR.
 
 ## Implementación
 
@@ -18,6 +18,7 @@ El CLI usa `ARTIFACT_DIGESTS_MATCHED` para indicar que los bytes capturados coin
 | Docker/Linux, `python:3.14.0-bookworm` | Mismo comando | PASS, 23 tests |
 | Windows, Python 3.14.0 | `py_compile` de validador, loader y tests; `git diff --check` | PASS |
 | Docker/Linux, Python 3.14.0, root montado como `/scientific-software-engineering-council` | `python -m unittest discover -s tests -q` | PASS, 373 tests; 6 omitidos; 130.821 s |
+| GitHub Actions, Windows/Ubuntu × Python 3.11/3.12 | Workflow run [#112](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41698832602) | PASS, 4/4 jobs |
 | Revisión independiente de seguridad | Diseño, parser, loader y tests | Sin hallazgos críticos/importantes reproducibles |
 
 El intento inicial de suite Linux montó el root como `/workspace`; `test_structure` falló porque el bundle SSEC exige que el directorio coincida con el nombre del skill. El test pasó al repetir el mismo árbol con su nombre canónico. La suite completa Windows local quedó `NOT_RUN`: la primera ejecución desde el worktree comparte esa condición de nombre y la segunda, desde una copia temporal con nombre canónico, fue interrumpida sin resultado. Los tests Windows enfocados pasaron; la matriz CI de rama aún debe cubrir la suite completa.
