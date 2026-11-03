@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.11+ standard library, `dataclasses`, `hashlib`, `subprocess`, `unittest`, Git worktrees.
 
+**Execution status (2026-11-02):** Tasks 1–3 are implemented and committed; see
+[`docs/test-reports/p1-canonical-coordinator-evidence-2026-11-02.md`](../../test-reports/p1-canonical-coordinator-evidence-2026-11-02.md).
+The original RED command output for the initial Task 1/2 contract work was not
+retained, so those historical RED confirmations remain `NOT_VERIFIED`; the
+policy/worker and independent-review fixes have recorded RED→GREEN results.
+Task 4 records the complete-platform test results, including Windows setup
+errors and a Linux serial pass. This increment does not close Gate P1.
+
 **Spec:** `docs/CODEX_MASTER_MISSION.md` §2.4 and P1 items 3–6/Gate P1; `docs/architecture/ADR-001-runtime-boundaries.md` contracts and review boundary; `docs/superpowers/plans/2026-11-02-p1-untrusted-evidence.md` fail-closed baseline.
 
 ## Global Constraints
@@ -50,11 +58,11 @@
 - Frozen `SnapshotReference(source_tree_sha256: str, snapshot_tree_sha256: str, file_count: int, total_bytes: int, snapshot_path: Path)`; capture must prove the source stayed stable while copying.
 - Frozen `EvidenceRecord` and strict schema-version-1 JSON encode/decode. Required fields bind task digest/revision, execution/check IDs, base commit, candidate digest before/after, resolved executable/hash, argv/cwd, OS/Python/environment allowlist, start/finish UTC, timeout, process status/exit code, unittest count, evidence-relative log paths and SHA-256 values.
 
-- [ ] Add RED tests for canonical task hashing (request/check changes alter digest), check spec validation, untracked-content digest changes, tracked edits, and symlink/special-file refusal.
-- [ ] Run `python -m unittest discover -s tests -p test_execution_evidence.py -v`; confirm the new contract tests fail because the module/types/functions are absent.
-- [ ] Implement the contracts and strict field/path/status validation in `scripts/execution_evidence.py`; do not add authentication claims or trust a JSON `source` field.
-- [ ] Run the focused evidence and routing suites; confirm exact digests and invalid inputs behave as specified.
-- [ ] Commit `feat: define coordinator execution evidence contracts`.
+- [x] Add contract tests for canonical task hashing, check spec validation, untracked-content digests, tracked edits, and symlink/special-file refusal.
+- [ ] Historical RED run of `python -m unittest discover -s tests -p test_execution_evidence.py -v` before creating the module: `NOT_VERIFIED` because its output was not retained.
+- [x] Implement the contracts and strict field/path/status validation in `scripts/execution_evidence.py`; no authentication claims or trusted JSON `source` field.
+- [x] Run focused evidence and routing suites; current complete suite covers these cases.
+- [x] Commit `feat: define coordinator execution evidence contracts`.
 
 ### Task 2: Run Checks on Immutable Snapshots
 
@@ -69,11 +77,11 @@
 - Persist each final record only after containment quiesces and logs close/hash; atomically publish a schema-version-2 terminal manifest. Version-1 manifests are rejected and must be regenerated; interrupted/incomplete manifests cannot pass the gate.
 - Compute pass status from process outcome and protocol. For `unit_tests`, require safe-path Python, exit code 0 and a positive `Ran N tests` summary; zero/missing count fails. Any snapshot drift, including ignored files, invalidates the record and withholds passing status. Persist and verify a separate full snapshot artifact hash.
 
-- [ ] Add RED subprocess tests using a temporary Python repository: one actual unittest passes, one fails; `print("PASS")` and zero-test discovery fail as `unit_tests`; timeout/cancel, snapshot drift, malformed/partial manifest, and output hash tampering do not publish valid PASS evidence.
-- [ ] Run `python -m unittest discover -s tests -p test_check_runner.py -v`; confirm expected failures before implementation.
-- [ ] Implement snapshot capture, bounded check execution, containment, evidence-relative logs, hashes, and atomic terminal manifest.
-- [ ] Run the focused check-runner suite; inspect the actual child-process exit results and log hashes.
-- [ ] Commit `feat: execute deterministic checks into evidence manifests`.
+- [x] Add subprocess tests using a temporary Python repository for real unittest outcomes, forged PASS, zero tests, timeout/cancel, snapshot drift, malformed/partial manifest, and output hash tampering.
+- [ ] Historical RED run of `python -m unittest discover -s tests -p test_check_runner.py -v` before implementation: `NOT_VERIFIED` because its output was not retained.
+- [x] Implement snapshot capture, bounded check execution, containment, evidence-relative logs, hashes, and atomic terminal manifest.
+- [x] Run the focused check-runner suite; full Linux suite passed and checks execute as real child processes in temporary repositories.
+- [x] Commit `feat: execute deterministic checks into evidence manifests`.
 
 ### Task 3: Integrate Evidence and Preserve the Review Gate
 
@@ -90,11 +98,11 @@
 - `gate()` reads only coordinator check-run manifests under the task metadata directory, verifies schema, task/policy/base/role/branch/candidate digests, command/spec equality, evidence-root containment, current snapshot artifact hash, and current stdout/stderr hashes for every worker. It reports verified check IDs, missing checks, and policy-derived non-process obligations.
 - Even when every deterministic check passes, review, scientific, security, or release obligations derived from the task and initialized policy remain pending; `status == "BLOCKED"`, `evidence_verified == false`, and `release_status == "NOT_APPROVED"`.
 
-- [ ] Add RED integration tests for task drift rejection, valid checks bound to the initialized base and exact candidate, changed tracked/untracked bytes invalidating evidence, forged mailbox records having no effect, tampered/replayed manifests blocking, and valid check evidence without review remaining blocked.
-- [ ] Run `python -m unittest discover -s tests -p test_development_worktrees.py -v`; confirm the new assertions fail against the current runner/gate.
-- [ ] Integrate task digest, check execution, manifest verification and truthful report/gate states; preserve preview behavior and explicit provider cost acknowledgement.
-- [ ] Run the focused worktree, evidence, and check-runner suites; update docs/matrix with limitations and `NOT_RUN` labels.
-- [ ] Commit `feat: verify coordinator check evidence in worktree gate`.
+- [x] Add integration regressions for task drift, exact candidate, tracked/untracked drift, mailbox forgery, manifest tampering, and blocked review gates.
+- [x] Observe RED for the independently found shadowing/obligation/snapshot issues and for the added worker-omission and reviewer-policy regressions.
+- [x] Integrate task digest, check execution, manifest verification and truthful report/gate states; preserve preview behavior and explicit provider cost acknowledgement.
+- [x] Run focused worktree/evidence/check-runner coverage and update docs/matrix with limitations and `NOT_RUN` labels.
+- [x] Commit `feat: verify coordinator check evidence in worktree gate` and follow-up integrity fixes.
 
 ### Task 4: Close the Increment
 
@@ -102,8 +110,8 @@
 - Modify: `docs/superpowers/plans/2026-11-02-p1-canonical-coordinator-evidence.md`
 - Create: `docs/test-reports/p1-canonical-coordinator-evidence-2026-11-02.md`
 
-- [ ] Run full `python -m unittest discover -s tests -v`; report every failure, including known Windows symlink-fixture setup errors without skipping or weakening tests.
-- [ ] Run `python scripts/validate_skill.py`, relevant CLI `--help`, and `git diff --check`.
-- [ ] Record exact commit/SHA, commands/counts/results, open risks, provider/native-POSIX `NOT_RUN`, scientific boundary, and next P1 work.
-- [ ] Obtain one independent scoped review of the full increment. Fix only blocking findings in one TDD pass; document non-blocking risks and retain truthful gate states.
-- [ ] Commit `docs: record canonical coordinator evidence verification`.
+- [x] Run full `python -m unittest discover -s tests -v`; record Windows symlink-fixture setup errors, Linux serial pass, and one non-reproduced Linux interleaving failure.
+- [x] Run `python scripts/validate_skill.py`, relevant CLI `--help`, `py_compile`, and `git diff --check`.
+- [x] Record exact commit/SHA, commands/counts/results, open risks, provider/native-POSIX `NOT_RUN`, scientific boundary, and next P1 work.
+- [x] Obtain independent scoped reviews of the increment. Fix reviewer findings with RED→GREEN tests; document compatibility and same-user limitations, retaining blocked gate states.
+- [x] Commit `docs: record canonical coordinator evidence verification` (este informe y su actualización se incluyen en la rama draft).
