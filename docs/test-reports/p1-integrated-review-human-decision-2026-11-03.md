@@ -64,7 +64,7 @@ RED histórico: Task 1 tuvo dos fallos esperados por inventario/hook ausente; Ta
 ## Entornos no ejecutados y límites
 
 - Docker/Linux: `BLOCKED`. El controlador comprobó que el daemon local falla con `failed to connect to ... dockerDesktopLinuxEngine`; no se instaló ni se reintentó repetidamente. No hay resultado Linux para P1.4.
-- Provider E2E Codex/Gemini: `NOT_RUN`. Los fixtures offline lanzan Python local con salida determinista; ningún PASS de fixture acredita un proveedor real.
+- Provider E2E Codex/Gemini: `BLOCKED` para cierre verificado. Se ejecutó una sola invocación real mediante `GeminiRuntime`/`gemini` 0.64.0: proceso `FAILED`, exit code 41, stdout vacío y sin sesión/respuesta observada. Se conservó únicamente el SHA-256 de stderr (`c3ad69d861b08eb4c63c5b6e21e0b19fd38213edf10fd89623a2289d8eadd071`), no el diagnóstico legible; la causa queda sin determinar y no se reintentó. La CLI local `agy` 1.4.12 sí está instalada y su ayuda confirma `--prompt`/`-p`, `--output-format json` y `--sandbox`; no se le envió un prompt, por lo que su autenticación, sesión real y adaptación desde SSEC siguen `NOT_RUN`. La [documentación oficial de modo headless de AGY](https://antigravity.google/docs/cli/headless/) documenta `agy -p "..."`; esto no convierte el intento fallido de Gemini en evidencia de AGY.
 - Independencia de sesión/cuenta/contexto y sandbox efectivo: `UNVERIFIED`. IDs distintos y hashes locales no autentican proveedor ni demuestran aislamiento de SO.
 - GUI visual: `NOT_RUN`; no hay validación científica ni certificado matemático/numérico nuevo.
 
