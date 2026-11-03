@@ -15,4 +15,5 @@
 - [x] Implement the metadata-only loader CLI with exit 0/2 and document use in the portable skill reference.
 - [ ] Run focused Windows and Docker/Linux tests, full repository suite once, `py_compile`, CLI checks, and `git diff --check`. Focused Windows/Linux and full Linux passed; full Windows local is `NOT_RUN`; branch CI pending.
 - [x] Obtain one independent security review; fix only critical/important findings and rerun targeted regressions.
-- [ ] Update P3.2 evidence/roadmap, commit and push a separate branch, open a draft PR stacked on P3.1, attach it, and record CI status without merging.
+- [x] Update P3.2 evidence/roadmap, commit and push a separate branch, open draft PR #24 stacked on P3.1, attach it, and record the pending CI run #106 without merging.
+- [ ] Record final run #106 status and adjust the evidence report/feature matrix if CI differs from local evidence.
