@@ -71,3 +71,14 @@ python scripts/worktree_coordinator.py plan examples/seir_worktree_build.json --
 python scripts/worktree_coordinator.py init examples/seir_worktree_build.json --project /path/to/clean-git-project --apply
 python scripts/worktree_coordinator.py gate --project /path/to/clean-git-project --task-id SEIR-BUILD-01
 ```
+
+## Espacios científicos dinámicos (experimental)
+
+La app opcional abre las secciones configuradas por manifiesto, carga recursos mediante el loader seguro y muestra simulaciones y observaciones con componentes reutilizables. No necesita paquetes adicionales; la interfaz usa Tkinter, y el modo `--check` no importa ni inicia Tk. El renderer tiene límites de vista documentados, anuncia truncamientos y conserva las series completas en la tabla; esto no valida ciencia.
+
+```bash
+python scripts/scientific_workspace_app.py --project-root /ruta/al/proyecto workspace.json
+python scripts/scientific_workspace_app.py --check --project-root /ruta/al/proyecto workspace.json
+```
+
+Los recursos de código se muestran como texto inerte. La visualización no ejecuta callbacks generados ni valida ciencia. Consulte [manifiestos, loader y espacio de escritorio](references/SCIENTIFIC_WORKSPACES.md) para contratos, límites, muestreo y estados.

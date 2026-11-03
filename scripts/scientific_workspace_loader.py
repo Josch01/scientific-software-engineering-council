@@ -13,6 +13,7 @@ from pathlib import Path
 import stat
 import sys
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import BinaryIO, Iterator
 
 try:
@@ -59,14 +60,16 @@ class LoadedResource:
 
 @dataclass(frozen=True, slots=True, init=False)
 class LoadedWorkspace:
-    """Validated workspace metadata and all-or-nothing verified resources."""
+    """Immutable validated layout and all-or-nothing verified resources."""
 
     summary: manifest_api.WorkspaceSummary
+    manifest: Mapping[str, object]
     resources: tuple[LoadedResource, ...]
 
     def __init__(
         self,
         summary: manifest_api.WorkspaceSummary,
+        manifest: Mapping[str, object],
         resources: tuple[LoadedResource, ...],
         *,
         _loader_token: object | None = None,
@@ -74,6 +77,7 @@ class LoadedWorkspace:
         if _loader_token is not _LOADER_TOKEN:
             raise TypeError("verified workspaces can only be created by the loader")
         object.__setattr__(self, "summary", summary)
+        object.__setattr__(self, "manifest", manifest)
         object.__setattr__(self, "resources", resources)
 
     def to_dict(self) -> dict[str, object]:
@@ -247,6 +251,15 @@ def _parse_and_validate(raw: bytes) -> tuple[Mapping[str, object], manifest_api.
     return payload, summary
 
 
+def _freeze_json(value: object) -> object:
+    """Recursively freeze JSON containers before exposing validated metadata."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
 def load_scientific_workspace(
     project_root: str | os.PathLike[str],
     manifest_relative_path: str,
@@ -299,7 +312,14 @@ def load_scientific_workspace(
         )
         total_bytes += len(content)
 
-    return LoadedWorkspace(summary, tuple(loaded), _loader_token=_LOADER_TOKEN)
+    frozen_manifest = _freeze_json(payload)
+    assert isinstance(frozen_manifest, Mapping)
+    return LoadedWorkspace(
+        summary,
+        frozen_manifest,
+        tuple(loaded),
+        _loader_token=_LOADER_TOKEN,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

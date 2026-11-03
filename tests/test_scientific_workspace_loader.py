@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 import unittest
 
 
@@ -65,6 +66,27 @@ class ScientificWorkspaceLoaderTests(unittest.TestCase):
         self.assertEqual(resource.content, content)
         self.assertEqual(resource.sha256, hashlib.sha256(content).hexdigest())
         self.assertEqual(loaded.summary.workspace_id, "sir-study")
+
+    def test_loaded_manifest_is_available_and_recursively_immutable(self):
+        loader = self._loader()
+        content = b"inert"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "data").mkdir()
+            (root / "data" / "observations.bin").write_bytes(content)
+            (root / "workspace.json").write_text(
+                json.dumps(minimal_manifest(content)), encoding="utf-8"
+            )
+            loaded = loader.load_scientific_workspace(root, "workspace.json")
+
+        self.assertIsInstance(loaded.manifest, Mapping)
+        self.assertEqual(loaded.manifest["sections"][0]["components"][0]["id"], "table")
+        with self.assertRaises(TypeError):
+            loaded.manifest["title"] = "changed"
+        with self.assertRaises(TypeError):
+            loaded.manifest["sections"][0]["title"] = "changed"
+        with self.assertRaises(AttributeError):
+            loaded.manifest["sections"].append({})
 
     def test_missing_digest_is_rejected_before_resource_open(self):
         loader = self._loader()
