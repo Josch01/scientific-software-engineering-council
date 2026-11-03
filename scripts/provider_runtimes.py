@@ -376,7 +376,7 @@ class _CliRuntime:
                     run.containment_quiesced = True
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     status, evidence_stable = RuntimeStatus.FAILED, False
-                    detail = f"Containment termination UNVERIFIED: {exc}"
+                    detail = f"Containment termination UNVERIFIED ({type(exc).__name__}): {exc}"
                     error = f"{error}; {detail}" if error else detail
                 finally:
                     try:

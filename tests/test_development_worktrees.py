@@ -2,6 +2,7 @@
 import json
 from dataclasses import replace
 import hashlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,8 @@ from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha
 from scripts.configuration import DEFAULT_CONFIG
 from scripts.prepare_agents import choose_roles
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
-from scripts.development_runner import execute,run_worker
+from scripts.development_runner import (_cli_exit_code, execute, run_worker, _review_diff,
+                                       _MAX_REVIEW_DIFF_BYTES, _persist_review_artifacts)
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
 from scripts.provider_runtimes import GeminiRuntime
 
@@ -161,7 +163,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_execute_rejects_task_digest_drift_before_runtime_launch(self):
         task=task_with_checks()
-        initialize(task,POLICY,self.root,apply=True)
+        state=initialize(task,POLICY,self.root,apply=True)
         changed=dict(task,request="a different request with the same id")
         calls=[]
         def runtime_factory(provider):
@@ -178,8 +180,8 @@ class WorktreeTests(unittest.TestCase):
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
         self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
-        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
-                         report["check_evidence"])
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE",
+                         {"checks":report["check_evidence"],"workers":report["results"]})
         self.assertEqual(report["release_status"],"NOT_APPROVED")
         evidence=report["check_evidence"]
         self.assertEqual({item["role"] for item in evidence},{w["role"] for w in state["workers"]})
@@ -204,7 +206,9 @@ class WorktreeTests(unittest.TestCase):
                        minutes=2,runtime_factory=lambda provider: LocalPythonRuntime())
         expected={"software_review","independent_review","security_audit","release_review",
                   "scientific_validation","gui_smoke","cross_platform","idl_integration"}
-        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(report["execution"],"REVIEW_BLOCKED_INVOCATION_LIMIT",
+                         {"check_evidence":report["check_evidence"],
+                          "worker_results":report["results"]})
         self.assertEqual(set(report["pending_evidence_ids"]),expected)
         self.assertTrue(all(set(item["verified_process_check_ids"])==
                             {"unit_tests","static_analysis"} for item in report["check_evidence"]))
@@ -215,6 +219,101 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(gate_result["evidence_verified"])
         self.assertEqual(gate_result["release_status"],"NOT_APPROVED")
         self.assertEqual(len(state["workers"]),len(report["check_evidence"]))
+
+    def test_cli_exit_code_is_nonzero_while_review_is_incomplete(self):
+        for execution in ("CHECKS_VERIFIED_AWAITING_REVIEW", "REVIEW_INCOMPLETE",
+                          "REVIEW_BLOCKED", "REVIEW_BLOCKED_INVOCATION_LIMIT",
+                          "REVIEW_FINDINGS_AWAITING_FIX"):
+            with self.subTest(execution=execution):
+                self.assertEqual(_cli_exit_code({"execution":execution}),2)
+        self.assertEqual(_cli_exit_code({"execution":"PREVIEW_ONLY"}),0)
+
+    def test_attempt_persistence_failure_prevents_successful_review_manifest(self):
+        attempt={"schema_version":1,"task_id":"task-1","task_revision":"rev-1",
+            "task_sha256":"a"*64,"base_commit":"b"*40,"worker_role":"worker",
+            "reviewer_role":"independent_reviewer","requested_provider":"gemini",
+            "runtime_run_id":"run-1","runtime_adapter_type":None,"identity":None,
+            "status":"FAILED","review_independence":"UNVERIFIED_WITHOUT_PROVIDER_E2E",
+            "started_at_utc":"2026-11-02T00:00:00Z",
+            "finished_at_utc":"2026-11-02T00:00:01Z","error":"fixture failure"}
+        attempt_path=self.root/"attempt.json"
+        manifest_path=self.root/"manifest.json"
+        with patch("scripts.development_runner._write_review_json",
+                   side_effect=OSError("attempt storage unavailable")) as write_json, \
+                patch("scripts.development_runner.validate_review_manifest") as validate_manifest:
+            with self.assertRaisesRegex(OSError,"attempt storage unavailable"):
+                _persist_review_artifacts(attempt,attempt_path,{"status":"PASSED"},
+                                          manifest_path,self.root)
+
+        write_json.assert_called_once()
+        self.assertEqual(write_json.call_args.args[0],attempt_path)
+        validate_manifest.assert_not_called()
+        self.assertFalse(manifest_path.exists())
+
+    def test_manifest_persistence_failure_marks_successful_attempt_failed(self):
+        from scripts.development_runner import _write_review_json
+        from scripts.review_evidence import validate_review_attempt
+        identity={"task_id":"task-1","task_revision":"rev-1","task_sha256":"a"*64,
+            "base_commit":"b"*40,"worker_role":"worker","candidate_tree_sha256":"c"*64,
+            "diff_sha256":"d"*64,"check_manifest_sha256":"e"*64}
+        attempt={"schema_version":1,"task_id":"task-1","task_revision":"rev-1",
+            "task_sha256":"a"*64,"base_commit":"b"*40,"worker_role":"worker",
+            "reviewer_role":"independent_review","requested_provider":"gemini",
+            "runtime_run_id":"run-1","runtime_adapter_type":"scripts.provider_runtimes.GeminiRuntime",
+            "identity":identity,"status":"REVIEW_REPORT_VALID",
+            "review_independence":"UNVERIFIED_WITHOUT_PROVIDER_E2E",
+            "started_at_utc":"2026-11-02T00:00:00Z",
+            "finished_at_utc":"2026-11-02T00:00:01Z","error":None}
+        attempt_path=self.root/"attempt.json"
+        manifest_path=self.root/"manifest.json"
+        def fail_manifest_write(path,data,**kwargs):
+            if path==manifest_path:
+                raise OSError("manifest storage unavailable")
+            return _write_review_json(path,data,**kwargs)
+
+        with patch("scripts.development_runner._write_review_json",
+                   side_effect=fail_manifest_write):
+            with patch("scripts.development_runner.validate_review_manifest",
+                       return_value={"status":"PASSED"}):
+                with self.assertRaisesRegex(OSError,"manifest storage unavailable"):
+                    _persist_review_artifacts(attempt,attempt_path,{"status":"PASSED"},
+                                              manifest_path,self.root)
+
+        persisted=validate_review_attempt(json.loads(attempt_path.read_text(encoding="utf-8")))
+        self.assertEqual(persisted["status"],"FAILED")
+        self.assertIn("manifest storage unavailable",persisted["error"])
+        self.assertFalse(manifest_path.exists())
+
+    def test_review_diff_bounds_tracked_and_untracked_candidate_content(self):
+        state={"base_commit":git(self.root,"rev-parse","HEAD")}
+        worker={"path":str(self.root)}
+        (self.root/"solver.py").write_text("x="+"1"*_MAX_REVIEW_DIFF_BYTES+"\n",encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"bounded command output exceeds"):
+            _review_diff(worker,state)
+
+        (self.root/"solver.py").write_text("x=1\n",encoding="utf-8")
+        for index in range(80):
+            (self.root/f"untracked-{index:03}.txt").write_text("x"*16_000,encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"bounded review input size"):
+            _review_diff(worker,state)
+
+    def test_review_diff_disables_repository_textconv_filters(self):
+        state={"base_commit":git(self.root,"rev-parse","HEAD")}
+        marker=Path(self.tmp.name)/"textconv-marker.txt"
+        script=Path(self.tmp.name)/"textconv_probe.py"
+        script.write_text("from pathlib import Path\n"
+                          f"Path({str(marker)!r}).write_text('executed')\n"
+                          "print('converted')\n",encoding="utf-8")
+        attributes=self.root/".git"/"info"/"attributes"
+        attributes.write_text("*.py diff=ssec-probe\n",encoding="utf-8")
+        git(self.root,"config","diff.ssec-probe.textconv",
+            shlex.join([sys.executable,str(script)]))
+        (self.root/"solver.py").write_text("x=2\n",encoding="utf-8")
+
+        diff,_=_review_diff({"path":str(self.root)},state)
+
+        self.assertIn("x=2",diff)
+        self.assertFalse(marker.exists(),"repository textconv filter executed during review preparation")
 
     def test_pending_evidence_matches_task_and_policy_requirements(self):
         task=task_with_checks()
@@ -271,7 +370,7 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
-        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE",
                          report["check_evidence"])
         _,metadata=load(self.root,task["task_id"])
         evidence=next(item for item in report["check_evidence"]
@@ -300,7 +399,8 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
-        self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE",
+                         {"checks":report["check_evidence"],"workers":report["results"]})
 
         _,metadata=load(self.root,task["task_id"])
         manifest=metadata/Path(report["check_evidence"][0]["manifest_path"])
@@ -349,6 +449,125 @@ class WorktreeTests(unittest.TestCase):
                 payload=Path(observed[name+"_path"]).read_bytes()
                 self.assertEqual(observed[name+"_sha256"],hashlib.sha256(payload).hexdigest())
         self.assertFalse(gate(self.root,TASK["task_id"])["automatic_merge"])
+
+    def test_reviewers_run_only_after_checks_and_fake_runtime_never_counts_as_review(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        fake_review_runtimes=[]
+        factory_calls=[]
+        def factory(provider):
+            is_reviewer=len(factory_calls)>=len(state["workers"])
+            factory_calls.append(("reviewer" if is_reviewer else "worker",provider))
+            if not is_reviewer:
+                return LocalPythonRuntime()
+            if provider=="gemini":
+                runtime=FakeRuntime((RuntimeStatus.SUCCEEDED,))
+                fake_review_runtimes.append(runtime)
+                return runtime
+            return LocalPythonRuntime()
+
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                       parallel=1,minutes=2,runtime_factory=factory)
+
+        self.assertEqual(report["check_status"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE")
+        self.assertEqual(len(factory_calls),len(state["workers"])+
+                         len(state["review_roles"]) * len(state["workers"]))
+        self.assertEqual(sum(kind=="reviewer" for kind,_ in factory_calls),
+                         len(state["review_roles"]) * len(state["workers"]))
+        self.assertTrue(report["review_evidence"])
+        self.assertTrue(all(item["status"]=="UNVERIFIED_RUNTIME_ADAPTER"
+                            for item in report["review_evidence"]))
+        from scripts.review_evidence import validate_review_manifest
+        _,metadata=load(self.root,task["task_id"])
+        for evidence in report["review_evidence"]:
+            manifest_path=metadata/Path(evidence["manifest_path"])
+            manifest=json.loads(manifest_path.read_text(encoding="utf-8"))
+            verified=validate_review_manifest(manifest,metadata)
+            self.assertEqual(verified["status"],"FAILED")
+            self.assertIsNone(verified["review_report"])
+        self.assertTrue(all(runtime.invocations==[] for runtime in fake_review_runtimes))
+        gate_result=gate(self.root,task["task_id"])
+        self.assertTrue(gate_result["checks_verified"])
+        self.assertEqual(gate_result["status"],"BLOCKED")
+        self.assertFalse(gate_result["evidence_verified"])
+        self.assertEqual(report["release_status"],"NOT_APPROVED")
+        self.assertFalse(any(event["kind"]=="REVIEW_ACCEPTED"
+                             for event in inspect(self.root,task["task_id"])["events"]))
+
+    def test_failed_deterministic_check_prevents_any_reviewer_runtime(self):
+        from scripts.check_runner import CheckRunResult
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        selected=[]
+        with patch("scripts.development_runner.run_checks",
+                   return_value=CheckRunResult("FAILED","failed-check",None,(),
+                                               ("fixture failure",),None)):
+            report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                           parallel=1,minutes=2,
+                           runtime_factory=lambda provider:(selected.append(provider) or
+                                                          LocalPythonRuntime()))
+
+        self.assertEqual(report["check_status"],"NOT_RUN")
+        self.assertEqual(report["review_evidence"],[])
+        self.assertEqual(selected,[worker["provider"] for worker in state["workers"]])
+        self.assertEqual(report["release_status"],"NOT_APPROVED")
+
+    def test_cancelled_review_persists_attempt_without_candidate_identity(self):
+        from scripts.development_runner import run_checks
+        from scripts.review_evidence import validate_review_attempt
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        completed_checks=[0]
+        def checks_then_cancel(*args,**kwargs):
+            result=run_checks(*args,**kwargs)
+            completed_checks[0]+=1
+            if completed_checks[0]==len(state["workers"]):
+                kwargs["stop_event"].set()
+            return result
+        with patch("scripts.development_runner.run_checks",side_effect=checks_then_cancel):
+            report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                           parallel=1,minutes=2,runtime_factory=lambda provider:LocalPythonRuntime())
+
+        self.assertEqual(report["check_status"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertEqual(report["review_status"],"REVIEW_INCOMPLETE")
+        self.assertTrue(report["review_evidence"])
+        _,metadata=load(self.root,task["task_id"])
+        for evidence in report["review_evidence"]:
+            self.assertEqual(evidence["status"],"CANCELLED")
+            self.assertIsNone(evidence["manifest_path"])
+            attempt_path=metadata/Path(evidence["attempt_path"])
+            attempt=validate_review_attempt(json.loads(attempt_path.read_text(encoding="utf-8")))
+            self.assertEqual(attempt["status"],"CANCELLED")
+            self.assertIsNone(attempt["identity"])
+
+    def test_offline_provider_fixture_cannot_be_counted_as_review_evidence(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        class FixtureGeminiRuntime(FakeRuntime):
+            pass
+
+        def factory(provider):
+            return FixtureGeminiRuntime((RuntimeStatus.SUCCEEDED,)) if provider=="gemini" else LocalPythonRuntime()
+
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                       parallel=1,minutes=2,runtime_factory=factory)
+
+        self.assertEqual(report["review_status"],"REVIEW_INCOMPLETE")
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE")
+        self.assertTrue(all(item["status"]=="UNVERIFIED_RUNTIME_ADAPTER"
+                            for item in report["review_evidence"]))
+        from scripts.review_evidence import validate_review_manifest
+        _,metadata=load(self.root,task["task_id"])
+        for evidence in report["review_evidence"]:
+            manifest=json.loads((metadata/evidence["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertTrue(manifest["runtime_adapter_type"].endswith(".FixtureGeminiRuntime"))
+            self.assertEqual(validate_review_manifest(manifest,metadata)["status"],"FAILED")
+            self.assertIsNone(manifest["review_report"])
+        gate_result=gate(self.root,task["task_id"])
+        self.assertEqual(gate_result["status"],"BLOCKED")
+        self.assertFalse(gate_result["evidence_verified"])
+        self.assertEqual(report["release_status"],"NOT_APPROVED")
 
 
 class RuntimeRunnerTests(unittest.TestCase):

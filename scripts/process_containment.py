@@ -254,7 +254,9 @@ class PosixGroup:
                 continue
             try:
                 stat = (directory / "stat").read_text(encoding="utf-8", errors="replace")
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
+                # /proc entries are a racy process snapshot. A PID that exits
+                # between enumeration and read cannot remain a live group member.
                 continue
             fields = stat[stat.rfind(")") + 2:].split()
             if len(fields) < 3:
@@ -273,6 +275,7 @@ class PosixGroup:
         # its PID/PGID until signalling and group confirmation are complete.
         self._pgid = process.pid
         observation_error = None
+        stage = "root observation"
         try:
             self.root_exited(process)
         except LostRootIdentityError:
@@ -282,15 +285,21 @@ class PosixGroup:
             # leader. Still stop its group; only confirmed identity loss forbids it.
             observation_error = f"POSIX root observation UNVERIFIED: {exc}"
         try:
+            stage = "group termination"
             os.killpg(self._pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + 5
-        while self._has_live_members():
-            if time.monotonic() >= deadline:
-                raise OSError("Process group still has live members after termination")
-            time.sleep(.01)
-        process.wait(timeout=5)
+        try:
+            stage = "live-member confirmation"
+            while self._has_live_members():
+                if time.monotonic() >= deadline:
+                    raise OSError("Process group still has live members after termination")
+                time.sleep(.01)
+            stage = "leader reap"
+            process.wait(timeout=5)
+        except OSError as exc:
+            raise OSError(f"POSIX quiescence failed during {stage}: {exc}") from exc
         # A warning is returned only after confirmed stop/reap. Callers must keep
         # the run FAILED without retrying a group whose root has now been reaped.
         return observation_error

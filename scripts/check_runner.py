@@ -301,6 +301,11 @@ def _snapshot_artifact_sha256(snapshot: Path) -> str:
     return digest.hexdigest()
 
 
+def snapshot_artifact_sha256(snapshot: Path) -> str:
+    """Public integrity check for a standalone archived candidate snapshot."""
+    return _snapshot_artifact_sha256(Path(snapshot))
+
+
 def _snapshot_tree_sha256(
     snapshot: Path,
     original: tuple[_CandidateTreeEntry, ...],
