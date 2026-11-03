@@ -171,7 +171,9 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            self.assertEqual(_project_root_hint(root), root)
+            hint = _project_root_hint(root)
+            self.assertIsNotNone(hint)
+            self.assertTrue(hint.samefile(root))
             self.assertIsNone(_project_root_hint(root / "missing"))
             self.assertIsNone(_project_root_hint(None))
             self.assertIsNone(_project_root_hint(""))

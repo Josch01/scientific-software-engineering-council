@@ -20,7 +20,9 @@
 | Docker/Linux, Python 3.14.0 | `python scripts/validate_skill.py` | PASS: `VALID STRUCTURE` |
 | Docker/Linux, Python 3.14.0 | `python -m unittest discover -s tests -q` (repetido tras el fix de revisión) | PASS: 401 tests, 6 omitidos, 162.408 s |
 | Windows, Python 3.14 | `py_compile` de supervisor/UI/tests y `git diff --check` | PASS |
-| GitHub Actions | PR de P3.4, con fix de revisión | Pendiente |
+| GitHub Actions | PR #26, run #122 | Ubuntu 3.11/3.12 PASS; Windows 3.11/3.12 fallaron solo en una aserción de ruta literal del test |
+
+El runner Windows usa la ruta DOS corta `C:\Users\RUNNER~1`, mientras que `Path.resolve()` devuelve su alias largo `C:\Users\runneradmin`. El helper devolvió la misma carpeta; la igualdad textual del test era incorrecta para rutas equivalentes. El test ahora usa `Path.samefile`, que comprueba identidad del directorio sin depender del alias. La prueba focalizada pasó en Windows local (9 tests); CI posterior a este ajuste queda pendiente.
 
 Los tests nuevos se observaron fallar antes del código: no existían `_create_window_root`, `_project_root_hint` ni `open_scientific_workspace`. El revisor independiente detectó que una cadena vacía terminaba en el directorio actual; la regresión falló antes del arreglo y pasó al hacer que valores vacíos o solo espacios activen la selección de raíz. La revisión fue estática, no ejecutó pruebas; no se solicitó otra ronda después del fix porque la regresión cubre el caso señalado.
 
