@@ -26,4 +26,20 @@ The supplied `rhs` callable executes in the caller's Python process. This API is
 - **Numerical validity:** the test suite compares exponential decay to its analytic solution and checks the expected fourth-order global convergence under step halving for that smooth example. This is evidence about the solver on that test case, not an error bound for an arbitrary project model.
 - **Scientific validity:** not assessed by this component. Model equations, assumptions, units, initial conditions, data provenance, and suitability require a separate domain review. A successful integration or small residual does not establish identifiability, uniqueness, causal validity, or model correctness.
 
-Use this API as a reusable engine for a future project-specific workspace. The modified SIR model and experimental-data workflow remain pending user-provided equations/data; no SIR result is included or claimed here. Adaptive/stiff solvers, sensitivity, optimization, uncertainty, PDEs, and scientific audit automation remain planned.
+Use this API as a reusable engine for a future project-specific workspace. The modified SIR model and experimental-data workflow remain pending user-provided equations/data; no SIR result is included or claimed here. Adaptive/stiff solvers, optimization, uncertainty, PDEs, and scientific audit automation remain planned.
+
+## Local ODE parameter sensitivities (experimental P2.2)
+
+`parameter_sensitivities(problem, perturbations, max_step, *, max_steps=..., max_total_steps=...)` estimates local derivatives of the RK4 trajectory. `perturbations` maps selected parameter names to explicit positive **absolute** step sizes; parameter mapping order is preserved in the final axis. The function computes one base solution and two perturbed trajectories per selected parameter, with other parameters and the initial state fixed.
+
+For each time and state, the result stores
+
+```text
+(y(p_upper) - y(p_lower)) / (p_upper - p_lower)
+```
+
+under `OdeSensitivity.values[time][state][parameter]`. The serialized form includes the base trajectory, supplied steps, effective representable bounds, grid, aggregate integration work, and RHS evaluation count. `max_total_steps` is checked before any RHS callback runs. A callback failure at either perturbed endpoint aborts the whole computation and identifies the parameter and side.
+
+The central difference approximates the sensitivity of **discretized** trajectories. Its accuracy depends on perturbation size, local smoothness, floating-point cancellation, and the RK4 step size. The caller is responsible for choosing perturbations that stay within the model's parameter domain. A request is bounded to 100 parameters and 1,000,000 scalar output/intermediate values; `max_total_steps` defaults to 1,000,000 and is checked before any callback runs. The API does not estimate derivative error, choose perturbations, test identifiability, propagate measurement uncertainty, or validate scientific assumptions. Its callback executes in-process and is not sandboxed.
+
+Tests compare exponential decay sensitivities with an analytic derivative, exercise state/parameter axis ordering and cross terms, and verify second-order central-difference error reduction on `y'=p^3`. These checks establish behavior only for the tested functions; they do not validate the user's still-unspecified SIR.

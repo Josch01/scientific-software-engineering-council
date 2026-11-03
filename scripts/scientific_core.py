@@ -14,6 +14,9 @@ from types import MappingProxyType
 State = tuple[float, ...]
 RightHandSide = Callable[[float, State, Mapping[str, float]], Sequence[float]]
 _DEFAULT_MAX_STEPS = 1_000_000
+_DEFAULT_MAX_TOTAL_SENSITIVITY_STEPS = 1_000_000
+_MAX_SENSITIVITY_PARAMETERS = 100
+_MAX_SENSITIVITY_VALUES = 1_000_000
 
 
 def _finite_float(value: object, label: str) -> float:
@@ -120,6 +123,58 @@ class OdeSolution:
             "requested_max_step": self.requested_max_step,
             "actual_step_size": self.step_size,
             "step_count": self.step_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OdeSensitivity:
+    """Central finite-difference sensitivities of an RK4 trajectory.
+
+    ``values`` is indexed as [time][state][parameter]. Sensitivities hold the
+    initial state fixed and correspond to the discretized RK4 trajectories.
+    """
+
+    base_solution: OdeSolution
+    parameter_names: tuple[str, ...]
+    perturbations: Mapping[str, float]
+    parameter_bounds: Mapping[str, tuple[float, float]]
+    values: tuple[tuple[tuple[float, ...], ...], ...]
+    total_step_count: int
+
+    @property
+    def times(self) -> tuple[float, ...]:
+        return self.base_solution.times
+
+    @property
+    def state_names(self) -> tuple[str, ...]:
+        return self.base_solution.state_names
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-safe result with explicit axes, perturbations, and work."""
+        return {
+            "schema_version": 1,
+            "method": "CENTRAL_FINITE_DIFFERENCE",
+            "solver_method": self.base_solution.method,
+            "times": list(self.times),
+            "state_names": list(self.state_names),
+            "parameter_names": list(self.parameter_names),
+            "base_parameters": dict(self.base_solution.parameters),
+            "base_values": [list(state) for state in self.base_solution.states],
+            "perturbations": dict(self.perturbations),
+            "parameter_bounds": {
+                name: {"lower": bounds[0], "upper": bounds[1]}
+                for name, bounds in self.parameter_bounds.items()
+            },
+            "values": [
+                [list(state_sensitivities) for state_sensitivities in time_sensitivities]
+                for time_sensitivities in self.values
+            ],
+            "requested_max_step": self.base_solution.requested_max_step,
+            "actual_step_size": self.base_solution.step_size,
+            "step_count_per_trajectory": self.base_solution.step_count,
+            "trajectory_count": 1 + 2 * len(self.parameter_names),
+            "total_step_count": self.total_step_count,
+            "rhs_evaluation_count": 4 * self.total_step_count,
         }
 
 
@@ -240,4 +295,161 @@ def solve_rk4(
         requested_max_step=requested_step,
         step_size=step_size,
         step_count=step_count,
+    )
+
+
+def parameter_sensitivities(
+    problem: OdeProblem,
+    perturbations: Mapping[str, float],
+    max_step: float,
+    *,
+    max_steps: int = _DEFAULT_MAX_STEPS,
+    max_total_steps: int = _DEFAULT_MAX_TOTAL_SENSITIVITY_STEPS,
+) -> OdeSensitivity:
+    """Estimate local parameter sensitivities with explicit central steps.
+
+    Each selected parameter is perturbed by its supplied absolute amount in
+    both directions. The function solves one baseline plus two trajectories
+    per parameter on a shared fixed-step grid. It does not select perturbation
+    sizes, check physical parameter domains, estimate derivative error, or
+    establish identifiability.
+    """
+    if not isinstance(problem, OdeProblem):
+        raise ValueError("problem must be an OdeProblem")
+    if not isinstance(perturbations, Mapping) or not perturbations:
+        raise ValueError("perturbations must be a non-empty mapping")
+    if len(perturbations) > _MAX_SENSITIVITY_PARAMETERS:
+        raise ValueError(
+            f"perturbations exceed the {_MAX_SENSITIVITY_PARAMETERS}-parameter limit"
+        )
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
+        raise ValueError("max_steps must be a positive integer")
+    if (
+        isinstance(max_total_steps, bool)
+        or not isinstance(max_total_steps, int)
+        or max_total_steps < 1
+    ):
+        raise ValueError("max_total_steps must be a positive integer")
+
+    requested_step = _finite_float(max_step, "max_step")
+    if requested_step <= 0.0:
+        raise ValueError("max_step must be positive and finite")
+
+    parameter_names: list[str] = []
+    steps: dict[str, float] = {}
+    bounds: dict[str, tuple[float, float]] = {}
+    for name, raw_step in perturbations.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("perturbation parameter names must be non-empty strings")
+        if name not in problem.parameters:
+            raise ValueError(f"unknown sensitivity parameter {name!r}")
+        step = _finite_float(raw_step, f"perturbations[{name!r}]")
+        if step <= 0.0:
+            raise ValueError(f"perturbation for parameter {name!r} must be positive")
+
+        center = problem.parameters[name]
+        lower = center - step
+        upper = center + step
+        if (
+            not math.isfinite(lower)
+            or not math.isfinite(upper)
+            or not lower < center < upper
+        ):
+            raise ValueError(
+                f"perturbation bounds for parameter {name!r} are not finite and distinct"
+            )
+        denominator = upper - lower
+        if not math.isfinite(denominator) or denominator <= 0.0:
+            raise ValueError(
+                f"perturbation span for parameter {name!r} is not finite and positive"
+            )
+        parameter_names.append(name)
+        steps[name] = step
+        bounds[name] = (lower, upper)
+
+    start, end = problem.t_span
+    span = end - start
+    required_steps = span / requested_step
+    if not math.isfinite(required_steps) or required_steps > max_steps:
+        raise ValueError(f"required step count exceeds max_steps={max_steps}")
+    step_count = max(1, math.ceil(required_steps))
+    trajectory_count = 1 + 2 * len(parameter_names)
+    total_step_count = trajectory_count * step_count
+    if total_step_count > max_total_steps:
+        raise ValueError(
+            f"sensitivity requires {total_step_count} steps, exceeds "
+            f"max_total_steps={max_total_steps}"
+        )
+    value_slots = (
+        (step_count + 1)
+        * len(problem.initial_state)
+        * (2 * len(parameter_names) + 3)
+    )
+    if value_slots > _MAX_SENSITIVITY_VALUES:
+        raise ValueError(
+            f"sensitivity output/intermediates exceed {_MAX_SENSITIVITY_VALUES} values"
+        )
+
+    base_solution = solve_rk4(problem, requested_step, max_steps=max_steps)
+    values = [
+        [[0.0 for _ in parameter_names] for _ in problem.initial_state]
+        for _ in base_solution.times
+    ]
+
+    for parameter_index, name in enumerate(parameter_names):
+        lower, upper = bounds[name]
+        solutions: dict[str, OdeSolution] = {}
+        for side, perturbed_value in (("lower", lower), ("upper", upper)):
+            perturbed_parameters = dict(problem.parameters)
+            perturbed_parameters[name] = perturbed_value
+            try:
+                perturbed_problem = OdeProblem(
+                    rhs=problem.rhs,
+                    t_span=problem.t_span,
+                    initial_state=problem.initial_state,
+                    parameters=perturbed_parameters,
+                    state_names=problem.state_names,
+                )
+                solutions[side] = solve_rk4(
+                    perturbed_problem, requested_step, max_steps=max_steps
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"sensitivity trajectory failed for parameter {name!r} "
+                    f"{side} perturbation: {exc}"
+                ) from exc
+
+        denominator = upper - lower
+        lower_solution = solutions["lower"]
+        upper_solution = solutions["upper"]
+        if (
+            lower_solution.times != base_solution.times
+            or upper_solution.times != base_solution.times
+        ):
+            raise ValueError("sensitivity trajectories produced inconsistent time grids")
+        for time_index, (lower_state, upper_state) in enumerate(
+            zip(lower_solution.states, upper_solution.states)
+        ):
+            for state_index, (lower_value, upper_value) in enumerate(
+                zip(lower_state, upper_state)
+            ):
+                sensitivity = (upper_value - lower_value) / denominator
+                if not math.isfinite(sensitivity):
+                    raise ValueError(
+                        f"sensitivity is not finite for parameter {name!r} "
+                        f"at time index {time_index}, state {state_index}"
+                    )
+                values[time_index][state_index][parameter_index] = sensitivity
+
+    frozen_values = tuple(
+        tuple(tuple(state_values) for state_values in time_values)
+        for time_values in values
+    )
+    return OdeSensitivity(
+        base_solution=base_solution,
+        parameter_names=tuple(parameter_names),
+        perturbations=MappingProxyType(steps),
+        parameter_bounds=MappingProxyType(bounds),
+        values=frozen_values,
+        total_step_count=total_step_count,
     )
