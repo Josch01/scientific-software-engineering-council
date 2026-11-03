@@ -398,6 +398,7 @@ def capture_snapshot(source: Path, destination: Path) -> SnapshotReference:
             file_count=len(copied_entries),
             total_bytes=total_bytes,
             snapshot_path=destination_path,
+            logical_modes=tuple((entry.relative_path, entry.executable) for entry in copied_entries),
         )
     except Exception:
         if partial.exists() and not partial.is_symlink():

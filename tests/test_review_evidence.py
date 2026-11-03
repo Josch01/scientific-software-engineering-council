@@ -1,5 +1,8 @@
 import json
 import hashlib
+import copy
+import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +12,7 @@ import time
 import unittest
 
 from scripts.check_runner import _snapshot_artifact_sha256, capture_snapshot, read_check_manifest, run_checks
-from scripts.execution_evidence import canonical_task_sha256
+from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256
 from scripts.review_evidence import (parse_review_report, report_sha256,
                                      validate_review_attempt, validate_review_manifest)
 from scripts.reviewer_output import extract_final_response
@@ -457,6 +460,128 @@ class ReviewManifestTests(unittest.TestCase):
         changed = dict(self.manifest, review_independence="VERIFIED")
         with self.assertRaisesRegex(ValueError, "unverified independence"):
             validate_review_manifest(changed, self.metadata)
+
+    def _schema2(self):
+        return dict(self.manifest, schema_version=2,
+                    snapshot_logical_modes=[{"path": "candidate.txt", "executable": False}])
+
+    def _executable_candidate(self):
+        """Real Git baseline executable plus a tracked, edited executable."""
+        for name in ("baseline.sh", "changed.sh"):
+            path = self.repo / name
+            path.write_bytes(b"#!/bin/sh\necho original\n")
+            if os.name != "nt":
+                path.chmod(path.stat().st_mode | stat.S_IXUSR)
+            _git(self.repo, "add", name)
+            _git(self.repo, "update-index", "--chmod=+x", name)
+        _git(self.repo, "commit", "-m", "tracked executable baseline")
+        self.state["base_commit"] = _git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "changed.sh").write_bytes(b"#!/bin/sh\necho changed\n")
+        checked = run_checks(self.task, self.state, self.worker, self.metadata,
+                             stop_event=threading.Event(), deadline=time.monotonic() + 30)
+        self.assertEqual(checked.status, "PASSED", checked.errors)
+        self.check_manifest_path = checked.manifest_path
+        self.check_manifest = read_check_manifest(checked.manifest_path, self.metadata)
+        self.check_manifest_hash = hashlib.sha256(checked.manifest_path.read_bytes()).hexdigest()
+        self.review_snapshot = self.metadata / "review-runs/run-2/mode-snapshot"
+        self.review_snapshot_ref = capture_snapshot(self.repo, self.review_snapshot)
+        self.snapshot_hash = _snapshot_artifact_sha256(self.review_snapshot)
+        self.manifest = self._make_manifest()
+        return dict(self.manifest, schema_version=2, snapshot_logical_modes=[
+            {"path": "baseline.sh", "executable": True},
+            {"path": "candidate.txt", "executable": False},
+            {"path": "changed.sh", "executable": True},
+        ])
+
+    def test_schema2_capture_inventory_and_non_executable_review(self):
+        self.assertEqual(self.review_snapshot_ref.logical_modes, (("candidate.txt", False),))
+        parsed = validate_review_manifest(self._schema2(), self.metadata)
+        self.assertEqual(parsed["status"], "PASSED")
+        self.assertEqual(parsed["schema_version"], 2)
+
+    def test_schema2_real_git_baseline_and_changed_executables_are_hash_bound(self):
+        manifest = self._executable_candidate()
+        self.assertEqual(self.review_snapshot_ref.logical_modes,
+                         (("baseline.sh", True), ("candidate.txt", False), ("changed.sh", True)))
+        self.assertEqual(candidate_tree_sha256(self.repo), manifest["candidate_tree_sha256"])
+        parsed = validate_review_manifest(manifest, self.metadata)
+        self.assertEqual(parsed["status"], "PASSED")
+        self.assertEqual(parsed["review_snapshot_tree_sha256"], parsed["candidate_tree_sha256"])
+        # Legacy mode evidence remains unchanged; Windows cannot recover lost bits.
+        if os.name == "nt":
+            with self.assertRaisesRegex(ValueError, "tree"):
+                validate_review_manifest(self.manifest, self.metadata)
+        else:
+            self.assertEqual(validate_review_manifest(self.manifest, self.metadata)["status"], "PASSED")
+
+    def test_schema2_inventory_rejects_bad_shape_order_paths_and_boolean_coercion(self):
+        manifest = self._executable_candidate()
+        inventory = manifest["snapshot_logical_modes"]
+        invalid = [None, {}, tuple(inventory), [], inventory[:-1],
+                   inventory + [{"path": "extra.txt", "executable": False}],
+                   inventory + [inventory[-1]], list(reversed(inventory)),
+                   [dict(inventory[0], extra="field")] + inventory[1:],
+                   [{"path": "baseline.sh"}] + inventory[1:]]
+        for bad_path in ("../baseline.sh", "/baseline.sh", "./baseline.sh", "a//b", "a/../b",
+                         "a\\b", "C:drive", "a/C:drive", ".git/config", "a\x00b", "a\nb"):
+            invalid.append([dict(inventory[0], path=bad_path)] + inventory[1:])
+        for non_bool in (0, 1, 1.0, "true", None):
+            invalid.append([dict(inventory[0], executable=non_bool)] + inventory[1:])
+        for value in invalid:
+            with self.subTest(inventory=value), self.assertRaisesRegex(ValueError, "inventory"):
+                validate_review_manifest(dict(manifest, snapshot_logical_modes=value), self.metadata)
+        missing = dict(manifest)
+        del missing["snapshot_logical_modes"]
+        with self.assertRaises(ValueError):
+            validate_review_manifest(missing, self.metadata)
+
+    def test_schema2_changed_logical_executable_bool_is_rejected(self):
+        manifest = self._executable_candidate()
+        changed = copy.deepcopy(manifest)
+        changed["snapshot_logical_modes"][0]["executable"] = False
+        # Files and the outer artifact digests are unchanged: reach mode binding.
+        with self.assertRaisesRegex(ValueError, "mode|tree"):
+            validate_review_manifest(changed, self.metadata)
+
+    def test_schema2_rehashed_snapshot_content_mutation_still_rejected(self):
+        manifest = self._schema2()
+        (self.review_snapshot / "candidate.txt").write_bytes(b"altered\n")
+        artifact = _snapshot_artifact_sha256(self.review_snapshot)
+        changed = dict(manifest, snapshot_artifact_sha256_before=artifact,
+                       snapshot_artifact_sha256_after=artifact)
+        with self.assertRaisesRegex(ValueError, "tree"):
+            validate_review_manifest(changed, self.metadata)
+
+    @unittest.skipIf(os.name == "nt", "POSIX physical chmod mode checks require POSIX")
+    def test_schema2_rehashed_posix_chmod_tampering_rejected(self):
+        manifest = self._schema2()
+        path = self.review_snapshot / "candidate.txt"
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        artifact = _snapshot_artifact_sha256(self.review_snapshot)
+        changed = dict(manifest, snapshot_artifact_sha256_before=artifact,
+                       snapshot_artifact_sha256_after=artifact)
+        with self.assertRaisesRegex(ValueError, "mode"):
+            validate_review_manifest(changed, self.metadata)
+
+    def test_schema2_failed_snapshot_path_mutation_is_forensic_not_pass(self):
+        manifest = self._schema2()
+        (self.review_snapshot / "candidate.txt").unlink()
+        (self.review_snapshot / "added.txt").write_bytes(b"runtime mutation\n")
+        changed = dict(manifest, status="FAILED", verdict=None, review_report=None,
+                       review_report_sha256=None, error="runtime mutated the review snapshot",
+                       snapshot_artifact_sha256_after=_snapshot_artifact_sha256(self.review_snapshot))
+        parsed = validate_review_manifest(changed, self.metadata)
+        self.assertEqual(parsed["status"], "FAILED")
+        self.assertIsNone(parsed["review_report"])
+        self.assertNotEqual(parsed["snapshot_artifact_sha256_before"], parsed["snapshot_artifact_sha256_after"])
+        changed["snapshot_logical_modes"][0]["executable"] = 0
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            validate_review_manifest(changed, self.metadata)
+
+    def test_schema1_rejects_inventory_extension_and_remains_compatible(self):
+        self.assertEqual(validate_review_manifest(self.manifest, self.metadata)["status"], "PASSED")
+        with self.assertRaises(ValueError):
+            validate_review_manifest(dict(self.manifest, snapshot_logical_modes=[]), self.metadata)
 
 
 if __name__ == "__main__":

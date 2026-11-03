@@ -451,6 +451,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
             "snapshot_artifact_sha256_after":after_artifact,
             "review_snapshot_tree_sha256":(snapshot_reference.snapshot_tree_sha256
                                              if snapshot_reference else None),
+            "snapshot_logical_modes":([{"path":path,"executable":executable}
+                for path,executable in snapshot_reference.logical_modes]
+                if snapshot_reference else None),
             "verdict":effective_report["verdict"] if effective_report else None,
             "report_sha256":report_sha256(effective_report) if effective_report else None,
             "report":effective_report,"started_at_utc":getattr(observed,"started_at_utc",started_at),
@@ -485,7 +488,7 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
                 if not error:
                     error="review did not produce a validated report"
                     result["error"]=error
-            manifest={"schema_version":1,"status":persisted_status,
+            manifest={"schema_version":2,"status":persisted_status,
                 "task_id":task["task_id"],"task_revision":state["task_revision"],
                 "task_sha256":state["task_sha256"],"base_commit":state["base_commit"],
                 "worker_role":worker["role"],"candidate_tree_sha256":identity["candidate_tree_sha256"],
@@ -504,6 +507,7 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
                 "stderr_path":stderr_ref,"stderr_sha256":stderr_hash,
                 "snapshot_path":result["snapshot_path"],
                 "review_snapshot_tree_sha256":result["review_snapshot_tree_sha256"],
+                "snapshot_logical_modes":result["snapshot_logical_modes"],
                 "snapshot_artifact_sha256_before":before_artifact,
                 "snapshot_artifact_sha256_after":after_artifact,
                 "started_at_utc":result["started_at_utc"],"finished_at_utc":result["finished_at_utc"],
