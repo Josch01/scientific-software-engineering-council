@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "generic-model",
+    "title": "Generic model workspace",
+    "summary": "A metadata-only example; no scientific model is asserted."
+  },
+  "artifacts": [
+    {
+      "id": "definition",
+      "kind": "model_definition",
+      "path": "model/definition.json"
+    },
+    {
+      "id": "simulation",
+      "kind": "simulation_result",
+      "path": "results/simulation.json"
+    },
+    {
+      "id": "audit-report",
+      "kind": "audit_report",
+      "path": "reports/audit.json"
+    }
+  ],
+  "pages": [
+    {
+      "id": "overview",
+      "title": "Model overview",
+      "components": [
+        {
+          "id": "equations-view",
+          "kind": "equations",
+          "title": "Model definition",
+          "artifact_ids": ["definition"]
+        },
+        {
+          "id": "simulation-view",
+          "kind": "simulation_plot",
+          "title": "Simulation result",
+          "artifact_ids": ["simulation"]
+        },
+        {
+          "id": "audit-view",
+          "kind": "audit",
+          "title": "Audit evidence",
+          "artifact_ids": ["audit-report"]
+        }
+      ]
+    }
+  ]
+}
