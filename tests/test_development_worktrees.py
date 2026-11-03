@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
@@ -85,6 +86,40 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(x["status"],"PREVIEW_NOT_STARTED")
         self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
 
+    def test_plan_validates_role_owned_work_items_before_initializing(self):
+        task=task_with_checks()
+        roles,reviewers,_=choose_roles(task,POLICY)
+        from tests.test_work_items import work_item
+        task["work_items"]=[work_item(role,required_reviewers=reviewers) for role in roles]
+        state=plan(task,POLICY,self.root)
+        self.assertEqual(state["task_packet"]["work_items"],task["work_items"])
+        for bad_items in (task["work_items"][:-1],
+                          [dict(item,tests=["undeclared"]) for item in task["work_items"]]):
+            with self.subTest(items=bad_items),self.assertRaises(ValueError):
+                plan(dict(task,work_items=bad_items),POLICY,self.root)
+        self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
+
+    def test_load_revalidates_work_items_even_with_recomputed_packet_digest(self):
+        task=task_with_checks()
+        roles,reviewers,_=choose_roles(task,POLICY)
+        from tests.test_work_items import work_item
+        task["work_items"]=[work_item(role,required_reviewers=reviewers) for role in roles]
+        state=initialize(task,POLICY,self.root,apply=True)
+        _,dest=load(self.root,task["task_id"])
+        state["task_packet"]["work_items"][0]["dependencies"]=["unsupported"]
+        state["task_sha256"]=canonical_task_sha256(state["task_packet"])
+        (dest/"state.json").write_text(json.dumps(state),encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"dependencies"):
+            load(self.root,task["task_id"])
+
+    def test_legacy_packet_loads_but_gate_explicitly_blocks_missing_work_items(self):
+        initialize(TASK,POLICY,self.root,apply=True)
+        state,_=load(self.root,TASK["task_id"])
+        self.assertNotIn("work_items",state["task_packet"])
+        result=gate(self.root,TASK["task_id"])
+        self.assertEqual(result["status"],"BLOCKED")
+        self.assertTrue(any("work_items" in reason for reason in result["blockers"]))
+
     def test_real_branches_are_independent(self):
         x=initialize(TASK,POLICY,self.root,apply=True)
         self.assertGreaterEqual(len(x["workers"]),2)
@@ -150,7 +185,9 @@ class WorktreeTests(unittest.TestCase):
 
     def test_execute_requires_explicit_ack(self):
         initialize(TASK,POLICY,self.root,apply=True)
-        self.assertEqual(execute(self.root,TASK["task_id"],TASK)["execution"],"PREVIEW_ONLY")
+        report=execute(self.root,TASK["task_id"],TASK)
+        self.assertEqual(report["execution"],"PREVIEW_ONLY")
+        self.assertIsNone(report["run_id"])
         with self.assertRaisesRegex(ValueError,"unmetered"):
             execute(self.root,TASK["task_id"],TASK,launch=True)
 
@@ -181,6 +218,11 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertTrue(report["run_id"])
+        _,metadata=load(self.root,task["task_id"])
+        self.assertTrue((metadata/"dev-logs"/report["run_id"]).is_dir())
+        self.assertTrue(all((metadata/"dev-logs"/report["run_id"]) in Path(item["stdout_path"]).parents
+                            for item in report["results"]))
         self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
         self.assertEqual(report["execution"],"REVIEW_INCOMPLETE",
                          {"checks":report["check_evidence"],"workers":report["results"]})
@@ -408,6 +450,27 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(result["status"],"BLOCKED")
         self.assertFalse(result["evidence_verified"])
         self.assertEqual(result["release_status"],"NOT_APPROVED")
+
+    def test_passing_worker_only_checks_do_not_satisfy_integrated_check_obligation(self):
+        from scripts.check_runner import run_checks
+        task = task_with_checks()
+        state = initialize(task, POLICY, self.root, apply=True)
+        _, metadata = load(self.root, task["task_id"])
+        for worker in state["workers"]:
+            checked = run_checks(task, state, worker, metadata, stop_event=threading.Event(),
+                                 deadline=time.monotonic() + 60)
+            self.assertEqual(checked.status, "PASSED", checked.errors)
+
+        result = gate(self.root, task["task_id"])
+
+        self.assertTrue(result["checks_verified"], result["invalid_check_manifests"])
+        self.assertFalse(result["integrated_checks_verified"])
+        self.assertIsNone(result["integrated_check_status"])
+        self.assertTrue(any("integrated check" in item.casefold() for item in result["blockers"]))
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertFalse(result["evidence_verified"])
+        self.assertEqual(result["release_status"], "NOT_APPROVED")
+        self.assertFalse(result["automatic_merge"])
 
     def test_process_check_specs_cannot_claim_review_or_scientific_obligations(self):
         task=task_with_checks()

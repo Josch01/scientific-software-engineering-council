@@ -718,7 +718,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     if not current["base_unchanged"] or not current["source_clean"]:
         raise ValueError("source checkout changed")
     report={"task_id":task_id,"mode":state["mode"],"roles":[w["role"] for w in state["workers"]],
-            "execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
+            "run_id":None,"execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
             "check_status":"NOT_RUN","check_evidence":[],
             "review_status":"NOT_RUN","review_evidence":[],
             "missing_spec_ids":sorted(missing_spec_ids),
@@ -735,6 +735,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     log_root.mkdir(parents=True,exist_ok=True)
     logs=log_root/uuid.uuid4().hex
     logs.mkdir(exist_ok=False)
+    report["run_id"]=logs.name
     if runtime_factory is None:
         runtime_factory=create_runtime
     deadline=time.monotonic()+minutes*60

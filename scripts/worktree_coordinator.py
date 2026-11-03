@@ -18,12 +18,14 @@ if __package__:
     from .route_task import validate_task, required_checks
     from .execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from .check_runner import read_check_manifest
+    from .work_items import validate_work_items
 else:
     from configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
     from prepare_agents import choose_roles, provider_for
     from route_task import validate_task, required_checks
     from execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from check_runner import read_check_manifest
+    from work_items import validate_work_items
 
 KINDS = {"build","debug","refactor","optimize","migrate"}
 EVENTS = {"WORKER_RESULT","REVIEW_FINDING","REQUEST_CHANGES","BLOCKED"}
@@ -98,6 +100,9 @@ def _validate_state_packet(state,task_id):
         raise ValueError("task metadata review roles are invalid")
     expected_primary_roles,expected_review_roles,expected_policy_evidence=choose_roles(
         packet,{"audit_level":audit_level})
+    if "work_items" in packet:
+        validate_work_items(packet,expected_primary_roles,expected_review_roles,
+                            [spec.check_id for spec in validate_check_specs(packet)])
     workers=state.get("workers")
     if type(workers) is not list or any(type(worker) is not dict for worker in workers):
         raise ValueError("task metadata workers are invalid")
@@ -169,7 +174,10 @@ def plan(task, policy, project):
     root = repository(project, clean=True)
     directory(root,task["task_id"])
     base = git(root,"rev-parse","HEAD")
-    impl, reviewers, evidence = choose_roles(task,policy)
+    impl, reviewers, evidence = choose_roles(packet,policy)
+    if "work_items" in packet:
+        validate_work_items(packet,impl,reviewers,
+                            [spec.check_id for spec in validate_check_specs(packet)])
     parent = root.parent / ("." + root.name + "-ssec-worktrees")
     if parent.is_symlink():
         raise ValueError("worktree storage symlink forbidden")
@@ -342,6 +350,8 @@ def gate(project,task_id):
     status=inspect(project,task_id)
     errors=[]
     packet=state["task_packet"]
+    if "work_items" not in packet:
+        errors.append("integration blocked: task packet has no role-owned work_items")
     specs=validate_check_specs(packet)
     required,pending_evidence,unsupported_specs=check_requirements(packet,state["required_evidence"])
     configured={spec.check_id for spec in specs if spec.check_id in PROCESS_CHECK_IDS}
@@ -408,6 +418,87 @@ def gate(project,task_id):
                 missing.append({"role":role,"missing_process_check_ids":[],
                                 "missing_spec_ids":sorted(missing_specs)})
     checks_verified=bool(state["workers"]) and not missing and not unsupported_specs
+    integrated_checks_verified=False
+    integrated_check_status=None
+    integrated_check_evidence=None
+    invalid_integration_manifests=[]
+    integration_root=metadata/"integrations"
+    integration_attempts=[]
+    integration_root_invalid=False
+    latest_attempt_invalid=False
+    if integration_root.exists() or integration_root.is_symlink():
+        if integration_root.is_symlink() or not integration_root.is_dir():
+            integration_root_invalid=True
+            invalid_integration_manifests.append({"path":"integrations",
+                "error":"integration root is not a regular directory"})
+        else:
+            try:
+                integration_attempts=sorted(integration_root.iterdir(),key=lambda item:item.name)
+            except OSError as exc:
+                integration_root_invalid=True
+                invalid_integration_manifests.append({"path":"integrations",
+                    "error":f"could not inspect integration attempts: {exc}"})
+    if integration_attempts:
+        # IDs carry a fixed-width timestamp, so lexical order is the persisted
+        # attempt order and a newer incomplete attempt cannot be hidden by an older pass.
+        latest=integration_attempts[-1]
+        latest_relative=latest.relative_to(metadata).as_posix()
+        latest_data=None
+        latest_check=None
+        latest_attempt_invalid=True
+        for attempt in integration_attempts:
+            relative=attempt.relative_to(metadata).as_posix()
+            if attempt.is_symlink() or not attempt.is_dir():
+                invalid_integration_manifests.append({"path":relative,
+                    "error":"integration attempt is not a regular directory"})
+                continue
+            manifest_path=attempt/"manifest.json"
+            if not manifest_path.exists() and not manifest_path.is_symlink():
+                invalid_integration_manifests.append({"path":relative+"/manifest.json",
+                    "error":"integration attempt has no published manifest; it may have stopped during composition"})
+                continue
+            try:
+                if __package__:
+                    from .integration_candidate import validate_integration_manifest
+                else:
+                    from integration_candidate import validate_integration_manifest
+                manifest,checked=validate_integration_manifest(manifest_path,metadata,state,specs)
+                if attempt==latest:
+                    latest_data,latest_check=manifest,checked
+                    latest_attempt_invalid=False
+            except (OSError,ValueError,TypeError,KeyError,UnicodeError,RecursionError) as exc:
+                invalid_integration_manifests.append({"path":relative+"/manifest.json","error":str(exc)})
+        if latest_data is not None:
+            integrated_check_status=latest_check["status"] if latest_check is not None else latest_data["check_status"]
+            check_ids=sorted(item["check_id"] for item in latest_check["checks"]) if latest_check else []
+            integrated_check_evidence={
+                "integration_id":latest_data["integration_id"],
+                "status":latest_data["status"],
+                "role":latest_data["integration_role"],
+                "branch":latest_data["candidate_branch"],
+                "candidate_tree_sha256":latest_data["candidate_tree_sha256"],
+                "check_manifest_path":latest_data["check_manifest_path"],
+                "check_manifest_sha256":latest_data["check_manifest_sha256"],
+                "check_status":integrated_check_status,
+                "verified_check_ids":check_ids,
+            }
+            if latest_check is None:
+                invalid_integration_manifests.append({"path":latest_relative+"/manifest.json",
+                    "error":"latest integration attempt has no validated terminal check manifest"})
+                latest_attempt_invalid=True
+            integrated_checks_verified=(
+                latest_data["status"]=="CHECKED_AWAITING_INTEGRATED_REVIEW" and
+                latest_check is not None and latest_check["status"]=="PASSED"
+            )
+            if not integrated_checks_verified:
+                errors.append("latest integrated candidate checks are missing, failed, or unverified")
+        else:
+            latest_attempt_invalid=True
+            errors.append("latest integrated candidate attempt is missing or invalid")
+    else:
+        errors.append("integrated check evidence for the combined candidate is missing")
+    if integration_root_invalid or latest_attempt_invalid:
+        errors.append("latest integration attempt or integration root is invalid or incomplete")
     if not status["base_unchanged"] or not status["source_clean"]:
         errors.append("original checkout changed since initialization")
     seen={}
@@ -422,7 +513,7 @@ def gate(project,task_id):
     if not checks_verified:
         errors.append("deterministic check evidence is missing, incomplete, or invalid")
     # Deterministic checks cannot replace an independent review or authorize release.
-    errors.append("coordinator cannot infer non-process review or release acceptance from deterministic checks")
+    errors.append("coordinator requires independent integrated review and human approval; release remains blocked")
     events=status["events"]
     for w in state["workers"]:
         if not any(e["sender"]==w["role"] and e["kind"]=="WORKER_RESULT" for e in events):
@@ -434,8 +525,12 @@ def gate(project,task_id):
             "verified_process_check_ids":verified,"missing_process_checks":missing,
             "pending_evidence_ids":sorted(pending_evidence),
             "invalid_check_manifests":invalid_manifests,
+            "integrated_checks_verified":integrated_checks_verified,
+            "integrated_check_status":integrated_check_status,
+            "integrated_check_evidence":integrated_check_evidence,
+            "invalid_integration_manifests":invalid_integration_manifests,
             "evidence_verified":False,"release_status":"NOT_APPROVED",
-            "note":"Verified worker checks apply only to their separate candidates; mailbox claims cannot establish review or release approval."}
+            "note":"Integrated checks apply only to the disposable combined candidate; independent integrated review and human approval are still required."}
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
