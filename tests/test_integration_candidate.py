@@ -118,7 +118,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                     reviewer_role=reviewer, reviewer_provider="gemini", runtime_run_id="fixture-run",
                     runtime_adapter_type="scripts.provider_runtimes.GeminiRuntime",
                     review_independence="UNVERIFIED_WITHOUT_PROVIDER_E2E", observed_provider="gemini",
-                    provider_session_id="fixture-session", verdict="PASS", review_report=report,
+                    provider_session_id="fixture-" + worker["role"] + "-" + reviewer, verdict="PASS", review_report=report,
                     review_report_sha256=report_sha256(report),
                     snapshot_path=snapshot.snapshot_path.relative_to(self.meta).as_posix(),
                     snapshot_logical_modes=[{"path": path, "executable": executable}
@@ -139,6 +139,126 @@ class IntegrationCandidateTests(unittest.TestCase):
     def build(self, run_id=None):
         from scripts.integration_candidate import build_integration_candidate
         return build_integration_candidate(self.root, self.task["task_id"], run_id or self.run_id)
+
+    def integrated_fixture(self):
+        from scripts.development_runner import _persist_runtime_sessions
+        self.evidence()
+        report = dict(run_id=self.run_id, execution="REVIEWED_WORKER_CANDIDATES_AWAITING_INTEGRATION",
+                      process_execution="PROCESSES_FINISHED_UNREVIEWED",
+                      check_status="CHECKS_VERIFIED_AWAITING_REVIEW",
+                      review_status="WORKER_REVIEWS_COMPLETE_AWAITING_INTEGRATION", results=[], review_evidence=[])
+        for path in self.reviews:
+            item = json.loads(path.read_text())
+            report["review_evidence"].append(dict(worker_role=item["worker_role"],
+                reviewer_role=item["reviewer_role"], provider="gemini",
+                provider_session_id=item["provider_session_id"], status="REVIEW_REPORT_VALID"))
+        _persist_runtime_sessions(self.meta, self.state, report)
+        return self.build()
+
+    def integrated_review(self, result, *, session=None):
+        """Concrete Gemini adapter with only discovery/argv replaced by local Python."""
+        from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus
+        from scripts.provider_runtimes import GeminiRuntime
+        from scripts.integration_review import run_integration_review
+        requests = []
+        def argv(runtime, request):
+            self.assertFalse(request.writable)
+            requests.append(request)
+            identity = json.loads(request.prompt.split("Exact evidence identity to echo: ")[1].splitlines()[0])
+            report = dict(schema_version=1, **identity, verdict="PASS", summary="Local fixture", findings=[])
+            lines = [dict(type="init", session_id=session or request.run_id),
+                     dict(type="message", role="assistant", content=json.dumps(report)),
+                     dict(type="result", status="success", stats={})]
+            code = "import json; lines=" + repr(lines) + "; [print(json.dumps(x)) for x in lines]"
+            return (sys.executable, "-c", code)
+        def discover(runtime):
+            runtime._command = (sys.executable,)
+            return RuntimeCapabilities("gemini", True, None, (), None, RuntimeCapabilityStatus.UNKNOWN)
+        with patch.object(GeminiRuntime, "discover_capabilities", discover), patch.object(GeminiRuntime, "build_argv", argv):
+            report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                launch=True, cost_ack=True, runtime_factory=lambda provider: GeminiRuntime())
+        return report, requests
+
+    def test_integrated_review_preview_makes_no_provider_call(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        before = sorted(str(p) for p in self.meta.rglob("*"))
+        def forbidden(provider):
+            self.fail("preview called runtime factory")
+        report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                        runtime_factory=forbidden)
+        self.assertEqual(report["status"], "PREVIEW_NOT_STARTED")
+        self.assertEqual(report["review_roles"], self.state["review_roles"])
+        self.assertEqual(before, sorted(str(p) for p in self.meta.rglob("*")))
+
+    def test_integrated_review_requires_latest_checked_candidate(self):
+        from scripts.integration_review import run_integration_review
+        first = self.integrated_fixture()
+        latest = self.build()
+        with self.assertRaisesRegex(ValueError, "latest"):
+            run_integration_review(self.root, self.task["task_id"], first.integration_id)
+        inventory_path = self.meta / "dev-logs" / self.run_id / "runtime-sessions.json"
+        inventory = json.loads(inventory_path.read_text())
+        for changes in (dict(run_status="RUNNING"), dict(run_id="wrong-execution"),
+                        dict(worker_review_sessions=inventory["worker_review_sessions"] * 2)):
+            inventory_path.write_text(json.dumps(dict(inventory, **changes)), encoding="utf-8")
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                run_integration_review(self.root, self.task["task_id"], latest.integration_id)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        orphan = self.meta / "dev-logs" / "older-execution" / "reviews" / self.state["workers"][0]["role"]
+        orphan.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "historical.*inventory"):
+            run_integration_review(self.root, self.task["task_id"], latest.integration_id)
+
+    def test_integrated_review_rejects_reused_runtime_session(self):
+        result = self.integrated_fixture()
+        session = json.loads(self.reviews[0].read_text())["provider_session_id"]
+        report, requests = self.integrated_review(result, session=session)
+        self.assertEqual(len(requests), len(self.state["review_roles"]))
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertTrue(all(r["status"] == "UNVERIFIED_SESSION_REUSE" for r in report["review_results"]))
+
+    def test_review_bundle_rejects_incomplete_or_misbound_roster(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result = self.integrated_fixture()
+        report, requests = self.integrated_review(result)
+        self.assertEqual(report["status"], "PASSED", report)
+        self.assertEqual(len(requests), len(self.state["review_roles"]))
+        path = self.meta / report["bundle_path"]
+        integration = json.loads(Path(result.integration_manifest_path).read_text())
+        check = read_check_manifest(result.check_manifest_path, self.meta)
+        valid = json.loads(path.read_text())
+        validate_integration_review_bundle(path, self.meta, self.state, integration, check)
+        for change in (dict(review_roles=[]), dict(check_manifest_sha256="0" * 64),
+                       dict(reviewers=valid["reviewers"][:-1]), dict(reviewers=[None])):
+            path.write_text(json.dumps(dict(valid, **change)), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                validate_integration_review_bundle(path, self.meta, self.state, integration, check)
+
+    def test_latest_incomplete_review_does_not_reuse_previous_pass(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result)
+        self.assertEqual(report["status"], "PASSED", report)
+        path = self.meta / report["bundle_path"]
+        (path.parent.parent / ("v2-" + "9" * 20 + "-" + "f" * 32)).mkdir()
+        with self.assertRaisesRegex(ValueError, "latest"):
+            validate_integration_review_bundle(path, self.meta, self.state,
+                json.loads(Path(result.integration_manifest_path).read_text()),
+                read_check_manifest(result.check_manifest_path, self.meta))
+
+    def test_integrated_review_rejects_metadata_reparse_path(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        original = Path.lstat
+        def reparse(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path == self.meta:
+                from types import SimpleNamespace
+                return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+            return info
+        with patch.object(Path, "lstat", reparse), patch.object(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, create=True), self.assertRaisesRegex(ValueError, "reparse"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id)
 
     def add_integration_probe(self, code, *, timeout=20):
         """Add a real Python check that is meaningful on the composed candidate."""

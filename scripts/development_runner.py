@@ -48,6 +48,7 @@ def _sha256_bytes(value):
 
 
 def _sha256_file(path):
+    _ensure_no_symlink_path(Path(path))
     digest=hashlib.sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda:stream.read(1024*1024),b""):
@@ -57,6 +58,7 @@ def _sha256_file(path):
 
 def _write_review_json(path,data,*,replace_existing=False):
     path=Path(os.path.abspath(path))
+    _ensure_no_symlink_path(path)
     if path.is_symlink() or (path.exists() and not replace_existing):
         raise ValueError("review artifact already exists or is a symlink")
     if replace_existing and (not path.exists() or not path.is_file()):
@@ -67,6 +69,7 @@ def _write_review_json(path,data,*,replace_existing=False):
         if cursor.is_symlink():
             raise ValueError("review artifact path contains a symlink directory")
     path.parent.mkdir(parents=True,exist_ok=True)
+    _ensure_no_symlink_path(path)
     cursor=Path(path.anchor)
     for part in path.parts[1:-1]:
         cursor=cursor/part
@@ -112,6 +115,8 @@ def _persist_review_artifacts(attempt,attempt_path,manifest,manifest_path,metada
 
 def _relative_metadata_path(path,metadata):
     path=Path(os.path.abspath(path))
+    _ensure_no_symlink_path(Path(metadata))
+    _ensure_no_symlink_path(path)
     root=Path(metadata).resolve(strict=True)
     cursor=Path(path.anchor)
     for part in path.parts[1:]:
@@ -322,7 +327,10 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         if preparation_status is not None:
             raise ValueError("reviewer cancelled or deadline elapsed before preparation")
         # Resolve and verify the worker's latest passing check manifest.
+        _ensure_no_symlink_path(metadata)
+        _ensure_no_symlink_path(review_dir)
         check_path=Path(worker["_check_manifest_path"])
+        _ensure_no_symlink_path(check_path)
         check_manifest=read_check_manifest(check_path,metadata)
         check_hash=_sha256_file(check_path)
         expected_tree=check_manifest["candidate_tree_sha256"]
@@ -340,7 +348,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         prompt_text=_review_prompt(task,worker,reviewer_role,identity,diff,check_manifest)
         if len(prompt_text.encode("utf-8"))>_MAX_REVIEW_DIFF_BYTES+128*1024:
             raise ValueError("review input exceeds the bounded prompt size")
+        _ensure_no_symlink_path(request_path)
         request_path.parent.mkdir(parents=True,exist_ok=True)
+        _ensure_no_symlink_path(request_path)
         request_data={"schema_version":1,"identity":identity,"reviewer_role":reviewer_role,
                       "requested_provider":provider,"prompt":prompt_text,"diff":diff}
         _write_review_json(request_path,request_data)
@@ -370,6 +380,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
             timeout_seconds=remaining,writable=False,cost_acknowledged=cost_ack,
             launch_control=stop if isinstance(stop,RuntimeLaunchControl)
                            else RuntimeLaunchControl(stop,deadline))
+        _ensure_no_symlink_path(review_dir)
+        _ensure_no_symlink_path(stdout)
+        _ensure_no_symlink_path(stderr)
         handle=runtime.launch(request)
         while True:
             if stop.is_set():
@@ -412,6 +425,8 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         observed_sessions.add(session_key)
         if observed.status is not RuntimeStatus.SUCCEEDED:
             raise ValueError(observed.error or "reviewer process did not finish successfully")
+        _ensure_no_symlink_path(stdout)
+        _ensure_no_symlink_path(stderr)
         if stdout.is_symlink() or stderr.is_symlink() or not stdout.is_file() or not stderr.is_file():
             status="FAILED"
             raise ValueError("successful reviewer runtime did not leave regular output logs")
