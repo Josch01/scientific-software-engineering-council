@@ -15,6 +15,14 @@ workspace = validate_workspace(data)
 print(workspace.to_dict())
 ```
 
+From the repository root, the portable skill or app tooling can validate a manifest and receive normalized JSON on standard output:
+
+```text
+python scripts/validate_workspace.py examples/scientific_workspace_minimal.json
+```
+
+The CLI exits `0` for valid manifests and `2` for input/validation errors. Pass `-` as the manifest argument to read from standard input. It reads at most 2 MiB, requires UTF-8 JSON, rejects duplicate object keys and non-standard `NaN`/infinity values, and never opens declared artifacts. Output JSON uses ASCII escapes so it can be piped on Windows terminals with non-UTF-8 output encodings.
+
 `examples/scientific_workspace_minimal.json` is a generic inert example. Schema v1 has exact fields and rejects extensions until a later schema defines them:
 
 - Workspace: `schema_version`, `model`, `artifacts`, `pages`.

@@ -47,7 +47,7 @@ El arquitecto elige **roles**, no modelos específicos. Los workers no autocerti
 - IDL (Interactive Data Language) y Python Bridge: `references/IDL_ADAPTER.md`.
 - Numéricos, identificabilidad, dinámica, optimización/ML: `references/TEST_MATRIX.md` y puente científico.
 - Núcleo numérico experimental de EDO/RK4: `references/SCIENCE_NUMERICS.md` y `scripts/scientific_core.py`.
-- Espacios científicos dinámicos (contrato JSON v1, sin GUI ni ejecución de artefactos): `references/SCIENTIFIC_WORKSPACES.md` y `scripts/scientific_workspace.py`.
+- Espacios científicos dinámicos (contrato JSON v1 y validador headless; sin GUI ni ejecución de artefactos): `references/SCIENTIFIC_WORKSPACES.md`, `scripts/scientific_workspace.py` y `scripts/validate_workspace.py`.
 - Agentes/contextos: `references/MULTI_AGENT.md`.
 - Descarga segura de skills y APIs actuales: `references/DEPENDENCY_SKILLS.md`.
 - Auditoría y release: `references/RELEASE_POLICY.md`.
