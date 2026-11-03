@@ -282,6 +282,73 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertFalse(value["automatic_merge"])
         self.assertEqual(value["release_status"], "NOT_APPROVED")
 
+    def incomplete_review_decision_fixture(self):
+        from scripts.execution_evidence import canonical_task_sha256
+        reviewers = ["software_auditor", "independent_reviewer"]
+        self.state["audit_level"] = "standard"
+        self.state["review_roles"] = reviewers
+        self.state["required_evidence"].append("independent_review")
+        for item in self.state["task_packet"]["work_items"]:
+            item["required_reviewers"] = reviewers
+        self.task = self.state["task_packet"]
+        self.state["task_sha256"] = canonical_task_sha256(self.task)
+        (self.meta / "state.json").write_text(json.dumps(self.state), encoding="utf-8")
+        result, path = self.decision_fixture(verdict="REQUEST_CHANGES")
+        bundle = json.loads(path.read_text())
+        manifests = [json.loads((self.meta / item["manifest_path"]).read_text()) for item in bundle["reviewers"]]
+        return result, path, bundle, manifests
+
+    def incomplete_review_results(self, path, original_bundle, original_manifests, statuses):
+        bundle = json.loads(json.dumps(original_bundle))
+        for item, original, status in zip(bundle["reviewers"], original_manifests, statuses):
+            manifest = dict(original)
+            if status != "REQUEST_CHANGES":
+                manifest.update(status=status, verdict=None, review_report=None,
+                    review_report_sha256=None, error="Local fixture reviewer did not complete a valid report")
+            manifest_path = self.meta / item["manifest_path"]
+            validate_review_manifest(manifest, self.meta)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            item.update(status=manifest["status"], verdict=manifest["verdict"], manifest_sha256=digest(manifest_path))
+        bundle["status"] = "BLOCKED"
+        path.write_text(json.dumps(bundle), encoding="utf-8")
+
+    def test_decision_rejects_incomplete_reviewer_results(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result, bundle, original, manifests = self.incomplete_review_decision_fixture()
+        integration = json.loads(Path(result.integration_manifest_path).read_text())
+        check = read_check_manifest(Path(result.check_manifest_path), self.meta)
+        decision_path = bundle.parent.parent.parent / "human-decision.json"
+        for statuses in (("BLOCKED", "BLOCKED"), ("FAILED", "FAILED"),
+                         ("REQUEST_CHANGES", "BLOCKED"), ("REQUEST_CHANGES", "FAILED")):
+            self.incomplete_review_results(bundle, original, manifests, statuses)
+            # These remain integrity-valid terminal failure journals, not completed reviews.
+            validate_integration_review_bundle(bundle, self.meta, self.state, integration, check)
+            try:
+                with self.subTest(statuses=statuses):
+                    with self.assertRaises(ValueError):
+                        self.decide(result, bundle, decision="REJECT")
+                    self.assertFalse(decision_path.exists())
+            finally:
+                decision_path.unlink(missing_ok=True)
+
+    def test_gate_rejects_decision_bound_to_incomplete_reviewer_results(self):
+        result, bundle, original, manifests = self.incomplete_review_decision_fixture()
+        decision = self.decide(result, bundle, decision="REJECT")
+        decision_path = bundle.parent.parent.parent / "human-decision.json"
+        for statuses in (("BLOCKED", "BLOCKED"), ("FAILED", "FAILED"),
+                         ("REQUEST_CHANGES", "BLOCKED"), ("REQUEST_CHANGES", "FAILED")):
+            self.incomplete_review_results(bundle, original, manifests, statuses)
+            # Rebind a local stored attestation to the CURRENT digest so stale-digest
+            # rejection cannot mask missing per-reviewer completion validation.
+            decision["review_bundle_sha256"] = digest(bundle)
+            decision_path.write_text(json.dumps(decision), encoding="utf-8")
+            with self.subTest(statuses=statuses):
+                value = gate(self.root, self.task["task_id"])
+                self.assertEqual(value["status"], "BLOCKED", value)
+                self.assertFalse(value["human_decision_verified"])
+                self.assertFalse(value["automatic_merge"])
+                self.assertEqual(value["release_status"], "NOT_APPROVED")
+
     def test_approval_never_enables_merge_or_release(self):
         result, bundle = self.decision_fixture()
         head = git(self.root, "rev-parse", "HEAD")

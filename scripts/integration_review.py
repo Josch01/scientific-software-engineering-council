@@ -307,8 +307,9 @@ def validate_integration_review_bundle(path, metadata, state, integration, check
 
 
 def _aggregate(statuses):
-    return ("PASSED" if statuses and all(s == "PASSED" for s in statuses) else
-            "CHANGES_REQUESTED" if "REQUEST_CHANGES" in statuses else "BLOCKED")
+    if not statuses or any(status not in {"PASSED", "REQUEST_CHANGES"} for status in statuses):
+        return "BLOCKED"
+    return "CHANGES_REQUESTED" if "REQUEST_CHANGES" in statuses else "PASSED"
 
 
 def run_integration_review(project, task_id, integration_id, *, launch=False, cost_ack=False,
@@ -401,6 +402,12 @@ def _decision_text(value):
     return type(value) is str and bool(value.strip()) and "\x00" not in value
 
 
+def _require_completed_review(bundle):
+    if not bundle["reviewers"] or any(
+            item["status"] not in {"PASSED", "REQUEST_CHANGES"} for item in bundle["reviewers"]):
+        raise ValueError("human decision requires completed valid results from every configured reviewer")
+
+
 def validate_human_decision(path, metadata, state, integration, check):
     """Validate local declared attestation, without authenticating the operator."""
     canonical = metadata / "integrations" / integration["integration_id"] / "human-decision.json"
@@ -410,6 +417,7 @@ def validate_human_decision(path, metadata, state, integration, check):
     before = _sha256(path)
     data = _json_file(path)
     bundle_path, bundle, bundle_hash = current_integration_review(metadata, state, integration, check)
+    _require_completed_review(bundle)
     expected = {**{key: state[key] for key in _IDENTITY}, "integration_id": integration["integration_id"],
                 "review_bundle_path": bundle_path.relative_to(metadata).as_posix(),
                 "review_bundle_sha256": bundle_hash, "candidate_tree_sha256": integration["candidate_tree_sha256"],
@@ -442,6 +450,7 @@ def record_human_decision(project, task_id, integration_id, *, expected_bundle_s
         raise ValueError("operator and reason must be nonempty declarations")
     state, metadata, integration, check = _context(project, task_id, integration_id)
     bundle_path, bundle, bundle_hash = current_integration_review(metadata, state, integration, check)
+    _require_completed_review(bundle)
     if bundle_hash != expected_bundle_sha256:
         raise ValueError("decision requires the exact current review bundle digest")
     if decision == "APPROVE_FOR_MANUAL_INTEGRATION":
