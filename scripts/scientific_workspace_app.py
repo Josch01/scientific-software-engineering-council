@@ -22,6 +22,8 @@ try:
     from .scientific_workspace_loader import LoadedWorkspace
     from .scientific_workspace_view import (
         ComponentView,
+        SirEquationView,
+        SirParameterView,
         WorkspaceViewModel,
         build_workspace_view_model,
         sanitize_display_text,
@@ -38,6 +40,8 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     from scripts.scientific_workspace_loader import LoadedWorkspace
     from scripts.scientific_workspace_view import (
         ComponentView,
+        SirEquationView,
+        SirParameterView,
         WorkspaceViewModel,
         build_workspace_view_model,
         sanitize_display_text,
@@ -135,6 +139,84 @@ def _readonly_text(parent, text: str, tk, ttk, *, height: int = 14) -> None:
 def _render_json(parent, component: ComponentView, tk, ttk) -> None:
     preview = component.preview_text or _format_json(component.content)
     _readonly_text(parent, preview, tk, ttk)
+
+
+def _render_equations(parent, component: ComponentView, tk, ttk) -> None:
+    content = component.content
+    if not isinstance(content, SirEquationView):
+        _render_json(parent, component, tk, ttk)
+        return
+    states = ", ".join(sanitize_display_text(name) for name in content.states)
+    lines = [
+        f"Conjunto: {sanitize_display_text(content.equation_set)}",
+        f"Estados: {states}",
+        f"Balance: {sanitize_display_text(content.population_balance)}",
+        "",
+    ]
+    lines.extend(
+        f"{sanitize_display_text(str(name))} = {sanitize_display_text(str(formula))}"
+        for name, formula in content.equations
+    )
+    lines.extend(
+        [
+            "",
+            "Unidades declaradas (sin conversión): "
+            f"tiempo={sanitize_display_text(content.time_unit)}, "
+            f"población={sanitize_display_text(content.population_unit)}, "
+            f"tasa={sanitize_display_text(content.rate_unit)}",
+        ]
+    )
+    _readonly_text(parent, "\n".join(lines), tk, ttk, height=8)
+
+
+def _render_parameters(parent, component: ComponentView, tk, ttk) -> None:
+    content = component.content
+    if not isinstance(content, SirParameterView):
+        _render_json(parent, component, tk, ttk)
+        return
+    initial_text = ", ".join(
+        f"{sanitize_display_text(str(name))}={format(value, '.7g')}"
+        for name, value in content.initial_conditions
+    )
+    ttk.Label(
+        parent,
+        text=(
+            f"Condiciones iniciales: {initial_text} {sanitize_display_text(content.population_unit)} "
+            f"(N={format(content.initial_population, '.7g')})"
+        ),
+        anchor="w",
+        wraplength=900,
+    ).pack(fill="x", padx=8, pady=(6, 0))
+    ttk.Label(
+        parent,
+        text=(
+            f"Intervalo: [{format(content.time_span[0], '.7g')}, "
+            f"{format(content.time_span[1], '.7g')}] {sanitize_display_text(content.time_unit)} · "
+            f"{sanitize_display_text(content.integrator_method)} · "
+            f"h ≤ {format(content.max_step, '.7g')} · pasos ≤ {content.max_steps}"
+        ),
+        anchor="w",
+        wraplength=900,
+    ).pack(fill="x", padx=8, pady=(2, 4))
+    rows = []
+    for profile in content.profiles:
+        name = sanitize_display_text(profile.name)
+        kind = profile.kind
+        unit = sanitize_display_text(profile.unit)
+        if kind == "constant":
+            rows.append((name, "constante", "—", format(profile.value, ".7g"), unit))
+        else:
+            for time, value in profile.points:
+                rows.append(
+                    (name, "lineal por tramos", format(time, ".7g"), format(value, ".7g"), unit)
+                )
+    _make_data_table(
+        parent,
+        ("Parámetro", "Perfil", "Tiempo", "Valor", "Unidad"),
+        rows,
+        ttk,
+        height=8,
+    )
 
 
 def _render_code(parent, component: ComponentView, tk, ttk) -> None:
@@ -370,8 +452,8 @@ def _render_component(
 
 
 COMPONENT_RENDERERS: Mapping[str, Callable] = {
-    "equation_view": _render_json,
-    "parameter_table": _render_json,
+    "equation_view": _render_equations,
+    "parameter_table": _render_parameters,
     "observation_table": _render_observations,
     "simulation_plot": _render_simulation,
     "fit_summary": _render_json,

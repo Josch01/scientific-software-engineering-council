@@ -70,6 +70,59 @@ class ScientificWorkspaceViewTests(unittest.TestCase):
         self.assertEqual(result.sections[0].title, "Main")
         self.assertEqual(result.sections[0].components[0].component_type, "equation_view")
         self.assertEqual(result.sections[0].components[0].status, "ok")
+        self.assertEqual(result.sections[0].components[0].content["equations"], ())
+
+    def test_sir_contract_projects_to_structured_equation_and_parameter_views(self):
+        view = self._view()
+        from scripts.scientific_workspace_view import SirEquationView, SirParameterView
+
+        model_path = Path(__file__).resolve().parents[1] / "examples" / "sir_model_demo.json"
+        payload = json.loads(model_path.read_text(encoding="utf-8"))
+        workspace = _load_workspace(
+            [("model", "model_spec", "model.json", json.dumps(payload).encode())],
+            [
+                _component("equations", "equation_view", "model"),
+                _component("parameters", "parameter_table", "model"),
+            ],
+        )
+
+        equation, parameters = view.build_workspace_view_model(workspace).sections[0].components
+
+        self.assertEqual(equation.status, "ok")
+        self.assertIsInstance(equation.content, SirEquationView)
+        self.assertEqual(equation.content.equation_set, "sir_frequency_dependent_v1")
+        self.assertEqual(equation.content.states, ("S", "I", "R"))
+        self.assertIn("beta(t) * S * I / N", dict(equation.content.equations)["dI/dt"])
+        self.assertEqual(equation.content.population_unit, "person")
+        self.assertEqual(equation.content.rate_unit, "1/day")
+        self.assertEqual(parameters.status, "ok")
+        self.assertIsInstance(parameters.content, SirParameterView)
+        self.assertEqual(
+            parameters.content.initial_conditions,
+            (("S", 990.0), ("I", 10.0), ("R", 0.0)),
+        )
+        self.assertEqual(parameters.content.time_span, (0.0, 10.0))
+        profiles = {profile.name: profile for profile in parameters.content.profiles}
+        self.assertEqual(profiles["beta"].kind, "piecewise_linear")
+        self.assertEqual(len(profiles["beta"].points), 3)
+        self.assertEqual(profiles["beta"].unit, "1/day")
+        self.assertEqual(profiles["gamma"].kind, "constant")
+        self.assertEqual(parameters.content.integrator_method, "RK4_FIXED_STEP")
+
+    def test_invalid_sir_contract_is_a_component_error_not_raw_formula_text(self):
+        view = self._view()
+        model_path = Path(__file__).resolve().parents[1] / "examples" / "sir_model_demo.json"
+        payload = json.loads(model_path.read_text(encoding="utf-8"))
+        payload["equations"]["dS/dt"] = "__import__('os').system('whoami')"
+        workspace = _load_workspace(
+            [("model", "model_spec", "model.json", json.dumps(payload).encode())],
+            [_component("equations", "equation_view", "model")],
+        )
+
+        component = view.build_workspace_view_model(workspace).sections[0].components[0]
+
+        self.assertEqual(component.status, "error")
+        self.assertIn("equations must exactly match", component.message)
 
     def test_source_artifact_is_bounded_plain_text(self):
         view = self._view()

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def _make_workspace(
@@ -104,6 +105,37 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
             set(scientific_workspace_app.COMPONENT_RENDERERS),
             set(scientific_workspace_view.SUPPORTED_COMPONENT_TYPES),
         )
+
+    def test_json_view_kind_cannot_dispatch_an_untrusted_component_to_sir_renderer(self):
+        from scripts import scientific_workspace_app
+        from scripts.scientific_workspace_view import ComponentView
+
+        cases = (
+            (
+                "equation_view",
+                "sir_equations_v1",
+                scientific_workspace_app._render_equations,
+            ),
+            (
+                "parameter_table",
+                "sir_parameters_v1",
+                scientific_workspace_app._render_parameters,
+            ),
+        )
+        for component_type, marker, renderer in cases:
+            with self.subTest(component_type=component_type):
+                component = ComponentView(
+                    component_id="untrusted",
+                    component_type=component_type,
+                    title="Untrusted model",
+                    status="ok",
+                    message="",
+                    content={"view_kind": marker},
+                )
+                with patch.object(scientific_workspace_app, "_render_json") as render_json:
+                    renderer(object(), component, object(), object())
+
+                render_json.assert_called_once()
 
     def test_json_text_renderer_neutralizes_directional_format_controls(self):
         from scripts.scientific_workspace_app import _format_json

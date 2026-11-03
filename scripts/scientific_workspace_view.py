@@ -9,10 +9,10 @@ from types import MappingProxyType
 import unicodedata
 
 try:
-    from .scientific_core import OdeSolution, ObservationDataset
+    from .scientific_core import OdeSolution, ObservationDataset, SirModelDefinition
     from .scientific_workspace_loader import LoadedResource, LoadedWorkspace
 except ImportError:  # Support direct script execution/import by the desktop shell.
-    from scientific_core import OdeSolution, ObservationDataset
+    from scientific_core import OdeSolution, ObservationDataset, SirModelDefinition
     from scientific_workspace_loader import LoadedResource, LoadedWorkspace
 
 
@@ -53,6 +53,39 @@ class ComponentView:
     content: object = None
     truncated: bool = False
     preview_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SirEquationView:
+    equation_set: str
+    population_balance: str
+    equations: tuple[tuple[str, str], ...]
+    states: tuple[str, str, str]
+    time_unit: str
+    population_unit: str
+    rate_unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class SirRateProfileView:
+    name: str
+    kind: str
+    value: float | None
+    points: tuple[tuple[float, float], ...]
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class SirParameterView:
+    initial_conditions: tuple[tuple[str, float], ...]
+    initial_population: float
+    population_unit: str
+    time_span: tuple[float, float]
+    time_unit: str
+    profiles: tuple[SirRateProfileView, ...]
+    integrator_method: str
+    max_step: float
+    max_steps: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,6 +437,43 @@ def _cached_json_payload(
     return payload
 
 
+def _sir_equation_view(definition: SirModelDefinition) -> SirEquationView:
+    equations = definition.to_dict()["equations"]
+    return SirEquationView(
+        equation_set=definition.equation_set,
+        population_balance="N = S(0) + I(0) + R(0)",
+        equations=tuple(equations.items()),
+        states=definition.state_names,
+        time_unit=definition.time_unit,
+        population_unit=definition.population_unit,
+        rate_unit=definition.rate_unit,
+    )
+
+
+def _sir_parameter_view(definition: SirModelDefinition) -> SirParameterView:
+    profiles = tuple(
+        SirRateProfileView(
+            name=name,
+            kind=profile.kind,
+            value=profile.value,
+            points=profile.points,
+            unit=definition.rate_unit,
+        )
+        for name, profile in definition.parameters.items()
+    )
+    return SirParameterView(
+        initial_conditions=tuple(zip(definition.state_names, definition.initial_state)),
+        initial_population=definition.initial_population,
+        population_unit=definition.population_unit,
+        time_span=definition.t_span,
+        time_unit=definition.time_unit,
+        profiles=profiles,
+        integrator_method="RK4_FIXED_STEP",
+        max_step=definition.max_step,
+        max_steps=definition.max_steps,
+    )
+
+
 def _render_component(
     component: Mapping[str, object],
     resource_by_id: Mapping[str, LoadedResource],
@@ -459,7 +529,21 @@ def _render_component(
             return ComponentView(component_id, component_type, title, "ok", message, text, truncated)
 
         payload = _cached_json_payload(resource, json_cache, json_byte_count)
-        if component_type == "observation_table":
+        is_sir_contract = (
+            isinstance(payload, Mapping) and payload.get("model_type") == "sir"
+        )
+        if is_sir_contract and component_type in {"equation_view", "parameter_table"}:
+            definition = SirModelDefinition.from_dict(payload)
+            if component_type == "equation_view":
+                content = _sir_equation_view(definition)
+            else:
+                content = _sir_parameter_view(definition)
+            message = (
+                "Contrato SIR v1 validado para su visualización; no acredita validez científica."
+            )
+            preview_text = ""
+            truncated = False
+        elif component_type == "observation_table":
             content = _observation_content(payload)
         elif component_type == "simulation_plot":
             if resource.resource_id not in simulation_cache:
@@ -474,18 +558,19 @@ def _render_component(
             content = _simulation_content(simulation_base, config)
         else:
             content = _freeze(payload)
-        message = "Artefacto leído como datos inertes; no implica validación científica."
-        if component_type in {"uncertainty_summary", "sensitivity_plot"}:
-            message = "Se muestra el artefacto disponible; no se calcula ni valida incertidumbre o sensibilidad."
-        preview_text = ""
-        truncated = False
-        if component_type not in {"observation_table", "simulation_plot"}:
-            preview_text = sanitize_display_text(
-                resource.content[:MAX_JSON_TEXT_PREVIEW_BYTES].decode("utf-8", errors="replace")
-            )
-            truncated = len(resource.content) > MAX_JSON_TEXT_PREVIEW_BYTES
-            if truncated:
-                message += " Vista JSON limitada a 32 KiB."
+        if not (is_sir_contract and component_type in {"equation_view", "parameter_table"}):
+            message = "Artefacto leído como datos inertes; no implica validación científica."
+            if component_type in {"uncertainty_summary", "sensitivity_plot"}:
+                message = "Se muestra el artefacto disponible; no se calcula ni valida incertidumbre o sensibilidad."
+            preview_text = ""
+            truncated = False
+            if component_type not in {"observation_table", "simulation_plot"}:
+                preview_text = sanitize_display_text(
+                    resource.content[:MAX_JSON_TEXT_PREVIEW_BYTES].decode("utf-8", errors="replace")
+                )
+                truncated = len(resource.content) > MAX_JSON_TEXT_PREVIEW_BYTES
+                if truncated:
+                    message += " Vista JSON limitada a 32 KiB."
         component_cache[cache_key] = ("ok", content, message, truncated, preview_text)
         return ComponentView(
             component_id, component_type, title, "ok", message, content, truncated, preview_text
