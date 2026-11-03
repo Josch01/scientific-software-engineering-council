@@ -16,7 +16,7 @@ result = solve_rk4(problem, max_step=0.01)
 payload = result.to_dict()
 ```
 
-The internal grid is uniform, reaches the requested end time, and uses no more than `max_steps` (default 1,000,000). The solver rejects malformed dimensions and non-finite values at every derivative stage. It does not interpolate, estimate local error, adapt the step, detect stiffness, check positivity/conservation/units, or certify equations.
+The internal grid is uniform, reaches the requested end time, and uses no more than `max_steps` (default 1,000,000). The solver rejects malformed dimensions and non-finite values at every derivative stage. It does not interpolate, estimate local error, adapt the step, detect stiffness, check positivity/conservation/units, or certify equations. The SIR-specific adapter below adds only the positivity and population-conservation checks implied by its fixed equations.
 
 The supplied `rhs` callable executes in the caller's Python process. This API is **not a code-execution sandbox** and does not authenticate model code. For the first prototype, run only callbacks from trusted, reviewed code that a human has explicitly approved. Never import or execute arbitrary agent-generated Python automatically in the application process. A future runner for generated model code must use a separate process and effective OS isolation. If Docker is selected, configure resource limits, no network unless needed, read-only inputs, and bounded outputs; Docker must not be described as absolute isolation.
 
@@ -26,7 +26,17 @@ The supplied `rhs` callable executes in the caller's Python process. This API is
 - **Numerical validity:** the test suite compares exponential decay to its analytic solution and checks the expected fourth-order global convergence under step halving for that smooth example. This is evidence about the solver on that test case, not an error bound for an arbitrary project model.
 - **Scientific validity:** not assessed by this component. Model equations, assumptions, units, initial conditions, data provenance, and suitability require a separate domain review. A successful integration or small residual does not establish identifiability, uniqueness, causal validity, or model correctness.
 
-Use this API as a reusable engine for a future project-specific workspace. The modified SIR model and experimental-data workflow remain pending user-provided equations/data; no SIR result is included or claimed here. Adaptive/stiff solvers, optimization, uncertainty, PDEs, and scientific audit automation remain planned.
+## Declarative SIR contract v1 (experimental)
+
+`SirModelDefinition.from_json()` accepts a strict UTF-8 JSON contract capped at 1 MiB. It permits only `schema_version: 1`, `model_type: "sir"`, and the fixed frequency-dependent equation set `sir_frequency_dependent_v1`, with states in `S, I, R` order. The equation strings must exactly equal the documented formulas; they are inert identifiers and are never parsed or evaluated. Python callbacks can be used by the lower-level `OdeProblem` API, but workspace project files cannot supply or import them.
+
+The contract validates nonnegative finite initial populations with positive total, exactly `beta` and `gamma`, nonnegative finite rates, a finite forward time interval, explicit unit labels (`rate` must be `1/<time>`), and `RK4_FIXED_STEP` settings within a 99,999-step budget. Units are labels: no dimensional algebra or unit conversion is performed. Rates accept only constants or piecewise-linear schedules with 2–128 ordered points covering the full interval. Schedule knots must align with the uniform grid chosen by the existing RK4 solver.
+
+`solve_sir_model()` reuses `OdeProblem` and `solve_rk4`. It rejects any negative compartment or population drift beyond `max(1e-12, N*1e-9)` and never clips or projects results. These checks do not establish stability, accuracy for a particular real system, parameter identifiability, or scientific validity.
+
+`examples/sir_model_demo.json` and `examples/run_sir_model_demo.py` are a deterministic synthetic software fixture. The output is explicitly marked `scientific_validity: NOT_ASSESSED`; it exercises the contract and solver only. The user's modified SIR, its equations, parameters, units, initial conditions, observations, and scientific review remain `NOT_RUN` until supplied.
+
+Adaptive/stiff solvers, general equation languages, unit conversion, parameter fitting through the workspace, uncertainty, PDEs, and scientific audit automation remain outside this increment.
 
 ## Local ODE parameter sensitivities (experimental P2.2)
 

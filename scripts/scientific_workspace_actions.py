@@ -5,13 +5,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import re
 import threading
+from types import MappingProxyType
 
 try:
-    from .scientific_core import OdeSolution
+    from .scientific_core import OdeSolution, SirModelDefinition, solve_sir_model
     from .scientific_workspace_loader import LoadedWorkspace
     from .scientific_workspace_view import ComponentView, build_simulation_result_view
 except ImportError:  # Support direct execution/import from scripts directory.
-    from scientific_core import OdeSolution
+    from scientific_core import OdeSolution, SirModelDefinition, solve_sir_model
     from scientific_workspace_loader import LoadedWorkspace
     from scientific_workspace_view import ComponentView, build_simulation_result_view
 
@@ -121,3 +122,63 @@ def run_approved_simulation(ticket: ApprovedSimulationRun) -> ComponentView:
         series=config["series"],
         action_label=ticket.action.label,
     )
+
+
+def sir_simulation_actions_for_workspace(
+    workspace: LoadedWorkspace,
+) -> Mapping[str, ApprovedSimulationAction]:
+    """Bind the built-in SIR solver to simulation plots in one verified workspace.
+
+    The model contract is parsed from loader-captured bytes. No project path is
+    imported or reopened, and every run rechecks the resource digest.
+    """
+    if not isinstance(workspace, LoadedWorkspace):
+        raise TypeError("workspace must come from the safe workspace loader")
+    model_resources = tuple(resource for resource in workspace.resources
+                            if resource.kind == "model_spec")
+    if not model_resources:
+        return MappingProxyType({})
+    if len(model_resources) != 1:
+        raise ValueError("built-in SIR action requires exactly one model_spec resource")
+    model_resource = model_resources[0]
+    definition = SirModelDefinition.from_json(model_resource.content)
+    declared_components = {
+        component["id"]: component
+        for section in workspace.manifest["sections"]
+        for component in section["components"]
+        if component["type"] == "simulation_plot"
+    }
+    actions: dict[str, ApprovedSimulationAction] = {}
+    label = f"SIR · RK4_FIXED_STEP · SHA-256 {model_resource.sha256}"
+    for component_id, raw_component in declared_components.items():
+        series = raw_component["config"]["series"]
+        if any(name not in definition.state_names for name in series):
+            raise ValueError(
+                f"simulation_plot {component_id!r} requests a state outside the SIR model"
+            )
+        def callback(
+            loaded: LoadedWorkspace,
+            _component: ComponentView,
+            *,
+            expected_workspace_id=workspace.summary.workspace_id,
+            expected_resource_id=model_resource.resource_id,
+            expected_sha256=model_resource.sha256,
+            model=definition,
+        ) -> OdeSolution:
+            if loaded.summary.workspace_id != expected_workspace_id:
+                raise ValueError("approved SIR action belongs to a different workspace")
+            matches = tuple(
+                resource for resource in loaded.resources
+                if resource.resource_id == expected_resource_id
+                and resource.kind == "model_spec"
+            )
+            if len(matches) != 1 or matches[0].sha256 != expected_sha256:
+                raise ValueError("verified SIR model_spec digest changed after approval setup")
+            return solve_sir_model(model)
+
+        actions[component_id] = ApprovedSimulationAction(
+            workspace_id=workspace.summary.workspace_id,
+            label=label,
+            callback=callback,
+        )
+    return MappingProxyType(actions)

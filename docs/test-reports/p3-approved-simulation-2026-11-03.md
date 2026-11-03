@@ -20,7 +20,7 @@
 | Docker/Linux, Python 3.14.0 | `python scripts/validate_skill.py` con la raíz montada como `scientific-software-engineering-council` | PASS: `VALID STRUCTURE` |
 | Windows, Python 3.14 | `py_compile` de los módulos/tests cambiados y `git diff --check` | PASS |
 | Revisión estática independiente | Dimensiones/colecciones sin límite previo a serialización; callback que termina con `SystemExit` | Ambos hallazgos corregidos con regresiones; el revisor confirmó que quedan resueltos |
-| GitHub Actions | PR de este incremento | `NOT_RUN` hasta publicar la rama y abrir el PR borrador |
+| GitHub Actions | PR #28, rama `codex/p3-workspace-approved-simulation` | PASS: runs [41727587626](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41727587626) y [41727621114](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41727621114), cada uno con 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 |
 | SIR modificado con datos experimentales | Configuración, simulación y auditoría científicas | `NOT_RUN`: no se han entregado ecuaciones, unidades, condiciones iniciales ni datos |
 | Codex/Gemini/AGY real | Invocación del proveedor | `NOT_RUN`: no se consumió una invocación autorizada durante este incremento |
 
@@ -33,4 +33,4 @@
 
 ## Entrega
 
-Rama `codex/p3-workspace-approved-simulation`, apilada sobre P3.5 y destinada a un PR borrador dirigido a `codex/p3-supervisor-progress-dashboard`. El estado del PR y su CI se registran en la matriz al publicarlos. Sin merge, release ni invocación de proveedor.
+Rama `codex/p3-workspace-approved-simulation`, apilada sobre P3.5, PR borrador [#28](https://github.com/Josch01/scientific-software-engineering-council/pull/28) dirigido a `codex/p3-supervisor-progress-dashboard`. No merge, release ni invocación de proveedor.

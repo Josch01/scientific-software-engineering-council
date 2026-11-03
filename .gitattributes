@@ -1,2 +1,3 @@
 docs/test-reports/*.log binary
 docs/test-reports/*.txt binary
+examples/sir_*.json text eol=lf

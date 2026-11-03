@@ -16,6 +16,7 @@ try:
         ApprovedSimulationAction,
         request_approved_simulation,
         run_approved_simulation,
+        sir_simulation_actions_for_workspace,
     )
     from .scientific_workspace_loader import load_scientific_workspace
     from .scientific_workspace_loader import LoadedWorkspace
@@ -31,6 +32,7 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
         ApprovedSimulationAction,
         request_approved_simulation,
         run_approved_simulation,
+        sir_simulation_actions_for_workspace,
     )
     from scripts.scientific_workspace_loader import load_scientific_workspace
     from scripts.scientific_workspace_loader import LoadedWorkspace
@@ -60,6 +62,21 @@ def _approved_action_for(
             or action.workspace_id != workspace.summary.workspace_id):
         return None
     return action
+
+
+def _simulation_actions_for_workspace(
+    workspace: LoadedWorkspace | None,
+    host_actions: Mapping[str, ApprovedSimulationAction],
+) -> tuple[dict[str, ApprovedSimulationAction], str | None]:
+    actions: dict[str, ApprovedSimulationAction] = {}
+    error = None
+    if workspace is not None:
+        try:
+            actions.update(sir_simulation_actions_for_workspace(workspace))
+        except (TypeError, ValueError) as exc:
+            error = str(exc)
+    actions.update(host_actions)
+    return actions, error
 
 
 def _run_simulation_ticket_for_ui(ticket):
@@ -499,6 +516,15 @@ def create_workspace_window(
             "Los digests de los artefactos coinciden con el manifiesto. "
             "Esto no valida el modelo, su precisión ni su validez científica."
         )
+        current_actions, action_error = _simulation_actions_for_workspace(
+            active_workspace[0], host_approved_simulations
+        )
+        active_simulation_actions[0] = current_actions
+        if action_error:
+            notice_text += (
+                " Acción SIR deshabilitada: "
+                f"{sanitize_display_text(action_error)}."
+            )
         if model.omitted_component_count:
             notice_text += (
                 f" Interfaz limitada: se omitieron {model.omitted_component_count} componentes "
@@ -520,7 +546,7 @@ def create_workspace_window(
                 ).pack(fill="x", padx=8, pady=6)
             for component in section.components:
                 action = _approved_action_for(
-                    component, active_workspace[0], approved_simulations
+                    component, active_workspace[0], active_simulation_actions[0]
                 )
                 if action is None:
                     _render_component(inner, component, tk, ttk)
@@ -573,7 +599,8 @@ def create_workspace_window(
     open_button.configure(command=open_workspace)
     root.bind("<Control-o>", lambda _event: open_workspace())
     active_workspace = [loaded_workspace]
-    approved_simulations = dict(approved_simulations or {})
+    host_approved_simulations = dict(approved_simulations or {})
+    active_simulation_actions = [host_approved_simulations]
     simulation_buttons: dict[str, object] = {}
     result_tabs: dict[str, object] = {}
     active_simulation = [None]
@@ -659,7 +686,7 @@ def create_workspace_window(
         open_button.configure(state="normal")
         for component_id, action_button in simulation_buttons.items():
             action_button.configure(state="normal")
-            action = approved_simulations.get(component_id)
+            action = active_simulation_actions[0].get(component_id)
             if action is not None:
                 action_button.configure(text=f"Ejecutar: {action.label}")
         if outcome == "error":

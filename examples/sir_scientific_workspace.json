@@ -1,0 +1,58 @@
+{
+  "resources": [
+    {
+      "id": "sir-model",
+      "kind": "model_spec",
+      "path": "sir_model_demo.json",
+      "sha256": "a131a2b9e2e06544ef165419be769eb025f74529941171c1711b2f0803a38cef"
+    },
+    {
+      "id": "initial-result",
+      "kind": "simulation_result",
+      "path": "sir_demo_result.json",
+      "sha256": "c5b254e0345ca24e9a91403fbcfbf854193a468acd2ad21a54672d3e614a2302"
+    }
+  ],
+  "schema_version": 1,
+  "sections": [
+    {
+      "components": [
+        {
+          "config": {},
+          "id": "equations",
+          "resource_refs": [
+            "sir-model"
+          ],
+          "title": "Ecuaciones y parámetros",
+          "type": "equation_view"
+        }
+      ],
+      "id": "model",
+      "title": "Modelo declarativo"
+    },
+    {
+      "components": [
+        {
+          "config": {
+            "series": [
+              "S",
+              "I",
+              "R"
+            ],
+            "x_axis": "time"
+          },
+          "id": "trajectory",
+          "resource_refs": [
+            "initial-result"
+          ],
+          "title": "Trayectoria SIR",
+          "type": "simulation_plot"
+        }
+      ],
+      "id": "simulation",
+      "title": "Simulación"
+    }
+  ],
+  "title": "SIR sintético · fixture de software",
+  "workspace_id": "sir-demo"
+}
