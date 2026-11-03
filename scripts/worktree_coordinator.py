@@ -424,14 +424,18 @@ def gate(project,task_id):
     invalid_integration_manifests=[]
     integration_root=metadata/"integrations"
     integration_attempts=[]
+    integration_root_invalid=False
+    latest_attempt_invalid=False
     if integration_root.exists() or integration_root.is_symlink():
         if integration_root.is_symlink() or not integration_root.is_dir():
+            integration_root_invalid=True
             invalid_integration_manifests.append({"path":"integrations",
                 "error":"integration root is not a regular directory"})
         else:
             try:
                 integration_attempts=sorted(integration_root.iterdir(),key=lambda item:item.name)
             except OSError as exc:
+                integration_root_invalid=True
                 invalid_integration_manifests.append({"path":"integrations",
                     "error":f"could not inspect integration attempts: {exc}"})
     if integration_attempts:
@@ -441,6 +445,7 @@ def gate(project,task_id):
         latest_relative=latest.relative_to(metadata).as_posix()
         latest_data=None
         latest_check=None
+        latest_attempt_invalid=True
         for attempt in integration_attempts:
             relative=attempt.relative_to(metadata).as_posix()
             if attempt.is_symlink() or not attempt.is_dir():
@@ -460,6 +465,7 @@ def gate(project,task_id):
                 manifest,checked=validate_integration_manifest(manifest_path,metadata,state,specs)
                 if attempt==latest:
                     latest_data,latest_check=manifest,checked
+                    latest_attempt_invalid=False
             except (OSError,ValueError,TypeError,KeyError,UnicodeError,RecursionError) as exc:
                 invalid_integration_manifests.append({"path":relative+"/manifest.json","error":str(exc)})
         if latest_data is not None:
@@ -479,6 +485,7 @@ def gate(project,task_id):
             if latest_check is None:
                 invalid_integration_manifests.append({"path":latest_relative+"/manifest.json",
                     "error":"latest integration attempt has no validated terminal check manifest"})
+                latest_attempt_invalid=True
             integrated_checks_verified=(
                 latest_data["status"]=="CHECKED_AWAITING_INTEGRATED_REVIEW" and
                 latest_check is not None and latest_check["status"]=="PASSED"
@@ -486,11 +493,12 @@ def gate(project,task_id):
             if not integrated_checks_verified:
                 errors.append("latest integrated candidate checks are missing, failed, or unverified")
         else:
+            latest_attempt_invalid=True
             errors.append("latest integrated candidate attempt is missing or invalid")
     else:
         errors.append("integrated check evidence for the combined candidate is missing")
-    if invalid_integration_manifests:
-        errors.append("one or more integration manifests are invalid or tampered")
+    if integration_root_invalid or latest_attempt_invalid:
+        errors.append("latest integration attempt or integration root is invalid or incomplete")
     if not status["base_unchanged"] or not status["source_clean"]:
         errors.append("original checkout changed since initialization")
     seen={}

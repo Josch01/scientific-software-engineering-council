@@ -469,6 +469,11 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertTrue(any(item["path"].startswith("integrations/" + historical_id)
                             for item in result_gate["invalid_integration_manifests"]))
         self.assertEqual(result_gate["status"], "BLOCKED")
+        self.assertFalse(any(historical_id in blocker for blocker in result_gate["blockers"]))
+        self.assertFalse(any("one or more integration manifests are invalid or tampered" in blocker
+                             for blocker in result_gate["blockers"]))
+        self.assertTrue(any("independent integrated review and human approval" in blocker
+                            for blocker in result_gate["blockers"]))
 
     def test_missing_reviewer_and_missing_check_are_rejected(self):
         self.evidence()
