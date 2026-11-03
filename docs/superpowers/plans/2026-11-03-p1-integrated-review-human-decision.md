@@ -158,9 +158,9 @@ Documentar commits, tests, review, provider/sandbox `UNVERIFIED`, operador no au
 
 Usar un paquete de review acotado de esta rama; corregir findings Critical/Important antes de declarar el incremento listo.
 
-- [ ] **Step 5: Commit y crear PR draft separado**
+- [x] **Step 5: Commit y crear PR draft separado** — PR draft [#16](https://github.com/Josch01/scientific-software-engineering-council/pull/16), base `codex/p1-integration-candidate`; sigue abierto y sin merge.
 
 Base: `codex/p1-integration-candidate`. No merge a `main`, tag ni release.
 
 
-**Verificación documental Task 4 (2026-11-03):** [informe](../../test-reports/p1-integrated-review-human-decision-2026-11-03.md). Windows: 298 tests, 289 PASS, 1 failure por nombre del worktree, 2 errors por privilegio symlink, 6 skips; no suite global verde. Inventario/reparse enfocado: 6/6 PASS. Docker/Linux `BLOCKED` (daemon), provider E2E `NOT_RUN`. Validador directo falla por nombre del worktree; export HEAD con nombre correcto pasa validador y test de estructura. Compileall/diff-check pasan. Review final aprobado después del fix `5bc6b22`; falta crear PR draft. Sin merge/tag/release.
+**Verificación documental Task 4 (2026-11-03):** [informe](../../test-reports/p1-integrated-review-human-decision-2026-11-03.md). Windows: 298 tests, 289 PASS, 1 failure por nombre del worktree, 2 errors por privilegio symlink, 6 skips; no suite global verde. Inventario/reparse enfocado: 6/6 PASS. Docker/Linux `BLOCKED` (daemon), provider E2E `NOT_RUN`. Validador directo falla por nombre del worktree; export HEAD con nombre correcto pasa validador y test de estructura. Compileall/diff-check pasan. Review final aprobado después del fix `5bc6b22`. PR draft #16 creado en base P1.3, abierto y sin merge; no tag/release.

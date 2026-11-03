@@ -96,4 +96,8 @@ RED: `FAILED (failures=10)`, 2 tests en 131.404 s. Ambos casos reprodujeron gate
 
 Regresiones afectadas: `OK`, 14 tests en 425.837 s, sin fallos, errores ni skips: los ocho casos Task 2 de historial/preview/latest/reutilización/roster/reparse, `test_gate_needs_human_after_valid_integrated_review`, `test_decision_rejects_incomplete_reviewer_results`, `test_gate_rejects_decision_bound_to_incomplete_reviewer_results` y los tres tests de `tests.test_release_gate`. Comando exacto conservado en el informe Task 2. Total de esta corrección: 16 tests enfocados GREEN. `python -m py_compile scripts/integration_review.py tests/test_integration_candidate.py` y `git diff --check`: PASS. No se repitió la suite amplia; su resultado original arriba permanece sin cambios.
 
-Límite operativo: historial legacy con manifest/stdout ausente, evidencia no ligada o salida no vacía con sesión nula ahora bloquea incluso si una ejecución posterior es válida. No se migra ni descarta automáticamente; puede requerir un task/workspace nuevo con historial completo tras revisión manual. Fixtures locales exclusivamente; provider E2E sigue `NOT_RUN`, independencia/sandbox siguen `UNVERIFIED`. No merge ni publicación.
+Límite operativo: historial legacy con manifest/stdout ausente, evidencia no ligada o salida no vacía con sesión nula ahora bloquea incluso si una ejecución posterior es válida. No se migra ni descarta automáticamente; puede requerir un task/workspace nuevo con historial completo tras revisión manual. Fixtures locales exclusivamente; provider E2E sigue `NOT_RUN`, independencia/sandbox siguen `UNVERIFIED`.
+
+## Entrega
+
+PR draft [#16](https://github.com/Josch01/scientific-software-engineering-council/pull/16), base `codex/p1-integration-candidate`, head `codex/p1-integrated-review-approval`. Abierto y sin merge; no release.
