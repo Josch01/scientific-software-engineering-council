@@ -94,9 +94,17 @@ change that disposition or run an external `waitpid(-1)`/other child reaper.
 The runtime keeps `Popen` private and owns its wait/poll operations. The check
 does not prevent a foreign reaper in another thread or later host changes; it
 is an ownership precondition, not general isolation.
+The handler check does not inspect native `sigaction` flags. Linux permits
+`SA_NOCLDWAIT` with `SIG_DFL`; if that flag is active and a later `waitid`
+observation fails with a generic error, cleanup may signal the numeric group
+ID after the leader was auto-reaped. A reused ID could identify an unrelated
+group. This is an **IMPORTANT unresolved risk**, not reproduced on the current
+Windows host; native POSIX containment remains `NOT_RUN` and `EXPERIMENTAL`.
+See [`P1 POSIX SIGCHLD review finding`](../docs/test-reports/p1-posix-sigchld-review-2026-11-02.md).
 Confirmed identity loss means `ChildProcessError`/`ECHILD` or an unexpected PID.
-An observation `PermissionError`/other runtime error does not itself reap the
-exclusively owned leader: the runtime still signals, confirms and reaps its group,
+Only when the host ownership preconditions above hold does an observation
+`PermissionError`/other runtime error leave the exclusively owned leader
+unreaped: the runtime then signals, confirms and reaps its group,
 while keeping the run `FAILED`/`UNVERIFIED` with empty hashes/session evidence.
 If signalling or confirmation fails, the leader is not reaped and explicit
 cleanup retries quiescence. Repeated cleanup failure is recorded/raised as
