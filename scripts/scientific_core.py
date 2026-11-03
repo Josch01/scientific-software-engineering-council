@@ -17,6 +17,10 @@ _DEFAULT_MAX_STEPS = 1_000_000
 _DEFAULT_MAX_TOTAL_SENSITIVITY_STEPS = 1_000_000
 _MAX_SENSITIVITY_PARAMETERS = 100
 _MAX_SENSITIVITY_VALUES = 1_000_000
+_DEFAULT_MAX_FIT_ITERATIONS = 100
+_DEFAULT_MAX_FIT_EVALUATIONS = 10_000
+_MAX_FIT_PARAMETERS = 100
+_MAX_FIT_JACOBIAN_VALUES = 1_000_000
 
 
 def _finite_float(value: object, label: str) -> float:
@@ -175,6 +179,52 @@ class OdeSensitivity:
             "trajectory_count": 1 + 2 * len(self.parameter_names),
             "total_step_count": self.total_step_count,
             "rhs_evaluation_count": 4 * self.total_step_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LeastSquaresFit:
+    """Bounded local least-squares result; convergence is not identifiability."""
+
+    parameter_names: tuple[str, ...]
+    initial_parameters: Mapping[str, float]
+    parameters: Mapping[str, float]
+    bounds: Mapping[str, tuple[float, float]]
+    residuals: tuple[float, ...]
+    cost: float
+    cost_underflowed: bool
+    status: str
+    iterations: int
+    accepted_steps: int
+    function_evaluations: int
+    max_iterations: int
+    max_function_evaluations: int
+    finite_difference_fraction: float
+    final_damping: float
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a versioned JSON-safe fit record with explicit work/status."""
+        return {
+            "schema_version": 1,
+            "method": "BOUNDED_LEVENBERG_MARQUARDT",
+            "parameter_names": list(self.parameter_names),
+            "initial_parameters": dict(self.initial_parameters),
+            "parameters": dict(self.parameters),
+            "bounds": {
+                name: {"lower": lower, "upper": upper}
+                for name, (lower, upper) in self.bounds.items()
+            },
+            "residuals": list(self.residuals),
+            "cost": self.cost,
+            "cost_underflowed": self.cost_underflowed,
+            "status": self.status,
+            "iterations": self.iterations,
+            "accepted_steps": self.accepted_steps,
+            "function_evaluations": self.function_evaluations,
+            "max_iterations": self.max_iterations,
+            "max_function_evaluations": self.max_function_evaluations,
+            "finite_difference_fraction": self.finite_difference_fraction,
+            "final_damping": self.final_damping,
         }
 
 
@@ -452,4 +502,408 @@ def parameter_sensitivities(
         parameter_bounds=MappingProxyType(bounds),
         values=frozen_values,
         total_step_count=total_step_count,
+    )
+
+
+class _FitEvaluationLimit(Exception):
+    pass
+
+
+def _least_squares_measure(residuals: tuple[float, ...]) -> tuple[float, float]:
+    norm = 0.0
+    for residual in residuals:
+        norm = math.hypot(norm, residual)
+    cost = 0.5 * norm * norm
+    if not math.isfinite(cost):
+        raise ValueError("least-squares cost is not finite")
+    return norm, cost
+
+
+def _solve_dense_system(
+    matrix: list[list[float]], right_hand_side: list[float]
+) -> list[float]:
+    """Solve a small dense system by Gaussian elimination with pivoting."""
+    size = len(right_hand_side)
+    rows = [list(matrix_row) + [right_hand_side[index]]
+            for index, matrix_row in enumerate(matrix)]
+    for column in range(size):
+        pivot_row = max(range(column, size), key=lambda row: abs(rows[row][column]))
+        pivot = rows[pivot_row][column]
+        if not math.isfinite(pivot) or pivot == 0.0:
+            raise ValueError("least-squares damped system is singular")
+        if pivot_row != column:
+            rows[column], rows[pivot_row] = rows[pivot_row], rows[column]
+        for row in range(column + 1, size):
+            factor = rows[row][column] / rows[column][column]
+            rows[row][column] = 0.0
+            for index in range(column + 1, size + 1):
+                rows[row][index] -= factor * rows[column][index]
+
+    solution = [0.0 for _ in range(size)]
+    for row in range(size - 1, -1, -1):
+        tail = math.fsum(rows[row][column] * solution[column]
+                         for column in range(row + 1, size))
+        solution[row] = (rows[row][size] - tail) / rows[row][row]
+        if not math.isfinite(solution[row]):
+            raise ValueError("least-squares step is not finite")
+    return solution
+
+
+def fit_least_squares(
+    residual_function: Callable[[Mapping[str, float]], Sequence[float]],
+    initial_parameters: Mapping[str, float],
+    bounds: Mapping[str, Sequence[float]],
+    *,
+    max_iterations: int = _DEFAULT_MAX_FIT_ITERATIONS,
+    max_function_evaluations: int = _DEFAULT_MAX_FIT_EVALUATIONS,
+    finite_difference_fraction: float = 1e-4,
+    gradient_tolerance: float = 1e-8,
+    cost_tolerance: float = 1e-10,
+    step_tolerance: float = 1e-8,
+) -> LeastSquaresFit:
+    """Fit a bounded parameter mapping to a caller-provided residual vector.
+
+    The local optimizer uses damped Gauss-Newton/Levenberg-Marquardt in
+    locally scaled coordinates centered exactly on the supplied initial values.
+    It uses central finite differences in the interior and feasible one-sided
+    differences at active bounds. The callback must be deterministic; status
+    ``CONVERGED`` is not an identifiability or scientific-validity result.
+    """
+    if not callable(residual_function):
+        raise ValueError("residual_function must be callable")
+    if not isinstance(initial_parameters, Mapping) or not initial_parameters:
+        raise ValueError("initial_parameters must be a non-empty mapping")
+    if len(initial_parameters) > _MAX_FIT_PARAMETERS:
+        raise ValueError(
+            f"initial_parameters exceed the {_MAX_FIT_PARAMETERS}-parameter limit"
+        )
+    if not isinstance(bounds, Mapping):
+        raise ValueError("bounds must map every parameter name to a finite (lower, upper) pair")
+    if (
+        isinstance(max_iterations, bool)
+        or not isinstance(max_iterations, int)
+        or max_iterations < 1
+    ):
+        raise ValueError("max_iterations must be a positive integer")
+    if (
+        isinstance(max_function_evaluations, bool)
+        or not isinstance(max_function_evaluations, int)
+        or max_function_evaluations < 1
+    ):
+        raise ValueError("max_function_evaluations must be a positive integer")
+
+    fd_fraction = _finite_float(
+        finite_difference_fraction, "finite_difference_fraction"
+    )
+    if not 0.0 < fd_fraction <= 0.5:
+        raise ValueError("finite_difference_fraction must be in (0, 0.5]")
+    grad_tol = _finite_float(gradient_tolerance, "gradient_tolerance")
+    cost_tol = _finite_float(cost_tolerance, "cost_tolerance")
+    step_tol = _finite_float(step_tolerance, "step_tolerance")
+    if min(grad_tol, cost_tol, step_tol) <= 0.0:
+        raise ValueError("gradient, cost, and step tolerances must be positive")
+
+    names: list[str] = []
+    initial: dict[str, float] = {}
+    box: dict[str, tuple[float, float]] = {}
+    coordinate_scales: list[float] = []
+    coordinate_lowers: list[float] = []
+    coordinate_uppers: list[float] = []
+    coordinate_fd_steps: list[float] = []
+    if set(bounds) != set(initial_parameters):
+        raise ValueError("bounds must contain exactly the initial parameter names")
+    for name, raw_value in initial_parameters.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("parameter names must be non-empty strings")
+        value = _finite_float(raw_value, f"initial_parameters[{name!r}]")
+        pair = _finite_vector(bounds[name], f"bounds[{name!r}]", expected_length=2)
+        lower, upper = pair
+        width = upper - lower
+        if not math.isfinite(width) or width <= 0.0:
+            raise ValueError(f"bounds for parameter {name!r} must have finite lower < upper")
+        if value < lower or value > upper:
+            raise ValueError(f"initial parameter {name!r} must lie within its bounds")
+        names.append(name)
+        initial[name] = value
+        box[name] = (lower, upper)
+        coordinate_scale = max(abs(value), min(width, 1.0))
+        coordinate_lower = (lower - value) / coordinate_scale
+        coordinate_upper = (upper - value) / coordinate_scale
+        if not math.isfinite(coordinate_lower) or not math.isfinite(coordinate_upper):
+            raise ValueError(f"bounds for parameter {name!r} exceed the supported coordinate range")
+        coordinate_scales.append(coordinate_scale)
+        coordinate_lowers.append(coordinate_lower)
+        coordinate_uppers.append(coordinate_upper)
+        coordinate_fd_steps.append(fd_fraction * (width / coordinate_scale))
+
+    parameter_names = tuple(names)
+    parameter_count = len(parameter_names)
+    evaluation_count = 0
+    expected_residual_count: int | None = None
+
+    def parameter_values(point: Sequence[float]) -> dict[str, float]:
+        result: dict[str, float] = {}
+        for index, name in enumerate(parameter_names):
+            lower, upper = box[name]
+            coordinate = point[index]
+            if coordinate <= coordinate_lowers[index]:
+                value = lower
+            elif coordinate >= coordinate_uppers[index]:
+                value = upper
+            else:
+                value = initial[name] + coordinate * coordinate_scales[index]
+                value = min(upper, max(lower, value))
+            if not math.isfinite(value):
+                raise ValueError(f"parameter value is not finite for {name!r}")
+            result[name] = value
+        return result
+
+    def evaluate(point: Sequence[float], context: str) -> tuple[float, ...]:
+        nonlocal evaluation_count, expected_residual_count
+        if evaluation_count >= max_function_evaluations:
+            raise _FitEvaluationLimit
+        values = parameter_values(point)
+        evaluation_count += 1
+        try:
+            residuals = _finite_vector(
+                residual_function(MappingProxyType(values)), "least-squares residuals"
+            )
+        except Exception as exc:
+            raise ValueError(f"residual evaluation failed during {context}: {exc}") from exc
+        if not residuals:
+            raise ValueError("residual_function must return at least one residual")
+        if expected_residual_count is None:
+            expected_residual_count = len(residuals)
+        elif len(residuals) != expected_residual_count:
+            raise ValueError("residual_function changed its residual dimension")
+        if len(residuals) * parameter_count > _MAX_FIT_JACOBIAN_VALUES:
+            raise ValueError(
+                f"least-squares Jacobian exceeds {_MAX_FIT_JACOBIAN_VALUES} values"
+            )
+        return residuals
+
+    current = [0.0 for _ in range(parameter_count)]
+    residual_values = evaluate(current, "initial evaluation")
+    residual_norm, cost = _least_squares_measure(residual_values)
+    initial_residual_scale = max(abs(value) for value in residual_values)
+    cost_underflowed = cost == 0.0 and residual_norm > 0.0
+    iterations = 0
+    accepted_steps = 0
+    damping = 1e-3
+    status = "MAX_ITERATIONS"
+
+    if residual_norm == 0.0:
+        status = "CONVERGED"
+    else:
+        for iteration in range(1, max_iterations + 1):
+            iterations = iteration
+            columns: list[list[float]] = []
+            try:
+                for parameter_index, name in enumerate(parameter_names):
+                    center = current[parameter_index]
+                    lower_coordinate = coordinate_lowers[parameter_index]
+                    upper_coordinate = coordinate_uppers[parameter_index]
+                    delta = min(
+                        coordinate_fd_steps[parameter_index],
+                        center - lower_coordinate,
+                        upper_coordinate - center,
+                    )
+                    if delta > 0.0:
+                        lower_point = list(current)
+                        upper_point = list(current)
+                        lower_point[parameter_index] = center - delta
+                        upper_point[parameter_index] = center + delta
+                        lower_parameters = parameter_values(lower_point)[name]
+                        upper_parameters = parameter_values(upper_point)[name]
+                        if lower_parameters == upper_parameters:
+                            raise ValueError(
+                                f"finite-difference values are not representable for parameter {name!r}"
+                            )
+                        lower_residuals = evaluate(
+                            lower_point, f"parameter {name!r} lower difference"
+                        )
+                        upper_residuals = evaluate(
+                            upper_point, f"parameter {name!r} upper difference"
+                        )
+                        denominator = (
+                            upper_point[parameter_index]
+                            - lower_point[parameter_index]
+                        )
+                        column = [
+                            (upper_value - lower_value) / denominator
+                            for lower_value, upper_value in zip(
+                                lower_residuals, upper_residuals
+                            )
+                        ]
+                    elif center <= lower_coordinate:
+                        upper_point = list(current)
+                        upper_point[parameter_index] = min(
+                            center + coordinate_fd_steps[parameter_index],
+                            upper_coordinate,
+                        )
+                        upper_parameters = parameter_values(upper_point)[name]
+                        if upper_parameters == parameter_values(current)[name]:
+                            raise ValueError(
+                                f"finite-difference value is not representable for parameter {name!r}"
+                            )
+                        upper_residuals = evaluate(
+                            upper_point, f"parameter {name!r} upper difference"
+                        )
+                        denominator = upper_point[parameter_index] - center
+                        column = [
+                            (upper_value - value) / denominator
+                            for value, upper_value in zip(residual_values, upper_residuals)
+                        ]
+                    else:
+                        lower_point = list(current)
+                        lower_point[parameter_index] = max(
+                            center - coordinate_fd_steps[parameter_index],
+                            lower_coordinate,
+                        )
+                        lower_parameters = parameter_values(lower_point)[name]
+                        if lower_parameters == parameter_values(current)[name]:
+                            raise ValueError(
+                                f"finite-difference value is not representable for parameter {name!r}"
+                            )
+                        lower_residuals = evaluate(
+                            lower_point, f"parameter {name!r} lower difference"
+                        )
+                        denominator = center - lower_point[parameter_index]
+                        column = [
+                            (value - lower_value) / denominator
+                            for value, lower_value in zip(residual_values, lower_residuals)
+                        ]
+                    if any(not math.isfinite(value) for value in column):
+                        raise ValueError(f"Jacobian is not finite for parameter {name!r}")
+                    columns.append(column)
+            except _FitEvaluationLimit:
+                status = "MAX_FUNCTION_EVALUATIONS"
+                break
+
+            residual_scale = max(
+                initial_residual_scale,
+                max(abs(value) for value in residual_values),
+            )
+            scaled_residuals = [value / residual_scale for value in residual_values]
+            column_scales = [
+                max((abs(value) for value in column), default=0.0) or 1.0
+                for column in columns
+            ]
+            scaled_columns = [
+                [value / column_scales[index] for value in column]
+                for index, column in enumerate(columns)
+            ]
+            gradient = [
+                math.fsum(
+                    value * residual
+                    for value, residual in zip(column, scaled_residuals)
+                )
+                for column in scaled_columns
+            ]
+            projected_gradient = [
+                0.0 if current[index] <= coordinate_lowers[index] and value > 0.0
+                else 0.0 if current[index] >= coordinate_uppers[index] and value < 0.0
+                else value
+                for index, value in enumerate(gradient)
+            ]
+            if max(abs(value) for value in projected_gradient) <= grad_tol:
+                status = "CONVERGED"
+                break
+
+            normal = [
+                [0.0 for _ in range(parameter_count)]
+                for _ in range(parameter_count)
+            ]
+            for left in range(parameter_count):
+                for right in range(left, parameter_count):
+                    value = math.fsum(
+                        row_left * row_right
+                        for row_left, row_right in zip(
+                            scaled_columns[left], scaled_columns[right]
+                        )
+                    )
+                    normal[left][right] = normal[right][left] = value
+            maximum_diagonal = max(normal[index][index] for index in range(parameter_count))
+            if maximum_diagonal == 0.0:
+                status = "STALLED"
+                break
+            damped = [row[:] for row in normal]
+            for index in range(parameter_count):
+                diagonal = max(normal[index][index], maximum_diagonal * 1e-12)
+                damped[index][index] += damping * diagonal
+            scaled_direction = _solve_dense_system(
+                damped, [-value for value in gradient]
+            )
+            direction = [
+                scaled_direction[index]
+                * (residual_scale / column_scales[index])
+                for index in range(parameter_count)
+            ]
+            if any(not math.isfinite(value) for value in direction):
+                status = "STALLED"
+                break
+            candidate = []
+            for index in range(parameter_count):
+                proposed = current[index] + direction[index]
+                if not math.isfinite(proposed):
+                    proposed = (
+                        coordinate_uppers[index]
+                        if direction[index] > 0.0
+                        else coordinate_lowers[index]
+                    )
+                candidate.append(
+                    min(
+                        coordinate_uppers[index],
+                        max(coordinate_lowers[index], proposed),
+                    )
+                )
+            step_size = max(
+                abs(candidate[index] - current[index])
+                for index in range(parameter_count)
+            )
+            if step_size <= step_tol:
+                status = "STALLED"
+                break
+
+            try:
+                candidate_residuals = evaluate(candidate, "trial point")
+            except _FitEvaluationLimit:
+                status = "MAX_FUNCTION_EVALUATIONS"
+                break
+            candidate_norm, candidate_cost = _least_squares_measure(candidate_residuals)
+            if candidate_norm < residual_norm:
+                relative_improvement = 1.0 - (candidate_norm / residual_norm) ** 2
+                current = candidate
+                residual_values = candidate_residuals
+                residual_norm = candidate_norm
+                cost = candidate_cost
+                cost_underflowed = cost == 0.0 and residual_norm > 0.0
+                accepted_steps += 1
+                damping = max(damping / 3.0, 1e-12)
+                if relative_improvement <= cost_tol or step_size <= step_tol:
+                    status = "CONVERGED"
+                    break
+            else:
+                damping *= 10.0
+                if not math.isfinite(damping) or damping > 1e12:
+                    status = "STALLED"
+                    break
+
+    final_parameters = parameter_values(current)
+    return LeastSquaresFit(
+        parameter_names=parameter_names,
+        initial_parameters=MappingProxyType(dict(initial)),
+        parameters=MappingProxyType(final_parameters),
+        bounds=MappingProxyType(dict(box)),
+        residuals=residual_values,
+        cost=cost,
+        cost_underflowed=cost_underflowed,
+        status=status,
+        iterations=iterations,
+        accepted_steps=accepted_steps,
+        function_evaluations=evaluation_count,
+        max_iterations=max_iterations,
+        max_function_evaluations=max_function_evaluations,
+        finite_difference_fraction=fd_fraction,
+        final_damping=damping,
     )
