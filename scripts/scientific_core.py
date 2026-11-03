@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 from types import MappingProxyType
 
@@ -21,6 +23,12 @@ _DEFAULT_MAX_FIT_ITERATIONS = 100
 _DEFAULT_MAX_FIT_EVALUATIONS = 10_000
 _MAX_FIT_PARAMETERS = 100
 _MAX_FIT_JACOBIAN_VALUES = 1_000_000
+_DEFAULT_MAX_TOTAL_OBSERVATION_STEPS = 1_000_000
+_MAX_OBSERVATION_ROWS = 100_000
+_MAX_OBSERVATION_VARIABLES = 100
+_MAX_OBSERVATION_VALUES = 1_000_000
+_MAX_OBSERVATION_PROVENANCE_FIELDS = 100
+_MAX_OBSERVATION_TEXT_LENGTH = 4096
 
 
 def _finite_float(value: object, label: str) -> float:
@@ -33,6 +41,52 @@ def _finite_float(value: object, label: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"{label} must be a finite number")
     return number
+
+
+def _observation_text(
+    value: object, label: str, *, max_length: int = _MAX_OBSERVATION_TEXT_LENGTH
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string")
+    if len(value) > max_length:
+        raise ValueError(f"{label} exceeds the {max_length}-character limit")
+    return value
+
+
+def _observation_payload(
+    time_unit: str,
+    variable_units: Mapping[str, str],
+    times: Sequence[float],
+    values: Sequence[Mapping[str, float]],
+    provenance: Mapping[str, str],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "time_unit": time_unit,
+        "variables": [
+            {"name": name, "unit": unit}
+            for name, unit in variable_units.items()
+        ],
+        "observations": [
+            {"time": time, "values": dict(row)}
+            for time, row in zip(times, values)
+        ],
+        "provenance": dict(provenance),
+    }
+
+
+def _observation_digest(payload: Mapping[str, object]) -> str:
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError(f"observation dataset cannot be canonically encoded: {exc}") from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _finite_vector(
@@ -127,6 +181,233 @@ class OdeSolution:
             "requested_max_step": self.requested_max_step,
             "actual_step_size": self.step_size,
             "step_count": self.step_count,
+        }
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ObservationDataset:
+    """Immutable sparse observations with explicit units and source metadata.
+
+    Construct through ``from_dict`` so schema, bounds, and content digest are
+    validated. The digest identifies normalized contract content; it does not
+    authenticate the declared source.
+    """
+
+    time_unit: str
+    variable_units: Mapping[str, str]
+    times: tuple[float, ...]
+    values: tuple[Mapping[str, float], ...]
+    provenance: Mapping[str, str]
+    content_sha256: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("construct ObservationDataset with from_dict()")
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "ObservationDataset":
+        if not isinstance(payload, Mapping):
+            raise ValueError("observation dataset must be a mapping")
+        required = {
+            "schema_version", "time_unit", "variables", "observations", "provenance"
+        }
+        if set(payload) not in (required, required | {"content_sha256"}):
+            raise ValueError("observation dataset has missing or unknown fields")
+        if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+            raise ValueError("unsupported observation schema_version; expected 1")
+
+        time_unit = _observation_text(payload["time_unit"], "time_unit")
+        raw_variables = payload["variables"]
+        if not isinstance(raw_variables, Sequence) or isinstance(
+            raw_variables, (str, bytes, bytearray)
+        ) or not raw_variables:
+            raise ValueError("variables must be a non-empty ordered sequence of name/unit records")
+        if len(raw_variables) > _MAX_OBSERVATION_VARIABLES:
+            raise ValueError(
+                f"variables exceed the {_MAX_OBSERVATION_VARIABLES}-variable limit"
+            )
+        variable_units: dict[str, str] = {}
+        for variable_index, raw_variable in enumerate(raw_variables):
+            if not isinstance(raw_variable, Mapping) or set(raw_variable) != {"name", "unit"}:
+                raise ValueError(
+                    f"variables[{variable_index}] must contain exactly name and unit"
+                )
+            name = _observation_text(
+                raw_variable["name"], "variable name", max_length=256
+            )
+            if name != name.strip():
+                raise ValueError("variable names cannot have surrounding whitespace")
+            if name in variable_units:
+                raise ValueError(f"duplicate variable name {name!r}")
+            variable_units[name] = _observation_text(
+                raw_variable["unit"], f"unit for variable {name!r}", max_length=256
+            )
+
+        raw_rows = payload["observations"]
+        if not isinstance(raw_rows, Sequence) or isinstance(
+            raw_rows, (str, bytes, bytearray)
+        ) or not raw_rows:
+            raise ValueError("observations must be a non-empty sequence")
+        if len(raw_rows) > _MAX_OBSERVATION_ROWS:
+            raise ValueError(
+                f"observations exceed the {_MAX_OBSERVATION_ROWS}-row limit"
+            )
+        times: list[float] = []
+        value_rows: list[Mapping[str, float]] = []
+        value_count = 0
+        previous_time: float | None = None
+        for row_index, raw_row in enumerate(raw_rows):
+            if not isinstance(raw_row, Mapping) or set(raw_row) != {"time", "values"}:
+                raise ValueError(
+                    f"observations[{row_index}] must contain exactly time and values"
+                )
+            time = _finite_float(raw_row["time"], f"observations[{row_index}].time")
+            if previous_time is not None and time <= previous_time:
+                raise ValueError("observation times must be strictly increasing")
+            previous_time = time
+            raw_values = raw_row["values"]
+            if not isinstance(raw_values, Mapping) or not raw_values:
+                raise ValueError(
+                    f"observations[{row_index}] must contain at least one measured variable"
+                )
+            unknown = set(raw_values) - set(variable_units)
+            if unknown:
+                raise ValueError(
+                    f"observations[{row_index}] contains unknown variable(s): "
+                    f"{sorted(map(str, unknown))}"
+                )
+            row_values: dict[str, float] = {}
+            for name in variable_units:
+                if name in raw_values:
+                    row_values[name] = _finite_float(
+                        raw_values[name],
+                        f"observations[{row_index}].values[{name!r}]",
+                    )
+            value_count += len(row_values)
+            if value_count > _MAX_OBSERVATION_VALUES:
+                raise ValueError(
+                    "observations exceed the "
+                    f"{_MAX_OBSERVATION_VALUES}-value limit"
+                )
+            times.append(time)
+            value_rows.append(MappingProxyType(row_values))
+
+        raw_provenance = payload["provenance"]
+        if not isinstance(raw_provenance, Mapping) or not raw_provenance:
+            raise ValueError("provenance must be a non-empty mapping containing source")
+        if len(raw_provenance) > _MAX_OBSERVATION_PROVENANCE_FIELDS:
+            raise ValueError(
+                "provenance exceeds the "
+                f"{_MAX_OBSERVATION_PROVENANCE_FIELDS}-field limit"
+            )
+        provenance: dict[str, str] = {}
+        for raw_key, raw_value in raw_provenance.items():
+            key = _observation_text(raw_key, "provenance key", max_length=256)
+            if key != key.strip():
+                raise ValueError("provenance keys cannot have surrounding whitespace")
+            provenance[key] = _observation_text(
+                raw_value, f"provenance[{key!r}]"
+            )
+        if "source" not in provenance:
+            raise ValueError("provenance must contain a non-empty source")
+
+        canonical_payload = _observation_payload(
+            time_unit, variable_units, times, value_rows, provenance
+        )
+        digest = _observation_digest(canonical_payload)
+        if "content_sha256" in payload:
+            supplied_digest = payload["content_sha256"]
+            if (
+                not isinstance(supplied_digest, str)
+                or len(supplied_digest) != 64
+                or any(character not in "0123456789abcdef" for character in supplied_digest)
+            ):
+                raise ValueError("content_sha256 must be a lowercase SHA-256 hex digest")
+            if supplied_digest != digest:
+                raise ValueError("content_sha256 does not match observation content")
+
+        dataset = object.__new__(cls)
+        object.__setattr__(dataset, "time_unit", time_unit)
+        object.__setattr__(dataset, "variable_units", MappingProxyType(variable_units))
+        object.__setattr__(dataset, "times", tuple(times))
+        object.__setattr__(dataset, "values", tuple(value_rows))
+        object.__setattr__(dataset, "provenance", MappingProxyType(provenance))
+        object.__setattr__(dataset, "content_sha256", digest)
+        return dataset
+
+    @property
+    def variable_names(self) -> tuple[str, ...]:
+        return tuple(self.variable_units)
+
+    def to_dict(self) -> dict[str, object]:
+        payload = _observation_payload(
+            self.time_unit,
+            self.variable_units,
+            self.times,
+            self.values,
+            self.provenance,
+        )
+        payload["content_sha256"] = self.content_sha256
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationEvaluation:
+    """RK4 model values and ordered residuals at observation times."""
+
+    observation_sha256: str
+    provenance: Mapping[str, str]
+    time_unit: str
+    variable_units: Mapping[str, str]
+    times: tuple[float, ...]
+    observed_values: tuple[Mapping[str, float], ...]
+    simulated_values: tuple[Mapping[str, float], ...]
+    residual_order: tuple[tuple[float, str], ...]
+    residuals: tuple[float, ...]
+    model_time_unit: str
+    model_variable_units: Mapping[str, str]
+    model_parameters: Mapping[str, float]
+    model_state_names: tuple[str, ...]
+    model_initial_state: State
+    requested_max_step: float
+    segment_step_sizes: tuple[float | None, ...]
+    segment_step_counts: tuple[int, ...]
+    total_step_count: int
+    max_steps_per_interval: int
+    max_total_steps: int
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-safe, provenance-linked evaluation record."""
+        return {
+            "schema_version": 1,
+            "method": "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES",
+            "observation_sha256": self.observation_sha256,
+            "provenance": dict(self.provenance),
+            "time_unit": self.time_unit,
+            "variable_units": dict(self.variable_units),
+            "times": list(self.times),
+            "observed_values": [dict(row) for row in self.observed_values],
+            "simulated_values": [dict(row) for row in self.simulated_values],
+            "residual_order": [
+                {"time": time, "variable": name}
+                for time, name in self.residual_order
+            ],
+            "residuals": list(self.residuals),
+            "model": {
+                "time_unit": self.model_time_unit,
+                "variable_units": dict(self.model_variable_units),
+                "parameters": dict(self.model_parameters),
+                "state_names": list(self.model_state_names),
+                "initial_state": list(self.model_initial_state),
+            },
+            "solver": {
+                "requested_max_step": self.requested_max_step,
+                "segment_step_sizes": list(self.segment_step_sizes),
+                "segment_step_counts": list(self.segment_step_counts),
+                "total_step_count": self.total_step_count,
+                "rhs_evaluation_count": 4 * self.total_step_count,
+                "max_steps_per_interval": self.max_steps_per_interval,
+                "max_total_steps": self.max_total_steps,
+            },
         }
 
 
@@ -345,6 +626,184 @@ def solve_rk4(
         requested_max_step=requested_step,
         step_size=step_size,
         step_count=step_count,
+    )
+
+
+def evaluate_observations(
+    problem: OdeProblem,
+    dataset: ObservationDataset,
+    *,
+    model_time_unit: str,
+    model_variable_units: Mapping[str, str],
+    max_step: float,
+    max_steps_per_interval: int = _DEFAULT_MAX_STEPS,
+    max_total_steps: int = _DEFAULT_MAX_TOTAL_OBSERVATION_STEPS,
+) -> ObservationEvaluation:
+    """Integrate to exact observation times and build ordered residuals.
+
+    Each interval between observations is integrated with fixed-step RK4. No
+    interpolation, unit conversion, or missing-value imputation is performed.
+    Work budgets and unit/name compatibility are checked before any RHS call.
+    Residuals are raw, unweighted ``simulated - observed`` differences in time
+    order, then dataset variable order. The tuple can be passed to
+    :func:`fit_least_squares`, but callers must scale or weight variables with
+    unlike units before interpreting their joint squared-error objective.
+    """
+    if not isinstance(problem, OdeProblem):
+        raise ValueError("problem must be an OdeProblem")
+    if not isinstance(dataset, ObservationDataset):
+        raise ValueError("dataset must be an ObservationDataset")
+    time_unit = _observation_text(model_time_unit, "model_time_unit")
+    if time_unit != dataset.time_unit:
+        raise ValueError(
+            f"model time unit {time_unit!r} does not match observation time unit "
+            f"{dataset.time_unit!r}"
+        )
+    if not isinstance(model_variable_units, Mapping):
+        raise ValueError("model_variable_units must map state names to units")
+    normalized_model_units: dict[str, str] = {}
+    for raw_name, raw_unit in model_variable_units.items():
+        name = _observation_text(raw_name, "model state name", max_length=256)
+        normalized_model_units[name] = _observation_text(
+            raw_unit, f"model unit for {name!r}", max_length=256
+        )
+
+    state_indices = {
+        name: index for index, name in enumerate(problem.state_names or ())
+    }
+    for name, unit in dataset.variable_units.items():
+        if name not in state_indices or name not in normalized_model_units:
+            raise ValueError(f"observation variable {name!r} is not a problem state with a declared model unit")
+        if normalized_model_units[name] != unit:
+            raise ValueError(
+                f"unit mismatch for variable {name!r}: model has "
+                f"{normalized_model_units[name]!r}, observations have {unit!r}"
+            )
+
+    requested_step = _finite_float(max_step, "max_step")
+    if requested_step <= 0.0:
+        raise ValueError("max_step must be positive and finite")
+    if (
+        isinstance(max_steps_per_interval, bool)
+        or not isinstance(max_steps_per_interval, int)
+        or max_steps_per_interval < 1
+    ):
+        raise ValueError("max_steps_per_interval must be a positive integer")
+    if (
+        isinstance(max_total_steps, bool)
+        or not isinstance(max_total_steps, int)
+        or max_total_steps < 1
+    ):
+        raise ValueError("max_total_steps must be a positive integer")
+
+    start, end = problem.t_span
+    current_time = start
+    segment_step_counts: list[int] = []
+    total_step_count = 0
+    for observation_time in dataset.times:
+        if observation_time < start or observation_time > end:
+            raise ValueError(
+                f"observation time {observation_time!r} is outside problem.t_span"
+            )
+        if observation_time == current_time:
+            step_count = 0
+        else:
+            span = observation_time - current_time
+            required_steps = span / requested_step
+            if not math.isfinite(required_steps):
+                raise ValueError("observation interval requires a non-finite step count")
+            step_count = max(1, math.ceil(required_steps))
+            if step_count > max_steps_per_interval:
+                raise ValueError(
+                    "observation interval exceeds "
+                    f"max_steps_per_interval={max_steps_per_interval}"
+                )
+            total_step_count += step_count
+            if total_step_count > max_total_steps:
+                raise ValueError(
+                    f"observation simulation exceeds max_total_steps={max_total_steps}"
+                )
+        segment_step_counts.append(step_count)
+        current_time = observation_time
+
+    current_time = start
+    current_state = problem.initial_state
+    segment_step_sizes: list[float | None] = []
+    observed_rows: list[Mapping[str, float]] = []
+    simulated_rows: list[Mapping[str, float]] = []
+    residual_order: list[tuple[float, str]] = []
+    residual_values: list[float] = []
+    for observation_time, step_count, observed_row in zip(
+        dataset.times, segment_step_counts, dataset.values
+    ):
+        if step_count:
+            segment_problem = OdeProblem(
+                rhs=problem.rhs,
+                t_span=(current_time, observation_time),
+                initial_state=current_state,
+                parameters=problem.parameters,
+                state_names=problem.state_names,
+            )
+            try:
+                segment = solve_rk4(
+                    segment_problem,
+                    requested_step,
+                    max_steps=max_steps_per_interval,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"RK4 evaluation failed before observation time "
+                    f"{observation_time!r}: {exc}"
+                ) from exc
+            current_state = segment.states[-1]
+            segment_step_sizes.append(segment.step_size)
+        else:
+            segment_step_sizes.append(None)
+
+        current_time = observation_time
+        simulated_row = MappingProxyType(
+            {
+                name: current_state[state_indices[name]]
+                for name in dataset.variable_units
+            }
+        )
+        observed_rows.append(MappingProxyType(dict(observed_row)))
+        simulated_rows.append(simulated_row)
+        for name in dataset.variable_units:
+            if name not in observed_row:
+                continue
+            residual = simulated_row[name] - observed_row[name]
+            if not math.isfinite(residual):
+                raise ValueError(
+                    f"residual is not finite at time {observation_time!r} "
+                    f"for variable {name!r}"
+                )
+            residual_order.append((observation_time, name))
+            residual_values.append(residual)
+
+    return ObservationEvaluation(
+        observation_sha256=dataset.content_sha256,
+        provenance=dataset.provenance,
+        time_unit=dataset.time_unit,
+        variable_units=dataset.variable_units,
+        times=dataset.times,
+        observed_values=tuple(observed_rows),
+        simulated_values=tuple(simulated_rows),
+        residual_order=tuple(residual_order),
+        residuals=tuple(residual_values),
+        model_time_unit=time_unit,
+        model_variable_units=MappingProxyType(
+            {name: normalized_model_units[name] for name in dataset.variable_units}
+        ),
+        model_parameters=problem.parameters,
+        model_state_names=problem.state_names or (),
+        model_initial_state=problem.initial_state,
+        requested_max_step=requested_step,
+        segment_step_sizes=tuple(segment_step_sizes),
+        segment_step_counts=tuple(segment_step_counts),
+        total_step_count=total_step_count,
+        max_steps_per_interval=max_steps_per_interval,
+        max_total_steps=max_total_steps,
     )
 
 
