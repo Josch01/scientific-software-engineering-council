@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "workspace_id": "scientific-project",
+  "title": "Scientific project workspace",
+  "description": "Model-agnostic structure; resource files are not included.",
+  "resources": [
+    {"id": "model", "kind": "model_spec", "path": "model/model-spec.json"},
+    {"id": "observations", "kind": "observations", "path": "data/observations.json"},
+    {"id": "simulation", "kind": "simulation_result", "path": "results/simulation.json"},
+    {"id": "fit", "kind": "fit_result", "path": "results/fit.json"},
+    {"id": "sensitivity", "kind": "sensitivity_result", "path": "results/sensitivity.json"},
+    {"id": "uncertainty", "kind": "uncertainty_result", "path": "results/uncertainty.json"},
+    {"id": "audit", "kind": "audit_report", "path": "results/audit.json"},
+    {"id": "source", "kind": "source_code", "path": "src/model.py"}
+  ],
+  "sections": [
+    {
+      "id": "model-section",
+      "title": "Model",
+      "components": [
+        {"id": "equations", "type": "equation_view", "title": "Equations", "resource_refs": ["model"], "config": {}},
+        {"id": "parameters", "type": "parameter_table", "title": "Parameters", "resource_refs": ["model"], "config": {}}
+      ]
+    },
+    {
+      "id": "data-section",
+      "title": "Data",
+      "components": [
+        {"id": "observed-data", "type": "observation_table", "title": "Observations", "resource_refs": ["observations"], "config": {}}
+      ]
+    },
+    {
+      "id": "results-section",
+      "title": "Results",
+      "components": [
+        {"id": "trajectory", "type": "simulation_plot", "title": "Simulation", "resource_refs": ["simulation"], "config": {"x_axis": "time", "series": ["state_1"]}},
+        {"id": "fit-view", "type": "fit_summary", "title": "Fit", "resource_refs": ["fit"], "config": {"parameter_names": ["parameter_1"]}},
+        {"id": "sensitivity-view", "type": "sensitivity_plot", "title": "Sensitivity", "resource_refs": ["sensitivity"], "config": {"state_names": ["state_1"], "parameter_names": ["parameter_1"]}},
+        {"id": "uncertainty-view", "type": "uncertainty_summary", "title": "Uncertainty", "resource_refs": ["uncertainty"], "config": {"quantities": ["state_1"]}},
+        {"id": "audit-view", "type": "audit_summary", "title": "Audit", "resource_refs": ["audit"], "config": {}}
+      ]
+    },
+    {
+      "id": "code-section",
+      "title": "Code",
+      "components": [
+        {"id": "source-view", "type": "code_view", "title": "Model code", "resource_refs": ["source"], "config": {"language": "python"}}
+      ]
+    }
+  ]
+}
