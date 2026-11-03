@@ -79,7 +79,9 @@ class PosixProcessContainmentTests(unittest.TestCase):
 
                 try:
                     containment = new_containment()
-                except OSError:
+                except OSError as error:
+                    if "requires waitable children" not in str(error):
+                        raise
                     print("REFUSED", flush=True)
                 else:
                     containment.close()
