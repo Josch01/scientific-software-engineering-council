@@ -113,7 +113,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                     content=json.dumps(report))) + "\n" + json.dumps(dict(type="result", status="success", stats={})) + "\n",
                     encoding="utf-8")
                 (directory / "stderr.log").write_bytes(b"")
-                manifest = dict(schema_version=1, status="PASSED", **identity,
+                manifest = dict(schema_version=2, status="PASSED", **identity,
                     check_manifest_path=checked.manifest_path.relative_to(self.meta).as_posix(),
                     reviewer_role=reviewer, reviewer_provider="gemini", runtime_run_id="fixture-run",
                     runtime_adapter_type="scripts.provider_runtimes.GeminiRuntime",
@@ -121,6 +121,8 @@ class IntegrationCandidateTests(unittest.TestCase):
                     provider_session_id="fixture-session", verdict="PASS", review_report=report,
                     review_report_sha256=report_sha256(report),
                     snapshot_path=snapshot.snapshot_path.relative_to(self.meta).as_posix(),
+                    snapshot_logical_modes=[{"path": path, "executable": executable}
+                                            for path, executable in snapshot.logical_modes],
                     review_snapshot_tree_sha256=snapshot.snapshot_tree_sha256,
                     snapshot_artifact_sha256_before=snapshot_artifact_sha256(snapshot.snapshot_path),
                     snapshot_artifact_sha256_after=snapshot_artifact_sha256(snapshot.snapshot_path),
@@ -654,7 +656,6 @@ class IntegrationCandidateTests(unittest.TestCase):
             self.skipTest("junction creation unavailable")
         self.blocked("reparse")
 
-    @unittest.skipIf(os.name == "nt", "existing review snapshot reader cannot represent Windows Git executable bits")
     def test_executable_index_mode_is_preserved(self):
         worker = self.state["workers"][0]
         folder = Path(worker["path"])
