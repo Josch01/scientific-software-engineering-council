@@ -331,14 +331,38 @@ def _scrollable_frame(parent, tk, ttk):
     return container, inner
 
 
-def create_workspace_window(view_model: WorkspaceViewModel | None):
+def _create_window_root(tk, parent):
+    """Reuse the supervisor's Tk event loop when opening a workspace child."""
+    return tk.Tk() if parent is None else tk.Toplevel(parent)
+
+
+def _project_root_hint(project_root: str | Path | None) -> Path | None:
+    """Return an existing project directory for file-dialog initialization."""
+    if project_root is None:
+        return None
+    try:
+        candidate = Path(project_root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return candidate if candidate.is_dir() else None
+
+
+def create_workspace_window(
+    view_model: WorkspaceViewModel | None,
+    *,
+    parent=None,
+    project_root: str | Path | None = None,
+):
     """Create the reusable Tk window; importing this module alone stays headless."""
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
-    root = tk.Tk()
+    root = _create_window_root(tk, parent)
+    project_hint = _project_root_hint(project_root)
     root.title("SSEC · Scientific Workspace")
     root.minsize(900, 620)
+    if parent is not None:
+        root.transient(parent)
     style = ttk.Style(root)
     style.configure("TNotebook.Tab", padding=(12, 8))
     style.configure("WorkspaceNotice.TLabel", foreground="#0F3D45", background="#E8F1F4", padding=8)
@@ -438,13 +462,15 @@ def create_workspace_window(view_model: WorkspaceViewModel | None):
             notebook.add(page, text=section.title)
 
     def open_workspace() -> None:
-        selected_root = filedialog.askdirectory(parent=root, title="Seleccionar raíz del proyecto")
-        if not selected_root:
-            return
+        selected_root = project_hint
+        if selected_root is None:
+            selected_root = filedialog.askdirectory(parent=root, title="Seleccionar raíz del proyecto")
+            if not selected_root:
+                return
         selected_manifest = filedialog.askopenfilename(
             parent=root,
             title="Seleccionar manifiesto del espacio científico",
-            initialdir=selected_root,
+            initialdir=str(selected_root),
             filetypes=(("Workspace manifest", "*.json"), ("All files", "*")),
         )
         if not selected_manifest:

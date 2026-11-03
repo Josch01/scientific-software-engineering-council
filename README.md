@@ -49,6 +49,8 @@ python scripts/config_panel.py
 
 Documentación y límites: [Panel y control de seguridad](references/CONFIG_PANEL.md). El coste/tiempo y permisos son políticas **solicitadas, no aplicadas**. El runner real queda pendiente.
 
+El panel incluye **Abrir espacio científico**. Abre el manifiesto del proyecto seleccionado en una ventana hija y vuelve a usar el loader con verificación SHA-256; no inicia agentes ni ejecuta archivos del proyecto.
+
 ## Auditorías reales desde el panel — v0.2-dev.3
 
 Se agregó un ejecutor **experimental y limitado a auditorías**: inicia procesos Codex y/o Gemini desde snapshots separados, guarda logs, controla concurrencia y termina procesos por tiempo o cancelación. El panel incluye **4 · Ejecutar auditoría** y **Cancelar**. La simulación del ejecutor se prueba en CI; no requiere cuentas de los proveedores.
@@ -74,7 +76,7 @@ python scripts/worktree_coordinator.py gate --project /path/to/clean-git-project
 
 ## Espacios científicos dinámicos (experimental)
 
-La app opcional abre las secciones configuradas por manifiesto, carga recursos mediante el loader seguro y muestra simulaciones y observaciones con componentes reutilizables. No necesita paquetes adicionales; la interfaz usa Tkinter, y el modo `--check` no importa ni inicia Tk. El renderer tiene límites de vista documentados, anuncia truncamientos y conserva las series completas en la tabla; esto no valida ciencia.
+La app opcional abre las secciones configuradas por manifiesto, carga recursos mediante el loader seguro y muestra simulaciones y observaciones con componentes reutilizables. Puede abrirse sola o desde **Abrir espacio científico** del supervisor, donde aparece como ventana hija y comienza en el proyecto seleccionado. No necesita paquetes adicionales; la interfaz usa Tkinter, y el modo `--check` no importa ni inicia Tk. El renderer tiene límites de vista documentados, anuncia truncamientos y conserva las series completas en la tabla; esto no valida ciencia.
 
 ```bash
 python scripts/scientific_workspace_app.py --project-root /ruta/al/proyecto workspace.json
