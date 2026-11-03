@@ -97,7 +97,7 @@ Exigir que `integration_id` sea el latest, que su manifest/check estén validado
 
 Run: los seis tests de Task 2 y los tests de `test_executable_index_mode_is_preserved` y `test_integrated_checks_run_against_composed_candidate_and_gate_stays_blocked`.
 
-- [x] **Step 5: Commit** — `94d2524` (flujo inicial), `b3808e9` (historias verificables; revisión independiente aprobada).
+- [x] **Step 5: Commit** — `94d2524` (flujo inicial), `b3808e9` (inventarios/historiales), `5bc6b22` (worker-review interrumpido; revisión final aprobada).
 
 `feat: review integrated candidate with bound evidence`.
 
@@ -154,7 +154,7 @@ Run: `python -m unittest discover -v -s tests`; `python scripts/validate_skill.p
 
 Documentar commits, tests, review, provider/sandbox `UNVERIFIED`, operador no autenticado, retry manual y ausencia de validez científica/GUI.
 
-- [ ] **Step 4: Review independiente del diff**
+- [x] **Step 4: Review independiente del diff** — revisión completa de `08e2ad6..7c1e12e` encontró un bypass histórico importante; el fix `5bc6b22` fue re-revisado y aprobado.
 
 Usar un paquete de review acotado de esta rama; corregir findings Critical/Important antes de declarar el incremento listo.
 
@@ -163,4 +163,4 @@ Usar un paquete de review acotado de esta rama; corregir findings Critical/Impor
 Base: `codex/p1-integration-candidate`. No merge a `main`, tag ni release.
 
 
-**Verificación documental Task 4 (2026-11-03):** [informe](../../test-reports/p1-integrated-review-human-decision-2026-11-03.md). Windows: 298 tests, 289 PASS, 1 failure por nombre del worktree, 2 errors por privilegio symlink, 6 skips; no suite global verde. Inventario/reparse enfocado: 6/6 PASS. Docker/Linux `BLOCKED` (daemon), provider E2E `NOT_RUN`. Validador directo falla por nombre del worktree; export HEAD con nombre correcto pasa validador y test de estructura. Compileall/diff-check pasan. Steps 4–5 quedan para revisión independiente final y draft PR del controlador; sin merge/tag/release.
+**Verificación documental Task 4 (2026-11-03):** [informe](../../test-reports/p1-integrated-review-human-decision-2026-11-03.md). Windows: 298 tests, 289 PASS, 1 failure por nombre del worktree, 2 errors por privilegio symlink, 6 skips; no suite global verde. Inventario/reparse enfocado: 6/6 PASS. Docker/Linux `BLOCKED` (daemon), provider E2E `NOT_RUN`. Validador directo falla por nombre del worktree; export HEAD con nombre correcto pasa validador y test de estructura. Compileall/diff-check pasan. Review final aprobado después del fix `5bc6b22`; falta crear PR draft. Sin merge/tag/release.
