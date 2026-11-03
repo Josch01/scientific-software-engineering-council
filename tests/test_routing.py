@@ -43,3 +43,17 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("scientific_validation", plan["required_evidence"])
         self.assertNotIn("independent_reviewer", plan["review_roles"])
         self.assertIn("implementation_engineer", plan["implementation_or_domain_roles"])
+
+    def test_check_specs_are_validated_as_part_of_task_validation(self):
+        task = copy.deepcopy(self.task)
+        task["check_specs"] = [
+            {"check_id": "unit_tests", "argv": ["python", "-m", "unittest"], "cwd": ".",
+             "timeout_seconds": 30, "protocol": "unittest"},
+        ]
+        validate_task(task)
+        plan = route(task)
+        self.assertIn("unit_tests", plan["required_evidence"])
+
+        task["check_specs"][0]["cwd"] = "../outside"
+        with self.assertRaises(ValueError):
+            validate_task(task)
