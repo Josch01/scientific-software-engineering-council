@@ -26,7 +26,7 @@ from scripts.agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeS
 from scripts.provider_runtimes import CodexRuntime, GeminiRuntime, create_runtime
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
 from scripts.check_runner import (run_checks, read_check_manifest, capture_snapshot,
-                                  snapshot_artifact_sha256)
+                                  snapshot_artifact_sha256, _ensure_no_symlink_path)
 from scripts.prepare_agents import provider_for
 from scripts.review_evidence import (parse_review_report, report_sha256,
                                      validate_review_attempt, validate_review_manifest)
@@ -699,16 +699,7 @@ def _worker_check_evidence(task,state,worker,metadata,result,specs,required_ids,
 
 def _reject_reparse_path(path):
     """Reject symlinks and Windows reparse points before resolving or using metadata paths."""
-    path=Path(os.path.abspath(os.fspath(path)))
-    parts=[path,*path.parents]
-    for item in reversed(parts):
-        try:
-            info=item.lstat()
-        except FileNotFoundError:
-            continue
-        if item.is_symlink() or getattr(info,"st_file_attributes",0)&getattr(
-                __import__("stat"),"FILE_ATTRIBUTE_REPARSE_POINT",0x400):
-            raise ValueError("metadata reparse points are forbidden")
+    _ensure_no_symlink_path(Path(path))
 
 def _persist_runtime_sessions(meta,state,report):
     """Create a compact, create-only runtime-session inventory for one execution."""
@@ -757,6 +748,11 @@ def _persist_runtime_sessions(meta,state,report):
 
 def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minutes=60,
             runtime_factory=None):
+    # Guard the task metadata path before load()/directory() can traverse it.
+    project_root=Path(git(project,"rev-parse","--show-toplevel")).resolve()
+    metadata_candidate=(project_root.parent/("."+project_root.name+"-ssec-worktrees")/
+                        ".ssec-state"/task_id)
+    _reject_reparse_path(metadata_candidate)
     state,meta=load(project,task_id)
     if task.get("task_id")!=task_id or canonical_task_sha256(task)!=state["task_sha256"]:
         raise ValueError("task id or canonical packet digest differs from initialized task")
@@ -790,8 +786,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     if not cost_ack:
         raise ValueError("--accept-unmetered-cost required")
     log_root=meta/"dev-logs"
-    if log_root.is_symlink():
-        raise ValueError("symlink logs forbidden")
+    _reject_reparse_path(log_root)
     log_root.mkdir(parents=True,exist_ok=True)
     logs=log_root/uuid.uuid4().hex
     logs.mkdir(exist_ok=False)

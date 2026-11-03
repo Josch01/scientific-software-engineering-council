@@ -27,3 +27,16 @@ A combined command containing the first three tests exceeded the 30-second comma
 ## Limits
 
 No provider E2E, reviewer independence, or scientific validity is claimed. Tests use the existing offline process/runtime fixtures only. No package installation or paid provider calls were made. Changes are limited to the runner, its focused test module, and this requested report.
+
+## Fix round 1 — early reparse rejection and create-only regression
+
+Moved metadata reparse validation to the start of `execute()`, before `load()` can read task state, using the repository’s shared `check_runner._ensure_no_symlink_path` policy (which recognizes symlinks, junctions, and Windows reparse attributes). The same shared guard now protects launched `dev-logs` setup before directory creation. Added regressions proving a detected reparse metadata component prevents `load()` and runtime invocation, and that an existing runtime inventory is not overwritten.
+
+Exact amended-code verification:
+
+- `python -m unittest -v tests.test_development_worktrees.WorktreeTests.test_execute_rejects_reparse_metadata_before_load_or_runtime tests.test_development_worktrees.WorktreeTests.test_runtime_session_inventory_refuses_existing_destination tests.test_development_worktrees.WorktreeTests.test_execute_persists_runtime_session_inventory` — PASS (3 tests)
+- `python -m unittest -v tests.test_development_worktrees.WorktreeTests.test_execute_session_manifest_failure_keeps_review_incomplete tests.test_development_worktrees.WorktreeTests.test_offline_provider_fixture_cannot_be_counted_as_review_evidence` — PASS (2 tests)
+- `python -m unittest -v tests.test_development_worktrees.RuntimeRunnerTests.test_preview_and_missing_ack_make_zero_runtime_calls` — PASS (1 test)
+- `git diff --check` — PASS
+
+The reparse regression mocks the shared filesystem-link detector for the task metadata directory so it runs without requiring Windows directory-symlink privileges. No provider E2E or reviewer independence claim is made.

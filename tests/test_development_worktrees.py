@@ -693,6 +693,37 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(report["execution"],"REVIEW_INCOMPLETE")
         self.assertFalse(report.get("runtime_sessions_manifest_sha256"))
         self.assertTrue(report.get("review_error"))
+
+    def test_execute_rejects_reparse_metadata_before_load_or_runtime(self):
+        task=task_with_checks()
+        initialize(task,POLICY,self.root,apply=True)
+        _,metadata=load(self.root,task["task_id"])
+        runtime_factory=Mock()
+        def report_reparse(path,info):
+            return Path(path)==metadata
+        with patch("scripts.check_runner._is_filesystem_link",side_effect=report_reparse), \
+             patch("scripts.development_runner.load",side_effect=AssertionError("load traversed metadata")) as loader:
+            with self.assertRaisesRegex(ValueError,"reparse|symlink"):
+                execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                        runtime_factory=runtime_factory)
+        loader.assert_not_called()
+        runtime_factory.assert_not_called()
+
+    def test_runtime_session_inventory_refuses_existing_destination(self):
+        from scripts.development_runner import _persist_runtime_sessions
+        metadata=self.root/"metadata"
+        run_dir=metadata/"dev-logs"/"run-1"
+        run_dir.mkdir(parents=True)
+        destination=run_dir/"runtime-sessions.json"
+        destination.write_text("existing evidence\n",encoding="utf-8")
+        state={"task_id":"SSEC-TEST","task_revision":"revision-1",
+               "task_sha256":"a"*64,"base_commit":"base"}
+        report={"run_id":"run-1","execution":"DONE","process_execution":"DONE",
+                "check_status":"NOT_RUN","review_status":"NOT_RUN",
+                "results":[],"review_evidence":[]}
+        with self.assertRaises(FileExistsError):
+            _persist_runtime_sessions(metadata,state,report)
+        self.assertEqual(destination.read_text(encoding="utf-8"),"existing evidence\n")
     def test_offline_provider_fixture_cannot_be_counted_as_review_evidence(self):
         task=task_with_checks()
         state=initialize(task,POLICY,self.root,apply=True)
