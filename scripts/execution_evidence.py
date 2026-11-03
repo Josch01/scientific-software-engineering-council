@@ -297,6 +297,8 @@ class SnapshotReference:
     file_count: int
     total_bytes: int
     snapshot_path: Path
+    # Captured source modes; old five-argument references remain readable.
+    logical_modes: tuple[tuple[str, bool], ...] = ()
 
     def __post_init__(self) -> None:
         _validate_sha256(self.source_tree_sha256, "source_tree_sha256")

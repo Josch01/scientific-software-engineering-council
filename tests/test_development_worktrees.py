@@ -518,6 +518,34 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(any(event["kind"]=="REVIEW_ACCEPTED"
                              for event in inspect(self.root,task["task_id"])["events"]))
 
+    def test_review_persists_logical_modes_for_executable_baseline_without_provider_e2e(self):
+        from scripts.review_evidence import validate_review_manifest
+        path=self.root/"baseline.sh"
+        path.write_bytes(b"#!/bin/sh\necho baseline\n")
+        if os.name!="nt":
+            path.chmod(path.stat().st_mode|0o100)
+        git(self.root,"add","baseline.sh")
+        git(self.root,"update-index","--chmod=+x","baseline.sh")
+        git(self.root,"commit","-m","executable baseline")
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        calls=[]
+        def factory(provider):
+            is_reviewer=len(calls)>=len(state["workers"])
+            calls.append(provider)
+            return FakeRuntime((RuntimeStatus.SUCCEEDED,)) if is_reviewer else LocalPythonRuntime()
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=1,
+                       minutes=2,runtime_factory=factory)
+        self.assertEqual(report["check_status"],"CHECKS_VERIFIED_AWAITING_REVIEW")
+        self.assertTrue(report["review_evidence"])
+        _,metadata=load(self.root,task["task_id"])
+        for result in report["review_evidence"]:
+            manifest=json.loads((metadata/result["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"],2)
+            self.assertIn({"path":"baseline.sh","executable":True},manifest["snapshot_logical_modes"])
+            self.assertEqual(validate_review_manifest(manifest,metadata)["status"],"FAILED")
+            self.assertIsNone(manifest["review_report"])
+
     def test_failed_deterministic_check_prevents_any_reviewer_runtime(self):
         from scripts.check_runner import CheckRunResult
         task=task_with_checks()

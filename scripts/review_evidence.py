@@ -16,11 +16,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 
 try:
-    from .check_runner import _snapshot_artifact_sha256, read_check_manifest
+    from .check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest
     from .execution_evidence import _CandidateTreeEntry, _hash_candidate_entries
     from .reviewer_output import extract_final_response
 except ImportError:  # Support direct imports from the scripts directory.
-    from check_runner import _snapshot_artifact_sha256, read_check_manifest
+    from check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest
     from execution_evidence import _CandidateTreeEntry, _hash_candidate_entries
     from reviewer_output import extract_final_response
 
@@ -54,6 +54,7 @@ _REVIEW_MANIFEST_FIELDS = frozenset({
     "snapshot_artifact_sha256_after", "started_at_utc", "finished_at_utc", "exit_code",
     "sandbox_effective", "error",
 })
+_REVIEW_MANIFEST_FIELDS_V2 = _REVIEW_MANIFEST_FIELDS | {"snapshot_logical_modes"}
 _MAX_EVIDENCE_FILE_BYTES = 32 * 1024 * 1024
 _PROVIDER_ADAPTER_TYPES = {
     "codex": "scripts.provider_runtimes.CodexRuntime",
@@ -386,54 +387,63 @@ def _validate_optional_file(root: Path, data: Mapping[str, Any], path_field: str
     return path
 
 
-def _review_snapshot_tree_sha256(snapshot: Path) -> str:
+def _logical_mode_inventory(value: Any, *, snapshot_present: bool) -> dict[str, bool] | None:
+    """Parse canonical source modes without coercing bools or repairing paths."""
+    if value is None and not snapshot_present:
+        return None
+    if type(value) is not list or not snapshot_present:
+        raise ValueError("review snapshot logical mode inventory requires a snapshot and a list")
+    result: dict[str, bool] = {}
+    previous: bytes | None = None
+    for item in value:
+        if type(item) is not dict or set(item) != {"path", "executable"}:
+            raise ValueError("review snapshot logical mode inventory entry fields are missing or extra")
+        path = item["path"]
+        if type(path) is not str or not path or any(ord(char) < 32 for char in path):
+            raise ValueError("review snapshot logical mode inventory path is invalid")
+        posix, windows = PurePosixPath(path), PureWindowsPath(path)
+        if (posix.is_absolute() or windows.is_absolute() or windows.drive or
+                posix.as_posix() != path or any(char in path for char in '\\:*?<>|"') or
+                any(part in {"", ".", ".."} or part.casefold() == ".git" or part.endswith((".", " "))
+                    for part in path.split("/"))):
+            raise ValueError("review snapshot logical mode inventory path must be normalized repository-relative text")
+        try:
+            raw = path.encode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("review snapshot logical mode inventory path must be UTF-8") from exc
+        if previous is not None and raw <= previous:
+            raise ValueError("review snapshot logical mode inventory paths must be unique and canonically ordered")
+        if type(item["executable"]) is not bool:
+            raise ValueError("review snapshot logical mode inventory executable must be a JSON boolean")
+        result[path] = item["executable"]
+        previous = raw
+    return result
+
+
+def _review_snapshot_tree_sha256(snapshot: Path, logical_modes: Mapping[str, bool] | None = None,
+                                 *, require_mode_match: bool = True) -> str:
     """Hash a fresh Git-visible copy; ignored outputs are not candidate files.
 
     This tree digest is separate from the artifact digest, which also detects
     later ignored files or other mutations inside the review copy.
     """
-    root = Path(snapshot)
-    if root.is_symlink():
-        raise ValueError("review snapshot root must not be a symlink")
-    try:
-        root = root.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(f"review snapshot root cannot be resolved: {exc}") from exc
-    if not root.is_dir():
-        raise ValueError("review snapshot root must be a directory")
-
-    entries: list[_CandidateTreeEntry] = []
-
-    def visit(folder: Path, parts: tuple[str, ...]) -> None:
-        try:
-            children = sorted(folder.iterdir(), key=lambda item: os.fsencode(item.name))
-        except OSError as exc:
-            raise ValueError(f"review snapshot directory cannot be read: {folder}: {exc}") from exc
-        for child in children:
-            try:
-                info = child.lstat()
-            except OSError as exc:
-                raise ValueError(f"review snapshot entry cannot be inspected: {child}: {exc}") from exc
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError(f"review snapshot contains a symlink: {child}")
-            if child.name == ".git":
-                raise ValueError("review snapshot must not contain Git metadata")
-            next_parts = parts + (child.name,)
-            if stat.S_ISDIR(info.st_mode):
-                visit(child, next_parts)
-            elif stat.S_ISREG(info.st_mode):
-                relative = "/".join(next_parts)
-                raw_path = os.fsencode(relative)
-                executable = bool(info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-                entries.append(_CandidateTreeEntry(relative, raw_path, child, executable, root))
-            else:
-                raise ValueError(f"review snapshot contains a special file: {child}")
-
-    visit(root, ())
-    return _hash_candidate_entries(tuple(entries))
+    entries = _walk_snapshot(Path(snapshot), ())
+    if logical_modes is None:
+        return _hash_candidate_entries(entries)  # Legacy schema-1 semantics.
+    if require_mode_match and set(logical_modes) != {entry.relative_path for entry in entries}:
+        raise ValueError("review snapshot logical mode inventory path set does not match snapshot files")
+    bound = []
+    for entry in entries:
+        executable = logical_modes.get(entry.relative_path, entry.executable)
+        if require_mode_match and os.name != "nt" and executable != entry.executable:
+            raise ValueError("review snapshot physical executable mode does not match logical mode inventory")
+        bound.append(_CandidateTreeEntry(entry.relative_path, entry.raw_path, entry.path,
+                                         executable, entry.root))
+    return _hash_candidate_entries(tuple(bound))
 
 
-def _validate_optional_snapshot(root: Path, data: Mapping[str, Any], *, require_stable: bool) -> Path | None:
+def _validate_optional_snapshot(root: Path, data: Mapping[str, Any], *, require_stable: bool,
+                                logical_modes: Mapping[str, bool] | None = None) -> Path | None:
     path_value = data["snapshot_path"]
     tree_hash = data["review_snapshot_tree_sha256"]
     before = data["snapshot_artifact_sha256_before"]
@@ -450,7 +460,7 @@ def _validate_optional_snapshot(root: Path, data: Mapping[str, Any], *, require_
     path = _metadata_relative_path(root, path_value, directory=True)
     if _snapshot_artifact_sha256(path) != after:
         raise ValueError("review snapshot artifact after hash mismatch or tampering detected")
-    actual_tree = _review_snapshot_tree_sha256(path)
+    actual_tree = _review_snapshot_tree_sha256(path, logical_modes, require_mode_match=require_stable)
     if require_stable and actual_tree != tree_hash:
         raise ValueError("review snapshot tree hash mismatch or tampering detected")
     return path
@@ -526,10 +536,16 @@ def validate_review_manifest(data: Mapping[str, Any], metadata_root: Path) -> di
     Any malformed or inconsistent record raises ``ValueError`` and must block
     downstream acceptance decisions.
     """
-    if not isinstance(data, Mapping) or set(data) != _REVIEW_MANIFEST_FIELDS:
+    if not isinstance(data, Mapping):
         raise ValueError("review manifest fields are missing or extra")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+    version = data.get("schema_version")
+    if type(version) is not int or version not in {1, 2}:
         raise ValueError("review manifest schema_version is unsupported")
+    fields = _REVIEW_MANIFEST_FIELDS if version == 1 else _REVIEW_MANIFEST_FIELDS_V2
+    if set(data) != fields:
+        raise ValueError("review manifest fields are missing or extra")
+    logical_modes = (_logical_mode_inventory(data["snapshot_logical_modes"],
+                       snapshot_present=data["snapshot_path"] is not None) if version == 2 else None)
     status = data["status"]
     if type(status) is not str or status not in _REVIEW_STATUS:
         raise ValueError("review manifest status is invalid")
@@ -590,7 +606,8 @@ def validate_review_manifest(data: Mapping[str, Any], metadata_root: Path) -> di
     if requires_report and not has_report:
         raise ValueError(f"review status {status} requires a validated report")
     successful_report = status in {"PASSED", "REQUEST_CHANGES"} or (status == "BLOCKED" and has_report)
-    snapshot_path = _validate_optional_snapshot(root, data, require_stable=successful_report)
+    snapshot_path = _validate_optional_snapshot(root, data, require_stable=successful_report,
+                                                logical_modes=logical_modes)
     if (data["review_snapshot_tree_sha256"] is not None and
             data["review_snapshot_tree_sha256"] != identity["candidate_tree_sha256"]):
         raise ValueError("review snapshot tree does not match candidate_tree_sha256")
