@@ -165,7 +165,7 @@ class IntegrationCandidateTests(unittest.TestCase):
         _persist_runtime_sessions(self.meta, self.state, report)
         return self.build()
 
-    def integrated_review(self, result, *, session=None):
+    def integrated_review(self, result, *, session=None, verdict="PASS"):
         """Concrete Gemini adapter with only discovery/argv replaced by local Python."""
         from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus
         from scripts.provider_runtimes import GeminiRuntime
@@ -175,7 +175,10 @@ class IntegrationCandidateTests(unittest.TestCase):
             self.assertFalse(request.writable)
             requests.append(request)
             identity = json.loads(request.prompt.split("Exact evidence identity to echo: ")[1].splitlines()[0])
-            report = dict(schema_version=1, **identity, verdict="PASS", summary="Local fixture", findings=[])
+            report = dict(schema_version=1, **identity, verdict=verdict, summary="Local fixture", findings=[])
+            if verdict == "REQUEST_CHANGES":
+                report["findings"] = [dict(id="F-1", severity="HIGH", path="baseline.txt", line=1,
+                    evidence="Local fixture finding requires a change", recommendation="Revise and review again")]
             lines = [dict(type="init", session_id=session or request.run_id),
                      dict(type="message", role="assistant", content=json.dumps(report)),
                      dict(type="result", status="success", stats={})]
@@ -188,6 +191,113 @@ class IntegrationCandidateTests(unittest.TestCase):
             report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
                 launch=True, cost_ack=True, runtime_factory=lambda provider: GeminiRuntime())
         return report, requests
+
+    def decision_fixture(self, *, verdict="PASS"):
+        from scripts.worktree_coordinator import message
+        for worker in self.state["workers"]:
+            edited = Path(worker["path"]) / worker["role"] / "edit.txt"
+            edited.write_bytes(("changed " + worker["role"] + "\n").encode())
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result, verdict=verdict)
+        for worker in self.state["workers"]:
+            message(self.root, self.task["task_id"], worker["role"], "WORKER_RESULT", "Local fixture handoff")
+        return result, self.meta / report["bundle_path"]
+
+    def decide(self, result, bundle, **changes):
+        from scripts.integration_review import record_human_decision
+        args = dict(expected_bundle_sha256=digest(bundle), decision="APPROVE_FOR_MANUAL_INTEGRATION",
+                    operator="Declared local operator", reason="Consider this exact candidate manually")
+        args.update(changes)
+        return record_human_decision(self.root, self.task["task_id"], result.integration_id, **args)
+
+    def test_gate_needs_human_after_valid_integrated_review(self):
+        result, bundle = self.decision_fixture()
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "NEEDS_HUMAN", value)
+        self.assertTrue(value["integrated_review_verified"])
+        self.assertEqual(value["integrated_review_bundle_sha256"], digest(bundle))
+        self.assertEqual(value["integrated_review_status"], "PASSED")
+        self.assertFalse(value["human_decision_verified"])
+        # An interrupted creation can leave the review-attempts root empty.
+        saved = bundle.parent.parent.parent / "saved-review"
+        bundle.parent.rename(saved)
+        try:
+            value = gate(self.root, self.task["task_id"])
+            self.assertEqual(value["status"], "BLOCKED")
+            self.assertFalse(value["human_decision_verified"])
+        finally:
+            saved.rename(bundle.parent)
+
+    def test_decision_requires_exact_current_bundle_digest(self):
+        result, bundle = self.decision_fixture()
+        for bad in (None, "", digest(bundle)[:12], "f" * 64, digest(bundle).upper()):
+            with self.subTest(digest=bad), self.assertRaises(ValueError):
+                self.decide(result, bundle, expected_bundle_sha256=bad)
+        for changes in (dict(decision="APPROVE"), dict(operator=" "), dict(reason="")):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.decide(result, bundle, **changes)
+        record = self.decide(result, bundle)
+        path = self.meta / "integrations" / result.integration_id / "human-decision.json"
+        self.assertEqual(json.loads(path.read_text()), record)
+        before = path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle, decision="REJECT")
+        self.assertEqual(path.read_bytes(), before)
+        bundle.write_bytes(bundle.read_bytes() + b" ")
+        value = gate(self.root, self.task["task_id"])
+        self.assertFalse(value["human_decision_verified"])
+        self.assertEqual(value["status"], "BLOCKED")
+
+    def test_candidate_drift_invalidates_human_decision(self):
+        result, bundle = self.decision_fixture()
+        self.decide(result, bundle)
+        self.assertEqual(gate(self.root, self.task["task_id"])["status"], "APPROVED_FOR_MANUAL_INTEGRATION")
+        (Path(result.candidate_worktree_path) / "baseline.txt").write_bytes(b"drift\n")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "BLOCKED")
+        self.assertFalse(value["human_decision_verified"])
+
+    def test_new_integration_invalidates_old_human_decision(self):
+        result, bundle = self.decision_fixture()
+        self.decide(result, bundle)
+        newer = self.build()
+        self.assertNotEqual(newer.integration_id, result.integration_id)
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "BLOCKED")
+        self.assertFalse(value["human_decision_verified"])
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+
+    def test_reject_current_changes_requested_bundle(self):
+        result, bundle = self.decision_fixture(verdict="REQUEST_CHANGES")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "CHANGES_REQUESTED", value)
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+        record = self.decide(result, bundle, decision="REJECT", reason="The current findings require rework")
+        self.assertEqual(record["decision"], "REJECT")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "REJECTED_BY_HUMAN", value)
+        self.assertTrue(value["human_decision_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
+
+    def test_approval_never_enables_merge_or_release(self):
+        result, bundle = self.decision_fixture()
+        head = git(self.root, "rev-parse", "HEAD")
+        mailbox = self.meta / "mailbox.jsonl"
+        handoffs = mailbox.read_bytes()
+        mailbox.write_bytes(b"")
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+        mailbox.write_bytes(handoffs)
+        self.decide(result, bundle)
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "APPROVED_FOR_MANUAL_INTEGRATION", value)
+        self.assertTrue(value["human_decision_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), head)
 
     def test_integrated_review_preview_makes_no_provider_call(self):
         from scripts.integration_review import run_integration_review

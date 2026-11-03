@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import json
+import re
+import uuid
 import math
 import os
 from pathlib import Path
@@ -370,6 +374,100 @@ def run_integration_review(project, task_id, integration_id, *, launch=False, co
     return report
 
 
+
+_DECISIONS = {"APPROVE_FOR_MANUAL_INTEGRATION", "REJECT"}
+_DECISION_FIELDS = {"schema_version", "decision_id", "integration_id", "review_bundle_path",
+                    "review_bundle_sha256", "candidate_tree_sha256", "check_manifest_sha256",
+                    "decision", "operator", "reason", "created_at_utc", *_IDENTITY}
+
+
+def current_integration_review(metadata, state, integration, check):
+    """Return the exact latest canonical bundle after rederiving all bindings."""
+    attempts = metadata / "integrations" / integration["integration_id"] / "review-attempts"
+    _ensure_no_symlink_path(attempts)
+    entries = sorted(attempts.iterdir(), key=lambda item: item.name) if attempts.is_dir() else []
+    latest = entries[-1] if entries else None
+    if latest is None:
+        raise ValueError("independent integrated review and human approval are required: review bundle missing")
+    path = latest / "bundle.json"
+    before = _sha256(path)
+    bundle = validate_integration_review_bundle(path, metadata, state, integration, check)
+    if _sha256(path) != before:
+        raise ValueError("review bundle changed during validation")
+    return path, bundle, before
+
+
+def _decision_text(value):
+    return type(value) is str and bool(value.strip()) and "\x00" not in value
+
+
+def validate_human_decision(path, metadata, state, integration, check):
+    """Validate local declared attestation, without authenticating the operator."""
+    canonical = metadata / "integrations" / integration["integration_id"] / "human-decision.json"
+    if path != canonical:
+        raise ValueError("human decision is outside canonical layout")
+    _ensure_no_symlink_path(path)
+    before = _sha256(path)
+    data = _json_file(path)
+    bundle_path, bundle, bundle_hash = current_integration_review(metadata, state, integration, check)
+    expected = {**{key: state[key] for key in _IDENTITY}, "integration_id": integration["integration_id"],
+                "review_bundle_path": bundle_path.relative_to(metadata).as_posix(),
+                "review_bundle_sha256": bundle_hash, "candidate_tree_sha256": integration["candidate_tree_sha256"],
+                "check_manifest_sha256": integration["check_manifest_sha256"]}
+    if (type(data) is not dict or set(data) != _DECISION_FIELDS or
+            type(data["schema_version"]) is not int or data["schema_version"] != 1 or
+            any(data[key] != value for key, value in expected.items()) or
+            (data["decision"] != "REJECT" and bundle["status"] != "PASSED") or
+            type(data["decision"]) is not str or data["decision"] not in _DECISIONS or
+            not all(_decision_text(data[key]) for key in ("operator", "reason")) or
+            type(data["decision_id"]) is not str or not re.fullmatch(r"[0-9a-f]{32}", data["decision_id"]) or
+            type(data["created_at_utc"]) is not str or
+            not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", data["created_at_utc"])):
+        raise ValueError("human decision identity, binding or declaration mismatch")
+    datetime.strptime(data["created_at_utc"], "%Y-%m-%dT%H:%M:%SZ")
+    if _sha256(path) != before:
+        raise ValueError("human decision changed during validation")
+    return data
+
+
+def record_human_decision(project, task_id, integration_id, *, expected_bundle_sha256,
+                          decision, operator, reason):
+    """Create an immutable local attestation for consideration of manual integration."""
+    if (type(expected_bundle_sha256) is not str or
+            not re.fullmatch(r"[0-9a-f]{64}", expected_bundle_sha256)):
+        raise ValueError("expected bundle digest must be a full lowercase SHA-256")
+    if type(decision) is not str or decision not in _DECISIONS:
+        raise ValueError("invalid human decision")
+    if not all(_decision_text(value) for value in (operator, reason)):
+        raise ValueError("operator and reason must be nonempty declarations")
+    state, metadata, integration, check = _context(project, task_id, integration_id)
+    bundle_path, bundle, bundle_hash = current_integration_review(metadata, state, integration, check)
+    if bundle_hash != expected_bundle_sha256:
+        raise ValueError("decision requires the exact current review bundle digest")
+    if decision == "APPROVE_FOR_MANUAL_INTEGRATION":
+        from .worktree_coordinator import gate
+        if bundle["status"] != "PASSED" or gate(Path(os.path.abspath(project)), task_id)["status"] != "NEEDS_HUMAN":
+            raise ValueError("approval requires a current PASSED bundle and gate NEEDS_HUMAN")
+    path = metadata / "integrations" / integration_id / "human-decision.json"
+    _ensure_no_symlink_path(path)
+    data = dict(schema_version=1, decision_id=uuid.uuid4().hex,
+        **{key: state[key] for key in _IDENTITY}, integration_id=integration_id,
+        review_bundle_path=bundle_path.relative_to(metadata).as_posix(), review_bundle_sha256=bundle_hash,
+        candidate_tree_sha256=integration["candidate_tree_sha256"],
+        check_manifest_sha256=integration["check_manifest_sha256"], decision=decision,
+        operator=operator, reason=reason, created_at_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    # Exclusive creation prevents concurrent writers from replacing a decision.
+    # A partial write remains invalid and blocks rather than inheriting approval.
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump(data, stream, sort_keys=True, indent=2, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise ValueError("human decision already exists; decisions are immutable") from exc
+    return validate_human_decision(path, metadata, state, integration, check)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -380,15 +478,28 @@ def main():
     review.add_argument("--execute", action="store_true")
     review.add_argument("--accept-unmetered-cost", action="store_true")
     review.add_argument("--max-minutes", type=float, default=30)
+    decide = commands.add_parser("decide")
+    decide.add_argument("--project", type=Path, required=True)
+    decide.add_argument("--task-id", required=True)
+    decide.add_argument("--integration-id", required=True)
+    decide.add_argument("--expected-bundle-sha256", required=True)
+    decide.add_argument("--decision", choices=sorted(_DECISIONS), required=True)
+    decide.add_argument("--operator", required=True)
+    decide.add_argument("--reason", required=True)
     args = parser.parse_args()
     import json
     try:
-        result = run_integration_review(args.project, args.task_id, args.integration_id,
-            launch=args.execute, cost_ack=args.accept_unmetered_cost, minutes=args.max_minutes)
+        if args.command == "decide":
+            result = record_human_decision(args.project, args.task_id, args.integration_id,
+                expected_bundle_sha256=args.expected_bundle_sha256, decision=args.decision,
+                operator=args.operator, reason=args.reason)
+        else:
+            result = run_integration_review(args.project, args.task_id, args.integration_id,
+                launch=args.execute, cost_ack=args.accept_unmetered_cost, minutes=args.max_minutes)
     except (ValueError, OSError) as exc:
         parser.exit(2, str(exc) + "\n")
     print(json.dumps(result, indent=2))
-    return 0 if result["status"] in {"PASSED", "PREVIEW_NOT_STARTED"} else 1
+    return 0 if args.command == "decide" or result["status"] in {"PASSED", "PREVIEW_NOT_STARTED"} else 1
 
 
 if __name__ == "__main__":
