@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -696,6 +697,64 @@ def _worker_check_evidence(task,state,worker,metadata,result,specs,required_ids,
                 "missing_spec_ids":sorted(missing_spec_ids),
                 "pending_evidence_ids":sorted(pending_evidence_ids),"error":str(exc)}
 
+def _reject_reparse_path(path):
+    """Reject symlinks and Windows reparse points before resolving or using metadata paths."""
+    path=Path(os.path.abspath(os.fspath(path)))
+    parts=[path,*path.parents]
+    for item in reversed(parts):
+        try:
+            info=item.lstat()
+        except FileNotFoundError:
+            continue
+        if item.is_symlink() or getattr(info,"st_file_attributes",0)&getattr(
+                __import__("stat"),"FILE_ATTRIBUTE_REPARSE_POINT",0x400):
+            raise ValueError("metadata reparse points are forbidden")
+
+def _persist_runtime_sessions(meta,state,report):
+    """Create a compact, create-only runtime-session inventory for one execution."""
+    _reject_reparse_path(meta)
+    run_id=report["run_id"]
+    run_dir=Path(meta)/"dev-logs"/run_id
+    _reject_reparse_path(run_dir)
+    implementation=[]
+    for item in report.get("results",[]):
+        session=item.get("provider_session_id")
+        if isinstance(session,str) and session:
+            implementation.append({"role":item.get("role"),"provider":item.get("provider"),
+                "provider_session_id":session,"outcome":item.get("status")})
+    reviews=[]
+    for item in report.get("review_evidence",[]):
+        session=item.get("provider_session_id")
+        if isinstance(session,str) and session:
+            reviews.append({"worker_role":item.get("worker_role"),
+                "reviewer_role":item.get("reviewer_role"),"provider":item.get("provider"),
+                "provider_session_id":session,"outcome":item.get("status")})
+    implementation.sort(key=lambda item:(item["role"] or "",item["provider"] or "",item["provider_session_id"]))
+    reviews.sort(key=lambda item:(item["worker_role"] or "",item["reviewer_role"] or ""))
+    inventory={"schema_version":1,"task_id":state["task_id"],
+        "task_revision":state["task_revision"],"task_sha256":state["task_sha256"],
+        "base_commit":state["base_commit"],"run_id":run_id,
+        "run_status":report.get("execution"),"process_execution":report.get("process_execution"),
+        "check_status":report.get("check_status"),"review_status":report.get("review_status"),
+        "implementation_sessions":implementation,"worker_review_sessions":reviews}
+    encoded=(json.dumps(inventory,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode("utf-8")
+    destination=run_dir/"runtime-sessions.json"
+    fd,temp_name=tempfile.mkstemp(prefix=".runtime-sessions-",suffix=".tmp",dir=run_dir)
+    try:
+        with os.fdopen(fd,"wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _reject_reparse_path(destination)
+        # Hard-link publication is atomic and fails if a destination already exists.
+        os.link(temp_name,destination)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+    return destination,hashlib.sha256(encoded).hexdigest()
+
 def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minutes=60,
             runtime_factory=None):
     state,meta=load(project,task_id)
@@ -721,6 +780,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
             "run_id":None,"execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
             "check_status":"NOT_RUN","check_evidence":[],
             "review_status":"NOT_RUN","review_evidence":[],
+            "runtime_sessions_manifest_path":None,"runtime_sessions_manifest_sha256":None,
             "missing_spec_ids":sorted(missing_spec_ids),
             "pending_evidence_ids":sorted(pending_evidence_ids),
             "evidence_verified":False,"release_status":"NOT_APPROVED","results":[],
@@ -838,6 +898,16 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
             elif review_results:
                 report["review_status"]="REVIEW_INCOMPLETE"
                 report["execution"]="REVIEW_INCOMPLETE"
+    try:
+        inventory_path,inventory_sha256=_persist_runtime_sessions(meta,state,report)
+        report["runtime_sessions_manifest_path"]=_relative_metadata_path(inventory_path,meta)
+        report["runtime_sessions_manifest_sha256"]=inventory_sha256
+    except (OSError,ValueError,TypeError,KeyError) as exc:
+        report["runtime_sessions_error"]=str(exc)
+        report["review_error"]="runtime session inventory could not be persisted: "+str(exc)
+        if report.get("review_status")!="NOT_RUN":
+            report["review_status"]="REVIEW_INCOMPLETE"
+            report["execution"]="REVIEW_INCOMPLETE"
     return report
 
 
