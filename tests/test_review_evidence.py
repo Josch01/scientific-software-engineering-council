@@ -202,7 +202,40 @@ class ReviewManifestTests(unittest.TestCase):
         self.manifest = self._make_manifest()
 
     def _relative(self, path):
-        return Path(path).relative_to(self.metadata).as_posix()
+        path = Path(path)
+        try:
+            # Preserve lexical links so negative tests can encode a hostile reference.
+            return path.relative_to(self.metadata).as_posix()
+        except ValueError:
+            # Production helpers may return resolved long paths for a short-name root.
+            return path.resolve(strict=True).relative_to(
+                self.metadata.resolve(strict=True)
+            ).as_posix()
+
+    def test_relative_fixture_path_accepts_windows_short_metadata_alias(self):
+        if sys.platform != "win32":
+            self.skipTest("Windows short paths are specific to Windows")
+        import ctypes
+
+        metadata = self.metadata.resolve(strict=True)
+        short_path = ctypes.create_unicode_buffer(32768)
+        get_short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+        get_short_path.restype = ctypes.c_uint32
+        length = get_short_path(str(metadata), short_path, len(short_path))
+        if not length or length >= len(short_path):
+            self.skipTest("Windows short path lookup is unavailable")
+        alias = Path(short_path.value)
+        if str(alias).casefold() == str(metadata).casefold():
+            self.skipTest("this volume does not expose a distinct short path")
+
+        original = self.metadata
+        self.metadata = alias
+        try:
+            expected = self.check_manifest_path.resolve(strict=True).relative_to(metadata).as_posix()
+            self.assertEqual(self._relative(self.check_manifest_path), expected)
+        finally:
+            self.metadata = original
 
     def _write(self, relative, content):
         path = self.metadata / relative
