@@ -4,7 +4,7 @@
 
 ## Implemented
 
-Schema v1 describes an ordered scientific workspace using 8 resource kinds and a fixed registry of 9 reusable components: equations, parameter/observation tables, simulation and sensitivity plots, fit/uncertainty/audit summaries, and source-code view. Component configs and resource roles are checked against exact schemas and declared references. A model-agnostic template validates through the read-only CLI.
+Schema v1 describes an ordered scientific workspace using 9 resource kinds and a fixed registry of 10 reusable components: equations, parameter/observation tables, simulation and sensitivity plots, fit/uncertainty/audit summaries, artifact browser, and source-code view. Component configs and resource roles are checked against exact schemas and declared references. The model-agnostic template exercises 8 resources and 9 component instances through the read-only CLI.
 
 The validator bounds input to 1 MiB and limits nesting, cardinalities, paths, IDs, and text. It rejects duplicate JSON keys, invalid UTF-8, non-finite numbers, traversal, non-portable/Windows-reserved paths, Unicode/case collisions, and Win32 8.3 alias suffixes. It reads only the manifest; referenced paths are inert declarations. The CLI returns exit 0 for valid input and 2 for invalid input.
 
