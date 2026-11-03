@@ -184,7 +184,9 @@ class WorktreeTests(unittest.TestCase):
 
     def test_execute_requires_explicit_ack(self):
         initialize(TASK,POLICY,self.root,apply=True)
-        self.assertEqual(execute(self.root,TASK["task_id"],TASK)["execution"],"PREVIEW_ONLY")
+        report=execute(self.root,TASK["task_id"],TASK)
+        self.assertEqual(report["execution"],"PREVIEW_ONLY")
+        self.assertIsNone(report["run_id"])
         with self.assertRaisesRegex(ValueError,"unmetered"):
             execute(self.root,TASK["task_id"],TASK,launch=True)
 
@@ -215,6 +217,11 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
+        self.assertTrue(report["run_id"])
+        _,metadata=load(self.root,task["task_id"])
+        self.assertTrue((metadata/"dev-logs"/report["run_id"]).is_dir())
+        self.assertTrue(all((metadata/"dev-logs"/report["run_id"]) in Path(item["stdout_path"]).parents
+                            for item in report["results"]))
         self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
         self.assertEqual(report["execution"],"REVIEW_INCOMPLETE",
                          {"checks":report["check_evidence"],"workers":report["results"]})
