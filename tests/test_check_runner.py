@@ -250,7 +250,20 @@ class CheckExecutionTests(unittest.TestCase):
             parent = Path(temp)
             repo = make_repo(parent, unittest_source=PASSING_TEST)
             task = task_for(repo)
-            result, metadata, worker = self.run_task(parent, task, repo)
+            task["check_specs"][0]["argv"][0] = "python"
+            metadata = parent / "metadata"
+            state, worker = context_for(repo, task, metadata)
+            popen_calls = []
+            actual_popen = subprocess.Popen
+
+            def capture_popen(argv, **kwargs):
+                if kwargs.get("cwd") is not None:
+                    popen_calls.append(list(argv))
+                return actual_popen(argv, **kwargs)
+
+            with mock.patch("scripts.check_runner.subprocess.Popen", side_effect=capture_popen):
+                result = run_checks(task, state, worker, metadata,
+                                    stop_event=threading.Event(), deadline=time.monotonic() + 30)
 
             self.assertEqual(result.status, "PASSED")
             self.assertEqual(len(result.records), 1)
@@ -264,6 +277,11 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertEqual(record.containment_status, "confirmed")
             self.assertTrue(Path(record.executable).is_absolute())
             self.assertEqual(len(record.executable_sha256), 64)
+            self.assertEqual(len(popen_calls), 1)
+            self.assertEqual(popen_calls[0][0], record.executable)
+            self.assertEqual(popen_calls[0][1:], list(record.argv[1:]))
+            self.assertEqual(hashlib.sha256(Path(record.executable).read_bytes()).hexdigest(),
+                             record.executable_sha256)
             self.assertTrue(set(record.environment).issubset(ALLOWED_ENVIRONMENT_KEYS))
 
             manifest_path = result.manifest_path
@@ -301,22 +319,35 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertNotEqual(result.records[0].exit_code, 0)
             self.assertEqual(result.records[0].unittest_count, 1)
 
-        for argv, setup in (
-            ([sys.executable, "-c", "print('PASS')"], None),
-            ([sys.executable, "-m", "unittest", "discover", "-s", "empty_tests"], "empty"),
-        ):
+        forged_output = (
+            [sys.executable, "-c", "print('PASS')"],
+            [sys.executable, "-c", "print('Ran 1 test in 0.01s\\n\\nOK')"],
+        )
+        for argv in forged_output:
             with self.subTest(argv=argv), tempfile.TemporaryDirectory() as temp:
                 parent = Path(temp)
                 repo = make_repo(parent)
-                if setup == "empty":
-                    (repo / "empty_tests").mkdir()
-                    (repo / "empty_tests" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
                 spec = {"check_id": "unit_tests", "argv": argv, "cwd": ".",
                         "timeout_seconds": 10, "protocol": "unittest"}
-                result, _metadata, _worker = self.run_task(parent, task_for(repo, [spec]), repo)
-                self.assertEqual(result.status, "FAILED")
-                self.assertFalse(result.records[0].passed)
-                self.assertIn(result.records[0].unittest_count, (None, 0))
+                task = task_for(repo, [spec])
+                metadata = parent / "metadata"
+                state, worker = context_for(repo, task, metadata)
+                with self.assertRaisesRegex(ValueError, "Python.*-m unittest|unit_tests.*unittest"):
+                    run_checks(task, state, worker, metadata,
+                               stop_event=threading.Event(), deadline=time.monotonic() + 10)
+
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            repo = make_repo(parent)
+            (repo / "empty_tests").mkdir()
+            (repo / "empty_tests" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+            spec = {"check_id": "unit_tests",
+                    "argv": [sys.executable, "-m", "unittest", "discover", "-s", "empty_tests"],
+                    "cwd": ".", "timeout_seconds": 10, "protocol": "unittest"}
+            result, _metadata, _worker = self.run_task(parent, task_for(repo, [spec]), repo)
+            self.assertEqual(result.status, "FAILED")
+            self.assertFalse(result.records[0].passed)
+            self.assertEqual(result.records[0].unittest_count, 0)
 
     def test_timeout_quiesces_parent_and_child_and_is_recorded_failed(self):
         child_code = "import pathlib,time; time.sleep(1); pathlib.Path('survived.txt').write_text('alive')"

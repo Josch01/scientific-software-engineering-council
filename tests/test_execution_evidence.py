@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -187,6 +188,27 @@ class CheckSpecValidationTests(unittest.TestCase):
         task["check_specs"][0]["protocol"] = "exit_code"
         with self.assertRaisesRegex(ValueError, "unit_tests.*unittest|unittest.*unit_tests"):
             validate_check_specs(task)
+
+    def test_unit_tests_requires_direct_python_unittest_module_cli(self):
+        for command in ("python", "python3", "python3.14", "pypy", "pypy3", "py", sys.executable):
+            with self.subTest(command=command):
+                task = copy.deepcopy(self.task)
+                task["check_specs"][0]["argv"] = [command, "-m", "unittest", "discover"]
+                self.assertEqual(validate_check_specs(task)[0].argv[:3], (command, "-m", "unittest"))
+
+        forged_commands = (
+            [sys.executable, "-c", "print('Ran 1 test in 0.01s\\n\\nOK')"],
+            [sys.executable, "-"],
+            [sys.executable, "test_runner.py"],
+            ["pytest", "tests"],
+            [sys.executable, "-m", "unittest.mock"],
+        )
+        for argv in forged_commands:
+            with self.subTest(argv=argv):
+                task = copy.deepcopy(self.task)
+                task["check_specs"][0]["argv"] = argv
+                with self.assertRaisesRegex(ValueError, "Python.*-m unittest|unit_tests.*unittest"):
+                    validate_check_specs(task)
 
     def test_non_list_check_specs_is_invalid(self):
         task = copy.deepcopy(self.task)

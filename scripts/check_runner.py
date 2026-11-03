@@ -448,6 +448,7 @@ def _check_log_paths(
 
 def _run_process(
     spec: CheckSpec,
+    executable: str,
     cwd: Path,
     stdout_stream,
     stderr_stream,
@@ -467,8 +468,9 @@ def _run_process(
         return process_status, containment_status, None, f"containment setup failed: {exc}"
 
     try:
+        # Evidence retains the declared argv; launch the hash-bound resolved executable.
         process = subprocess.Popen(
-            spec.argv,
+            [executable, *spec.argv[1:]],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=stdout_stream,
@@ -682,7 +684,7 @@ def _check_result(
     try:
         with stdout_file.open("ab") as stdout_stream, stderr_file.open("ab") as stderr_stream:
             process_status, containment_status, exit_code, process_error = _run_process(
-                spec, cwd, stdout_stream, stderr_stream, environment,
+                spec, executable, cwd, stdout_stream, stderr_stream, environment,
                 stop_event, deadline
             )
     except OSError as exc:

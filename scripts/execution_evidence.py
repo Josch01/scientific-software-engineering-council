@@ -197,8 +197,44 @@ class CheckSpec:
             raise ValueError("protocol must be 'exit_code' or 'unittest'")
 
 
+def _is_direct_python_unittest_cli(argv: tuple[str, ...]) -> bool:
+    command = PureWindowsPath(argv[0])
+    if command.drive and not command.is_absolute():
+        return False
+    name = command.name.casefold()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    is_python = bool(re.fullmatch(r"python(?:\d+(?:\.\d+)*t?)?", name))
+    is_pypy = bool(re.fullmatch(r"pypy(?:\d+(?:\.\d+)*)?", name))
+    if not (is_python or is_pypy or name == "py"):
+        return False
+
+    arguments = list(argv[1:])
+    if name == "py" and arguments and re.fullmatch(r"-\d+(?:\.\d+)*", arguments[0]):
+        arguments.pop(0)
+    flags_without_values = {"-b", "-B", "-d", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v"}
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "-m":
+            return index + 1 < len(arguments) and arguments[index + 1] == "unittest"
+        if argument in ("-c", "-", "--", "-h", "-V", "-i", "-x", "--help", "--version"):
+            return False
+        if argument in ("-W", "-X"):
+            if index + 1 >= len(arguments):
+                return False
+            index += 2
+        elif argument.startswith(("-W", "-X")) and len(argument) > 2:
+            index += 1
+        elif argument in flags_without_values:
+            index += 1
+        else:
+            return False
+    return False
+
+
 def validate_check_specs(task: Mapping[str, Any]) -> tuple[CheckSpec, ...]:
-    """Validate optional typed check specs; legacy tasks without the field remain valid."""
+    """Validate typed specs; a real unittest suite can still print a forged summary."""
     if not isinstance(task, Mapping):
         raise ValueError("task must be a JSON object")
     if "check_specs" not in task:
@@ -244,6 +280,8 @@ def validate_check_specs(task: Mapping[str, Any]) -> tuple[CheckSpec, ...]:
         )
         if check_id == "unit_tests" and spec.protocol != "unittest":
             raise ValueError("unit_tests requires the unittest protocol")
+        if check_id == "unit_tests" and not _is_direct_python_unittest_cli(spec.argv):
+            raise ValueError("unit_tests must invoke a Python interpreter directly with -m unittest")
         seen.add(check_id)
         result.append(spec)
     return tuple(result)
