@@ -38,3 +38,14 @@ La limpieza de la copia temporal Windows después de la suite falló: `git workt
 - P2 no inicia hasta cumplir Gate P1, especialmente reviewer separado, scheduler/DAG, recovery, idempotencia, retries, cancelación y conflictos.
 
 **Estado de release:** `PARTIAL`; `evidence_verified: false`; `release_status: NOT_APPROVED`.
+
+## Seguimiento de CI Windows — 2026-11-03
+
+El workflow de PR #11, run `41570073658`, confirmó un defecto de compatibilidad en Windows además de una aserción de prueba dependiente de la forma textual de la ruta. En Windows/Python 3.12 el job terminó con 160 pruebas: una falla, un error y un skip; el job Windows/Python 3.11 fue cancelado después del fallo, mientras Ubuntu 3.11 y 3.12 pasaron.
+
+- `capture_snapshot` rechazaba `.gitignore` como escape al resolver el archivo copiado a una ruta con alias DOS 8.3 y compararla contra `root` aún no resuelto. `_lstat_candidate` ahora resuelve tanto la raíz como el archivo antes de comprobar contención; mantiene la inspección `lstat` de cada componente y el rechazo de symlinks.
+- La aserción del snapshot comparaba dos `Path` por representación textual. En CI una ruta usaba `RUNNER~1` y la otra `runneradmin`, aunque designaban el mismo objeto. Se cambió a `os.path.samefile`.
+- La regresión del alias se observó fallar antes del cambio y pasar después. En Windows 11 / Python 3.14.0 pasaron los módulos afectados `tests.test_check_runner` y `tests.test_execution_evidence`: `41/41` en `62.577s`; las tres pruebas focalizadas también pasaron.
+- La validación Windows de CI posterior al arreglo queda pendiente hasta que termine el nuevo run: `NOT_RUN` en este registro. El comportamiento de proveedor real, el ciclo con CLI autenticada y las limitaciones generales de P1 descritas arriba no cambian.
+
+**Decisión:** mantener ambas rutas resueltas en la verificación de contención evita falsos rechazos por alias sin relajar el gate. No se habilita ninguna aprobación por este cambio.

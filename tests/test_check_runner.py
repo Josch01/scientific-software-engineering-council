@@ -17,6 +17,7 @@ from scripts.execution_evidence import (
     canonical_task_sha256,
     candidate_tree_sha256,
     decode_evidence_record,
+    _lstat_candidate,
 )
 
 
@@ -133,6 +134,31 @@ class IgnoredMutationTests(unittest.TestCase):
 
 
 class SnapshotCaptureTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows path aliases are platform-specific")
+    def test_lstat_accepts_resolved_windows_alias_for_contained_candidate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "repo"
+            root.mkdir()
+            candidate = root / "tracked.txt"
+            candidate.write_text("candidate bytes\n", encoding="utf-8")
+            components = ("tracked.txt",)
+            original_resolve = Path.resolve
+            canonical_root = original_resolve(root, strict=True)
+            alias_root = Path(root.anchor) / "RUNNER~1" / "repo"
+
+            def resolve_with_alias(path, *args, **kwargs):
+                resolved = original_resolve(path, *args, **kwargs)
+                try:
+                    relative = resolved.relative_to(canonical_root)
+                except ValueError:
+                    return resolved
+                return alias_root / relative
+
+            with mock.patch.object(type(root), "resolve", autospec=True, side_effect=resolve_with_alias):
+                result = _lstat_candidate(candidate, root, components, b"tracked.txt")
+
+            self.assertIsNotNone(result)
+
     def test_capture_copies_git_visible_files_and_preserves_candidate_hash(self):
         with tempfile.TemporaryDirectory() as temp:
             parent = Path(temp)
@@ -315,7 +341,7 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertFalse((repo / "mailbox-ran").exists())
 
             snapshot = metadata / Path(manifest["snapshot"]["path"])
-            self.assertEqual(snapshot, manifest_path.parent / "snapshot")
+            self.assertTrue(os.path.samefile(snapshot, manifest_path.parent / "snapshot"))
             self.assertEqual((snapshot / "tests" / "test_real.py").read_text(encoding="utf-8"), PASSING_TEST)
 
     def test_real_unittest_failure_and_pass_print_or_zero_discovery_never_pass(self):
