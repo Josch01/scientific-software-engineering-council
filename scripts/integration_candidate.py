@@ -68,12 +68,17 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(_read_regular(path)).hexdigest()
 
 
+def _read_git(root, *args, **kwargs):
+    """Inspect source/worker Git state without refreshing their index files."""
+    return _git(root, "--no-optional-locks", "-c", "diff.autoRefreshIndex=false", *args, **kwargs)
+
+
 def _source_identity(state):
     root = Path(state["project_root"])
     _ensure_no_symlink_path(root)
-    if _git(root, "rev-parse", "HEAD").decode().strip() != state["base_commit"]:
+    if _read_git(root, "rev-parse", "HEAD").decode().strip() != state["base_commit"]:
         raise ValueError("source base commit changed")
-    if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+    if _read_git(root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise ValueError("source checkout changed")
     return root
 
@@ -81,13 +86,13 @@ def _source_identity(state):
 def _worker_identity(worker, state):
     root = Path(worker["path"])
     _ensure_no_symlink_path(root)
-    if _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").decode().strip() != worker["branch"]:
+    if _read_git(root, "symbolic-ref", "--quiet", "--short", "HEAD").decode().strip() != worker["branch"]:
         raise ValueError("worker branch mismatch: " + worker["role"])
-    if _git(root, "merge-base", "HEAD", state["base_commit"]).decode().strip() != state["base_commit"]:
+    if _read_git(root, "merge-base", "HEAD", state["base_commit"]).decode().strip() != state["base_commit"]:
         raise ValueError("worker base mismatch: " + worker["role"])
     # The tree hasher rejects POSIX symlinks, but on Windows a junction can be
     # reported as a directory. Inspect every Git-visible path before hashing.
-    for raw in _git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00"):
+    for raw in _read_git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z").split(b"\x00"):
         if raw:
             relative = raw.decode("utf-8")
             _path(relative, "worker path")
@@ -151,7 +156,7 @@ def _evidence(state, metadata, execution_id, contracts, specs):
 
 def _base_entries(root, base):
     entries = {}
-    for raw in _git(root, "ls-tree", "-r", "-z", base).split(b"\x00"):
+    for raw in _read_git(root, "ls-tree", "-r", "-z", base).split(b"\x00"):
         if not raw:
             continue
         header, name = raw.split(b"\t", 1)
@@ -191,19 +196,22 @@ def _operations(state, contracts, base):
         role = worker["role"]
         root = Path(worker["path"])
         entries = {entry.relative_path: entry for entry in _candidate_tree_entries(root)}
-        changed = _git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-                       "--name-only", "-z", state["base_commit"], "--")
-        additions = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+        changed = _read_git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                            "--numstat", "-z", state["base_commit"], "--")
+        additions = _read_git(root, "ls-files", "--others", "--exclude-standard", "-z")
         # Let Git determine visibility and normalization. A clean CRLF checkout
         # can differ from its LF blobs without constituting a worker change.
-        paths = {raw.decode("utf-8") for raw in (changed + additions).split(b"\x00") if raw}
+        # Numstat compares content without refreshing the index; name-only can
+        # report stale-stat differences when diff.autoRefreshIndex is disabled.
+        paths = {raw.split(b"\t", 2)[2].decode("utf-8") for raw in changed.split(b"\x00") if raw}
+        paths.update(raw.decode("utf-8") for raw in additions.split(b"\x00") if raw)
         for path in sorted(paths):
             _path(path, "worker output path")
             entry = entries.get(path)
             content = _read_regular(entry.path) if entry else None
             mode = b"100755" if entry and entry.executable else b"100644"
             if entry:
-                oid = _git(root, "hash-object", "--no-filters", "--stdin", input_bytes=content).strip()
+                oid = _read_git(root, "hash-object", "--no-filters", "--stdin", input_bytes=content).strip()
                 if base.get(path) == (mode, oid):
                     continue
             elif path not in base:
@@ -321,10 +329,15 @@ def build_integration_candidate(project, task_id, execution_id) -> IntegrationRe
                         candidate_tree_sha256=candidate_hash, input_manifests=inputs,
                         worker_tree_hashes=workers, operations=operations, check_manifest_path=None)
         manifest_path = attempt / "manifest.json"
-        _write_atomic_manifest(manifest_path, manifest)
-        if _json_file(manifest_path) != manifest or candidate_tree_sha256(candidate) != candidate_hash:
+        pending_path = attempt / "manifest.pending.json"
+        _write_atomic_manifest(pending_path, manifest)
+        if _json_file(pending_path) != manifest or candidate_tree_sha256(candidate) != candidate_hash:
             raise ValueError("integration manifest or candidate changed during publication")
-        return IntegrationResult(integration_id, "BUILT_AWAITING_CHECKS", candidate,
-                                 manifest_path, None, ())
+        result = IntegrationResult(integration_id, "BUILT_AWAITING_CHECKS", candidate,
+                                   manifest_path, None, ())
+        # Canonical publication is the final fallible operation. Failed pending
+        # artifacts remain forensic data, never discoverable canonical successes.
+        os.replace(pending_path, manifest_path)
+        return result
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
         return IntegrationResult(integration_id, "BLOCKED", candidate, None, None, (str(exc),))

@@ -448,3 +448,101 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertTrue(Path(result.candidate_worktree_path).is_dir())
         self.assertFalse((Path(result.candidate_worktree_path).parent / "manifest.json").exists())
         self.assertEqual([(candidate_tree_sha256(root), git(root, "status", "--porcelain=v1")) for root in roots], before)
+
+    def stale_stat_indexes(self):
+        """Capture exact index bytes after changing stats, without running status."""
+        indexes = {}
+        for root in [self.root] + [Path(worker["path"]) for worker in self.state["workers"]]:
+            target = root / "tests/test_base.py"
+            info = target.stat()
+            os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns + 10_000_000_000))
+            index = Path(git(root, "--no-optional-locks", "rev-parse", "--git-path", "index"))
+            if not index.is_absolute():
+                index = root / index
+            indexes[index] = index.read_bytes()
+        return indexes
+
+    def assert_index_bytes_unchanged(self, indexes):
+        for index, original in indexes.items():
+            with self.subTest(index=str(index)):
+                self.assertEqual(index.read_bytes(), original, "inspection changed index bytes: " + str(index))
+
+    def test_success_preserves_source_and_worker_index_bytes_with_stale_stats(self):
+        self.evidence()
+        indexes = self.stale_stat_indexes()
+        result = self.build()
+        # Compare index bytes before any assertion or helper invokes git status.
+        self.assert_index_bytes_unchanged(indexes)
+        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+
+    def test_blocked_build_preserves_source_and_worker_index_bytes_with_stale_stats(self):
+        worker = sorted(self.state["workers"], key=lambda item: item["role"])[0]
+        (Path(worker["path"]) / "unowned.txt").write_bytes(b"outside output scope\n")
+        self.evidence()
+        indexes = self.stale_stat_indexes()
+        result = self.build()
+        self.assert_index_bytes_unchanged(indexes)
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("ownership", " ".join(result.blockers))
+        self.assertIsNone(result.candidate_worktree_path)
+
+    def test_candidate_mutation_after_atomic_write_leaves_no_canonical_success(self):
+        from scripts.integration_candidate import _write_atomic_manifest
+        self.evidence()
+        written = []
+        def write_then_mutate(path, data):
+            _write_atomic_manifest(path, data)
+            written.append(path)
+            (Path(data["candidate_worktree_path"]) / "baseline.txt").write_bytes(b"publication drift\n")
+        with patch("scripts.integration_candidate._write_atomic_manifest", side_effect=write_then_mutate):
+            result = self.build()
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIsNone(result.integration_manifest_path)
+        self.assertTrue(Path(result.candidate_worktree_path).is_dir())
+        self.assertFalse((Path(result.candidate_worktree_path).parent / "manifest.json").exists())
+        self.assertTrue(written[0].is_file(), "failed pending publication should remain inspectable")
+
+    def test_persisted_manifest_read_failure_leaves_no_canonical_success(self):
+        from scripts.integration_candidate import _json_file
+        self.evidence()
+        written = []
+        def fail_integration_read(path):
+            if Path(path).parent.parent == self.meta / "integrations":
+                written.append(path)
+                self.assertTrue(path.is_file())
+                raise OSError("injected persisted manifest read failure")
+            return _json_file(path)
+        with patch("scripts.integration_candidate._json_file", side_effect=fail_integration_read):
+            result = self.build()
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIsNone(result.integration_manifest_path)
+        self.assertFalse((Path(result.candidate_worktree_path).parent / "manifest.json").exists())
+        self.assertTrue(written[0].is_file())
+
+    def test_canonical_manifest_is_published_after_all_fallible_validation(self):
+        self.evidence()
+        def refuse_validation_after_publication(root):
+            if (Path(root).parent / "manifest.json").exists():
+                raise ValueError("candidate validation happened after canonical publication")
+            return candidate_tree_sha256(root)
+        with patch("scripts.integration_candidate.candidate_tree_sha256",
+                   side_effect=refuse_validation_after_publication):
+            result = self.build()
+        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        data = json.loads(Path(result.integration_manifest_path).read_text())
+        self.assertEqual(data["status"], result.status)
+        self.assertEqual(data["candidate_tree_sha256"], candidate_tree_sha256(Path(result.candidate_worktree_path)))
+
+    def test_canonical_rename_failure_leaves_no_canonical_success(self):
+        self.evidence()
+        original_replace = os.replace
+        def fail_final_rename(source, destination):
+            if Path(source).name == "manifest.pending.json" and Path(destination).name == "manifest.json":
+                raise OSError("injected canonical rename failure")
+            return original_replace(source, destination)
+        with patch("scripts.integration_candidate.os.replace", side_effect=fail_final_rename):
+            result = self.build()
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIsNone(result.integration_manifest_path)
+        self.assertIn("canonical rename failure", " ".join(result.blockers))
+        self.assertFalse((Path(result.candidate_worktree_path).parent / "manifest.json").exists())
