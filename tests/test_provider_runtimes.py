@@ -674,6 +674,34 @@ class ProviderRuntimeTests(unittest.TestCase):
                 kernel.killpg.assert_not_called()
                 process.wait.assert_not_called()
 
+    def test_posix_live_group_scan_tolerates_procfs_process_exit_race(self):
+        from scripts import process_containment
+
+        class DisappearingStat:
+            def read_text(self, **kwargs):
+                raise ProcessLookupError(errno.ESRCH, "process exited during procfs read")
+
+        class ProcessEntry:
+            name = "123"
+
+            def __truediv__(self, value):
+                return DisappearingStat()
+
+        class ProcRoot:
+            def is_dir(self):
+                return True
+
+            def iterdir(self):
+                return [ProcessEntry()]
+
+        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+        group._pgid = 123
+        kernel = SimpleNamespace(killpg=Mock())
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "Path", return_value=ProcRoot()):
+            self.assertFalse(group._has_live_members())
+        kernel.killpg.assert_called_once_with(123, 0)
+
     def test_posix_missing_live_group_inspection_blocks_before_spawn(self):
         from scripts import process_containment
         kernel = SimpleNamespace(name="posix", P_PID=1, WEXITED=4, WNOHANG=1, WNOWAIT=0x100,
