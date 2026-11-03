@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 
 
@@ -169,6 +170,51 @@ class PosixGroup:
             raise OSError("POSIX SIGCHLD disposition could not be confirmed") from exc
         if disposition != signal.SIG_DFL:
             raise OSError("POSIX containment requires the default SIGCHLD disposition")
+        self._require_waitable_children()
+
+    @staticmethod
+    def _require_waitable_children():
+        # getsignal() does not expose native sigaction flags such as
+        # SA_NOCLDWAIT. Observe a real, harmless child before any work process
+        # can launch; an auto-reaped child makes later PID ownership unsafe.
+        probe = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        deadline = time.monotonic() + 5
+        try:
+            while True:
+                try:
+                    event = os.waitid(
+                        os.P_PID, probe.pid,
+                        os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                    )
+                except ChildProcessError as exc:
+                    raise OSError(
+                        "POSIX containment requires waitable children; the probe was auto-reaped"
+                    ) from exc
+                except OSError as exc:
+                    if exc.errno == errno.ECHILD:
+                        raise OSError(
+                            "POSIX containment requires waitable children; the probe was auto-reaped"
+                        ) from exc
+                    raise OSError("POSIX child waitability probe failed") from exc
+                if event is not None:
+                    if event.si_pid != probe.pid:
+                        raise OSError("POSIX child waitability probe returned an unexpected identity")
+                    return
+                if time.monotonic() >= deadline:
+                    raise OSError("POSIX child waitability could not be confirmed")
+                time.sleep(.01)
+        finally:
+            try:
+                probe.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                probe.kill()
+                probe.wait(timeout=5)
 
     def root_exited(self, process):
         try:

@@ -720,6 +720,7 @@ class ProviderRuntimeTests(unittest.TestCase):
         with patch.object(process_containment, "os", kernel), \
                 patch.object(process_containment, "signal", signals), \
                 patch.object(process_containment, "Path", return_value=Mock(is_dir=Mock(return_value=True))), \
+                patch.object(process_containment.PosixGroup, "_require_waitable_children"), \
                 patch.object(self.module, "_new_containment", side_effect=process_containment.new_containment), \
                 patch.object(self.module.shutil, "which", return_value="/selected/codex"), \
                 self.discovery("codex"), patch.object(self.module.subprocess, "Popen", return_value=Mock(pid=123)) as spawn:
