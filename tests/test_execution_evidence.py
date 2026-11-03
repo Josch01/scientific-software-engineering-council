@@ -14,6 +14,7 @@ from scripts.execution_evidence import (
     CheckSpec,
     EvidenceRecord,
     SnapshotReference,
+    _lstat_candidate,
     candidate_tree_sha256,
     canonical_task_sha256,
     decode_evidence_record,
@@ -220,6 +221,19 @@ class CheckSpecValidationTests(unittest.TestCase):
 
 
 class CandidateTreeHashTests(unittest.TestCase):
+    def test_lstat_accepts_equivalent_root_with_lexical_parent_segment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            candidate = repo / "candidate.txt"
+            candidate.write_text("candidate\n", encoding="utf-8")
+            aliased_root = repo.parent / repo.name / ".." / repo.name
+
+            item_stat = _lstat_candidate(candidate, aliased_root, ("candidate.txt",),
+                                         b"candidate.txt")
+
+            self.assertTrue(stat.S_ISREG(item_stat.st_mode))
+
     def test_hash_tracks_tracked_and_nonignored_untracked_bytes_but_ignores_ignored_files(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = make_repo(Path(temp))

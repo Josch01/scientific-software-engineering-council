@@ -384,7 +384,8 @@ def _lstat_candidate(path: Path, root: Path, components: tuple[str, ...], raw_pa
         raise ValueError(f"could not inspect candidate path {os.fsdecode(raw_path)!r}: {exc}") from exc
     try:
         resolved = path.resolve(strict=True)
-        if not resolved.is_relative_to(root):
+        resolved_root = root.resolve(strict=True)
+        if not resolved.is_relative_to(resolved_root):
             raise ValueError(f"candidate path escapes repository root: {os.fsdecode(raw_path)!r}")
     except OSError as exc:
         raise ValueError(f"could not resolve candidate path {os.fsdecode(raw_path)!r}: {exc}") from exc

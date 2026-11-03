@@ -688,6 +688,44 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, RuntimeStatus.UNAVAILABLE)
         spawn.assert_not_called()
 
+    def test_posix_live_member_scan_ignores_proc_entry_removed_during_scan(self):
+        from scripts import process_containment
+        group = process_containment.PosixGroup.__new__(process_containment.PosixGroup)
+        group._pgid = 123
+
+        class ProcessEntry:
+            def __init__(self, name, stat_text=None, error=None):
+                self.name = name
+                self.stat_text = stat_text
+                self.error = error
+
+            def __truediv__(self, name):
+                assert name == "stat"
+
+                class ProcessStat:
+                    def read_text(inner, **kwargs):
+                        if self.error is not None:
+                            raise self.error
+                        return self.stat_text
+
+                return ProcessStat()
+
+        class ProcRoot:
+            def is_dir(self):
+                return True
+
+            def iterdir(self):
+                return [
+                    ProcessEntry("456", error=ProcessLookupError(
+                        errno.ESRCH, "No such process")),
+                    ProcessEntry("789", stat_text="789 (live) S 1 123 123 0 0 0"),
+                ]
+
+        kernel = SimpleNamespace(killpg=Mock())
+        with patch.object(process_containment, "os", kernel), \
+                patch.object(process_containment, "Path", return_value=ProcRoot()):
+            self.assertTrue(group._has_live_members())
+
     def test_posix_sigchld_host_precondition_blocks_ignored_custom_and_unknown_handlers(self):
         from scripts import process_containment
         for disposition in (1, lambda signum, frame: None, None):
