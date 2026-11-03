@@ -315,7 +315,8 @@ class CheckExecutionTests(unittest.TestCase):
             self.assertFalse((repo / "mailbox-ran").exists())
 
             snapshot = metadata / Path(manifest["snapshot"]["path"])
-            self.assertEqual(snapshot, manifest_path.parent / "snapshot")
+            self.assertEqual(snapshot.resolve(strict=True),
+                             (manifest_path.parent / "snapshot").resolve(strict=True))
             self.assertEqual((snapshot / "tests" / "test_real.py").read_text(encoding="utf-8"), PASSING_TEST)
 
     def test_real_unittest_failure_and_pass_print_or_zero_discovery_never_pass(self):
