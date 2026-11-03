@@ -22,7 +22,7 @@ La paleta y comportamiento usan ttk nativo, foco/orden de teclado del toolkit, e
 | Windows, Tkinter real | Creación de ventana/widgets oculta con resultado serializado por `solve_rk4` para RHS sintética constante; se comprobó una pestaña, tablas, 6 series y que todas las coordenadas Canvas son finitas | PASS de construcción de widgets; fixture sintética, no SIR ni validación científica |
 | Docker/Linux, Python 3.14.0 | `python scripts/validate_skill.py` bajo la ruta canónica del skill | PASS: `VALID STRUCTURE` |
 | Docker/Linux, Python 3.14.0 | `python -m unittest discover -s tests -q` bajo la ruta canónica del skill | PASS: 397 tests, 6 omitidos, 128.725 s |
-| GitHub Actions de P3.3 | CI posterior al push de la rama | Pendiente al redactar este informe |
+| GitHub Actions de P3.3 | CI asociado al PR #25, run [#116](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41703973926) | PASS: 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 |
 
 ## Revisión y defectos corregidos
 
