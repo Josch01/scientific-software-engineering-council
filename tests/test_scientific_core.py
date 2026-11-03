@@ -154,6 +154,17 @@ class ODERK4Tests(unittest.TestCase):
 
         self.assertAlmostEqual(solution.states[-1][0], 1.0, delta=1e-15)
 
+    def test_solver_preserves_subnormal_derivative_with_large_step(self):
+        problem = self.core.OdeProblem(
+            rhs=lambda *_: (5e-324,),
+            t_span=(0.0, 1e308),
+            initial_state=(0.0,),
+        )
+
+        solution = self.core.solve_rk4(problem, max_step=1e308)
+
+        self.assertAlmostEqual(solution.states[-1][0], 5e-324 * 1e308, delta=1e-30)
+
     def test_problem_rejects_nonsequence_state_names_with_value_error(self):
         try:
             self.core.OdeProblem(

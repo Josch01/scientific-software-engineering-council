@@ -138,6 +138,40 @@ def _shift_state(state: State, derivative: State, scale: float) -> State:
     )
 
 
+def _scaled_product(first: float, second: float, third: float) -> float:
+    """Multiply finite factors without avoidable intermediate range loss."""
+    if first == 0.0 or second == 0.0 or third == 0.0:
+        return 0.0
+    first_mantissa, first_exponent = math.frexp(first)
+    second_mantissa, second_exponent = math.frexp(second)
+    third_mantissa, third_exponent = math.frexp(third)
+    mantissa = first_mantissa * second_mantissa * third_mantissa
+    try:
+        return math.ldexp(
+            mantissa, first_exponent + second_exponent + third_exponent
+        )
+    except OverflowError:
+        return math.copysign(math.inf, mantissa)
+
+
+def _rk4_increment(
+    step_size: float, derivatives: tuple[State, ...], index: int
+) -> float:
+    rates = tuple(derivative[index] for derivative in derivatives)
+    scale = max(abs(rate) for rate in rates)
+    if scale == 0.0:
+        return 0.0
+    normalized_rate = math.fsum(
+        (
+            rates[0] / scale / 6.0,
+            rates[1] / scale / 3.0,
+            rates[2] / scale / 3.0,
+            rates[3] / scale / 6.0,
+        )
+    )
+    return _scaled_product(step_size, scale, normalized_rate)
+
+
 def solve_rk4(
     problem: OdeProblem,
     max_step: float,
@@ -186,12 +220,8 @@ def solve_rk4(
 
         state = _finite_vector(
             tuple(
-                value
-                + step_size
-                * math.fsum(
-                    (first / 6.0, second / 3.0, third / 3.0, fourth / 6.0)
-                )
-                for value, first, second, third, fourth in zip(state, k1, k2, k3, k4)
+                value + _rk4_increment(step_size, (k1, k2, k3, k4), component)
+                for component, value in enumerate(state)
             ),
             f"state after step {index + 1}",
             expected_length=len(problem.initial_state),
