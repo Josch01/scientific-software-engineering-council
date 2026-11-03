@@ -338,7 +338,7 @@ def _create_window_root(tk, parent):
 
 def _project_root_hint(project_root: str | Path | None) -> Path | None:
     """Return an existing project directory for file-dialog initialization."""
-    if project_root is None:
+    if project_root is None or (isinstance(project_root, str) and not project_root.strip()):
         return None
     try:
         candidate = Path(project_root).expanduser().resolve(strict=True)

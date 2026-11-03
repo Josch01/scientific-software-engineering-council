@@ -39,10 +39,10 @@
 - `_project_root_hint(project_root) -> Path | None` returns an existing directory or `None`.
 - `create_workspace_window(view_model, *, parent=None, project_root=None)` uses both helpers; an invalid project root keeps the existing root-picker path.
 
-- [ ] Add a failing test for standalone-vs-child window selection through a small root factory helper.
-- [ ] Run the test and confirm it fails because the factory always creates `Tk`.
-- [ ] Implement the optional parent and project root behavior; preserve the existing CLI.
-- [ ] Run the app tests and the existing headless `--check` regression.
+- [x] Add a failing test for standalone-vs-child window selection through a small root factory helper.
+- [x] Run the test and confirm it fails because the factory always creates `Tk`.
+- [x] Implement the optional parent and project root behavior; preserve the existing CLI.
+- [x] Run the app tests and the existing headless `--check` regression.
 
 ### Task 2: Launch the workspace from the supervisor
 
@@ -54,10 +54,10 @@
 - `open_scientific_workspace(parent, project_root, *, window_factory=None)` lazily resolves `create_workspace_window` and passes the existing root/project path.
 - The supervisor exposes an “Abrir espacio científico” button that calls this helper.
 
-- [ ] Create `tests/test_control_center.py` with a failing test that verifies the supervisor passes its root and selected project to the workspace factory.
-- [ ] Run the test and confirm the launch helper is missing.
-- [ ] Implement the lazy launch helper and button; keep agent execution flow unchanged.
-- [ ] Run focused supervisor and workspace tests.
+- [x] Create `tests/test_control_center.py` with a failing test that verifies the supervisor passes its root and selected project to the workspace factory.
+- [x] Run the test and confirm the launch helper is missing.
+- [x] Implement the lazy launch helper and button; keep agent execution flow unchanged.
+- [x] Run focused supervisor and workspace tests.
 
 ### Task 3: Record evidence and deliver the increment
 
@@ -65,7 +65,7 @@
 - Modify: `README.md`, `references/SCIENTIFIC_WORKSPACES.md`, `docs/roadmap/FEATURE_MATRIX.md`
 - Create: `docs/test-reports/p3-control-center-workspace-link-2026-11-03.md`
 
-- [ ] Run a hidden Tk smoke using one root and a child workspace window; record `NOT_RUN` only if the host has no display/Tk.
-- [ ] Run focused Windows tests, `py_compile`, and `git diff --check`.
-- [ ] Run the repository test suite in Docker/Linux once for this increment and record the actual result.
-- [ ] Commit the implementation and evidence; push a separate draft PR targeting the P3.3 branch.
+- [x] Run hidden Tk smokes using one root and a child workspace window; both existing-project and empty-project fallback paths were exercised with a synthetic fixture.
+- [x] Run focused Windows tests, `py_compile`, and `git diff --check`.
+- [x] Run the repository test suite in Docker/Linux for this increment and record the actual result, including after the review fix.
+- [x] Commit the implementation and evidence; push a separate draft PR targeting the P3.3 branch. PR #26 remains draft; CI for the review-fix commit is pending.

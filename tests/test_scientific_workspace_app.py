@@ -174,6 +174,7 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
             self.assertEqual(_project_root_hint(root), root)
             self.assertIsNone(_project_root_hint(root / "missing"))
             self.assertIsNone(_project_root_hint(None))
+            self.assertIsNone(_project_root_hint(""))
 
 
 if __name__ == "__main__":
