@@ -11,7 +11,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.check_runner import capture_snapshot, read_check_manifest, run_checks
+from scripts.check_runner import (_snapshot_artifact_sha256, capture_snapshot,
+                                 read_check_manifest, run_checks, _walk_snapshot)
 from scripts.execution_evidence import (
     ALLOWED_ENVIRONMENT_KEYS,
     canonical_task_sha256,
@@ -133,6 +134,66 @@ class IgnoredMutationTests(unittest.TestCase):
 
 
 class SnapshotCaptureTests(unittest.TestCase):
+    def test_walk_snapshot_rejects_windows_junction_root(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions are specific to Windows")
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            target = parent / "external"
+            target.mkdir()
+            (target / "outside.txt").write_text("outside snapshot\n", encoding="utf-8")
+            junction = parent / "snapshot"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest(f"Windows junction creation unavailable: {result.stderr or result.stdout}")
+            try:
+                with self.assertRaisesRegex(ValueError, "junction|reparse|symlink"):
+                    _walk_snapshot(junction, ())
+            finally:
+                junction.rmdir()
+
+    def test_walk_snapshot_rejects_windows_junction_in_parent_path(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions are specific to Windows")
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            target = parent / "external"
+            snapshot = target / "snapshot"
+            snapshot.mkdir(parents=True)
+            (snapshot / "outside.txt").write_text("outside snapshot\n", encoding="utf-8")
+            junction = parent / "snapshot-parent"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest(f"Windows junction creation unavailable: {result.stderr or result.stdout}")
+            try:
+                with self.assertRaisesRegex(ValueError, "junction|reparse|symlink"):
+                    _walk_snapshot(junction / "snapshot", ())
+            finally:
+                junction.rmdir()
+
+    def test_snapshot_artifact_hash_accepts_equivalent_root_with_parent_segment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            repo = make_repo(parent)
+            destination = parent / "evidence" / "snapshot"
+            capture_snapshot(repo, destination)
+            aliased_snapshot = destination.parent / destination.name / ".." / destination.name
+
+            self.assertEqual(_snapshot_artifact_sha256(aliased_snapshot),
+                             _snapshot_artifact_sha256(destination))
+
     def test_capture_copies_git_visible_files_and_preserves_candidate_hash(self):
         with tempfile.TemporaryDirectory() as temp:
             parent = Path(temp)
@@ -150,6 +211,31 @@ class SnapshotCaptureTests(unittest.TestCase):
             self.assertFalse((destination / ".git").exists())
             if os.name != "nt":
                 self.assertTrue((destination / "run.sh").stat().st_mode & 0o100)
+
+    def test_capture_rejects_windows_junction_in_destination_parent(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions are specific to Windows")
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            repo = make_repo(parent)
+            target = parent / "external"
+            target.mkdir()
+            junction = parent / "evidence-alias"
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest(f"Windows junction creation unavailable: {result.stderr or result.stdout}")
+            try:
+                with self.assertRaisesRegex(ValueError, "junction|reparse|symlink"):
+                    capture_snapshot(repo, junction / "snapshot")
+                self.assertFalse((target / "snapshot").exists())
+            finally:
+                junction.rmdir()
 
     def test_capture_rejects_indexed_symlink_and_special_file(self):
         with tempfile.TemporaryDirectory() as temp:

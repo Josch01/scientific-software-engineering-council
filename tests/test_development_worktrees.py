@@ -1,6 +1,7 @@
 """SSEC development worktrees, communication, approvals and dry-run."""
 import json
 from dataclasses import replace
+import os
 import hashlib
 import shlex
 import subprocess
@@ -15,7 +16,8 @@ from scripts.configuration import DEFAULT_CONFIG
 from scripts.prepare_agents import choose_roles
 from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,load
 from scripts.development_runner import (_cli_exit_code, execute, run_worker, _review_diff,
-                                       _MAX_REVIEW_DIFF_BYTES, _persist_review_artifacts)
+                                       _MAX_REVIEW_DIFF_BYTES, _persist_review_artifacts,
+                                       _relative_metadata_path)
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
 from scripts.provider_runtimes import GeminiRuntime
 
@@ -283,6 +285,27 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(persisted["status"],"FAILED")
         self.assertIn("manifest storage unavailable",persisted["error"])
         self.assertFalse(manifest_path.exists())
+
+    def test_relative_metadata_path_accepts_windows_short_path_alias(self):
+        if os.name != "nt":
+            self.skipTest("Windows short paths are specific to Windows")
+        import ctypes
+
+        metadata=self.root.parent/"metadata"
+        metadata.mkdir()
+        (metadata/"attempt.json").write_text("{}",encoding="utf-8")
+        short_path=ctypes.create_unicode_buffer(32768)
+        get_short_path=ctypes.WinDLL("kernel32",use_last_error=True).GetShortPathNameW
+        get_short_path.argtypes=(ctypes.c_wchar_p,ctypes.c_wchar_p,ctypes.c_uint32)
+        get_short_path.restype=ctypes.c_uint32
+        length=get_short_path(str(metadata),short_path,len(short_path))
+        if not length or length>=len(short_path):
+            self.skipTest("Windows short path lookup is unavailable")
+        alias=Path(short_path.value)
+        if os.path.normcase(os.path.abspath(alias))==os.path.normcase(os.path.abspath(metadata)):
+            self.skipTest("this volume does not expose a distinct short path")
+
+        self.assertEqual(_relative_metadata_path(alias/"attempt.json",metadata),"attempt.json")
 
     def test_review_diff_bounds_tracked_and_untracked_candidate_content(self):
         state={"base_commit":git(self.root,"rev-parse","HEAD")}

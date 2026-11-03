@@ -112,8 +112,14 @@ def _persist_review_artifacts(attempt,attempt_path,manifest,manifest_path,metada
 def _relative_metadata_path(path,metadata):
     path=Path(os.path.abspath(path))
     root=Path(metadata).resolve(strict=True)
+    cursor=Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor=cursor/part
+        if cursor.is_symlink():
+            raise ValueError("review evidence path contains a symlink")
     try:
-        relative_path=path.relative_to(root)
+        resolved_path=path.resolve(strict=True)
+        relative_path=resolved_path.relative_to(root)
     except (OSError,ValueError) as exc:
         raise ValueError("review evidence path is outside task metadata") from exc
     cursor=root

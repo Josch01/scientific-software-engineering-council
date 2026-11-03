@@ -185,8 +185,8 @@ def _ensure_no_symlink_path(path: Path) -> None:
             continue
         except OSError as exc:
             raise ValueError(f"path cannot be inspected: {cursor}: {exc}") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise ValueError(f"symlinked path component is forbidden: {cursor}")
+        if _is_filesystem_link(cursor, info):
+            raise ValueError(f"symlinked or reparse path component is forbidden: {cursor}")
 
 
 def _safe_relative_parts(value: Any, label: str, *, allow_dot: bool = False) -> tuple[str, ...]:
@@ -214,8 +214,8 @@ def _resolve_evidence_path(root: Path, relative: str, *, directory: bool) -> Pat
         for index, part in enumerate(parts):
             cursor = cursor / part
             info = cursor.lstat()
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError(f"evidence path contains a symlink: {relative!r}")
+            if _is_filesystem_link(cursor, info):
+                raise ValueError(f"evidence path contains a symlink or junction: {relative!r}")
             if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
                 raise ValueError(f"evidence path parent is not a directory: {relative!r}")
         if directory and not stat.S_ISDIR(info.st_mode):
@@ -238,7 +238,25 @@ def _git_ignored_paths(source: Path, paths: list[bytes]) -> set[bytes]:
     return {path for path in raw.split(b"\x00") if path}
 
 
+def _is_filesystem_link(path: Path, info: os.stat_result) -> bool:
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400 if os.name == "nt" else 0)
+    if getattr(info, "st_file_attributes", 0) & reparse_flag:
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
 def _walk_snapshot(snapshot: Path, original: tuple[_CandidateTreeEntry, ...]) -> tuple[_CandidateTreeEntry, ...]:
+    snapshot = Path(os.path.abspath(snapshot))
+    _ensure_no_symlink_path(snapshot)
+    try:
+        snapshot_root = snapshot.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"snapshot root cannot be resolved: {exc}") from exc
+    if not snapshot_root.is_dir():
+        raise ValueError("snapshot root must be a directory")
     initial = {entry.raw_path: entry for entry in original}
     files: list[_CandidateTreeEntry] = []
 
@@ -255,8 +273,8 @@ def _walk_snapshot(snapshot: Path, original: tuple[_CandidateTreeEntry, ...]) ->
                 info = child.stat(follow_symlinks=False)
             except OSError as exc:
                 raise ValueError(f"snapshot path cannot be inspected: {child_path}: {exc}") from exc
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError(f"snapshot contains a filesystem symlink: {child_path}")
+            if _is_filesystem_link(child_path, info):
+                raise ValueError(f"snapshot contains a filesystem symlink or junction: {child_path}")
             if name == ".git":
                 raise ValueError(f"snapshot contains unexpected Git metadata: {child_path}")
             next_relative = relative + (name,)
@@ -267,7 +285,7 @@ def _walk_snapshot(snapshot: Path, original: tuple[_CandidateTreeEntry, ...]) ->
                 raise ValueError(f"snapshot contains a non-regular or special file: {child_path}")
             try:
                 resolved = child_path.resolve(strict=True)
-                if not resolved.is_relative_to(snapshot):
+                if not resolved.is_relative_to(snapshot_root):
                     raise ValueError(f"snapshot path escapes snapshot root: {child_path}")
             except OSError as exc:
                 raise ValueError(f"snapshot path cannot be resolved: {child_path}: {exc}") from exc
@@ -278,11 +296,9 @@ def _walk_snapshot(snapshot: Path, original: tuple[_CandidateTreeEntry, ...]) ->
                 old.executable if os.name == "nt" and old is not None
                 else bool(info.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
             )
-            files.append(_CandidateTreeEntry(relative_path, raw_path, child_path, executable, snapshot))
+            files.append(_CandidateTreeEntry(relative_path, raw_path, child_path, executable, snapshot_root))
 
-    if snapshot.is_symlink():
-        raise ValueError("snapshot root must not be a symlink")
-    visit(snapshot, ())
+    visit(snapshot_root, ())
     files.sort(key=lambda item: item.raw_path)
     return tuple(files)
 
