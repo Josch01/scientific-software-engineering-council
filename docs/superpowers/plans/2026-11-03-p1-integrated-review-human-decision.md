@@ -114,24 +114,25 @@ Run: los seis tests de Task 2 y los tests de `test_executable_index_mode_is_pres
 - CLI: `python -m scripts.integration_review decide --project PATH --task-id ID --integration-id ID --expected-bundle-sha256 SHA256 --decision APPROVE_FOR_MANUAL_INTEGRATION|REJECT --operator TEXT --reason TEXT`.
 - Decision path: `metadata/integrations/<integration_id>/human-decision.json`, create-only, schema 1.
 - `gate()` añade `integrated_review_verified`, bundle hash/status, `human_decision_verified`, decision status, y estados `BLOCKED | CHANGES_REQUESTED | NEEDS_HUMAN | APPROVED_FOR_MANUAL_INTEGRATION | REJECTED_BY_HUMAN`.
+- Ruling: `APPROVE` requiere bundle actual terminal y roster completo con todos los veredictos `PASSED`; `REJECT` también requiere evidencia terminal, íntegra y roster completo, y admite veredictos `REQUEST_CHANGES`. `BLOCKED`, `FAILED`, manifests faltantes o evidencia mal ligada bloquean ambas decisiones.
 
-- [ ] **Step 1: Escribir pruebas RED**
+- [x] **Step 1: Escribir pruebas RED**
 
 Añadir `test_gate_needs_human_after_valid_integrated_review`, `test_decision_requires_exact_current_bundle_digest`, `test_candidate_drift_invalidates_human_decision`, `test_new_integration_invalidates_old_human_decision`, y `test_approval_never_enables_merge_or_release`.
 
-- [ ] **Step 2: Ejecutar y confirmar RED**
+- [x] **Step 2: Ejecutar y confirmar RED**
 
 Run: los cinco tests; deben fallar antes de implementar la decisión/gate.
 
-- [ ] **Step 3: Implementar decisión inmutable y revalidación**
+- [x] **Step 3: Implementar decisión inmutable y revalidación**
 
 Aceptar solo `APPROVE_FOR_MANUAL_INTEGRATION` o `REJECT`, digest SHA-256 completo y exacto del bundle vigente, integration ID explícito, operator/reason no vacíos. Rechazar overwrite. En gate, rederivar todo el evidence set y descartar cualquier decisión ligada a tree/check/review/latest distinto.
 
-- [ ] **Step 4: Ejecutar GREEN**
+- [x] **Step 4: Ejecutar GREEN**
 
 Run: los cinco tests, los seis tests de Task 2 y P1.3 history/tamper/executable-mode regressions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** — `7abdbbf` (gate/decisión), `04c59bb` (evidencia completa; review aprobado).
 
 `feat: gate manual decision on current integrated review`.
 

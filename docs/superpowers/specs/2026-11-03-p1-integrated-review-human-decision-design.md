@@ -33,7 +33,7 @@ Completar el ciclo operativo de P1 después de los checks del candidato compuest
 
 - `runtime-sessions.json`, schema 1: task identity, execution ID, estado terminal, sesiones observadas por rol/provider, y sessions de reviewers de worker. Escritura atómica al completar `execute()`; ausencia/inconsistencia bloquea integrated review.
 - `integration-review.json`, schema 1: attempt ID ordenable, integration ID, digest del manifiesto integrado, candidate tree, check manifest path/hash, roster exacto y reviewer manifest path/hash/estado/verdict/session por rol.
-- `human-decision.json`, schema 1: decision ID, integración, digest del review bundle, check digest, candidate tree, decisión, operator declarado, reason y timestamp UTC. Archivo inmutable por integración.
+- `human-decision.json`, schema 1: decision ID, integración, digest del review bundle, check digest, candidate tree, decisión, operator declarado, reason y timestamp UTC. Archivo inmutable por integración. `APPROVE_FOR_MANUAL_INTEGRATION` requiere roster completo con todos los veredictos `PASSED`; `REJECT` admite también un roster completo e íntegro con `REQUEST_CHANGES`. Cualquier `BLOCKED`, `FAILED`, manifest faltante o evidencia mal ligada bloquea ambas decisiones.
 - Estados de gate: `BLOCKED` para evidencia ausente/inválida o findings que pidan cambios; `CHANGES_REQUESTED` cuando el roster reporta `REQUEST_CHANGES`; `NEEDS_HUMAN` cuando el bundle actual tiene todos los PASS válidos y no hay decisión; `APPROVED_FOR_MANUAL_INTEGRATION` o `REJECTED_BY_HUMAN` solo con decisión vigente validada.
 - Siempre `automatic_merge=false` y `release_status=NOT_APPROVED`. `evidence_verified` califica evidencia de software/review solamente; `SCIENTIFIC_VALIDITY` queda independiente.
 
