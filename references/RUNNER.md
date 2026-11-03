@@ -7,6 +7,7 @@
 - Bounded **top-level** concurrency, wave scheduling (reviewers later), a global wall-clock deadline, cancellation flag, and logs per process.
 - Codex launched via `codex exec --sandbox read-only --json --skip-git-repo-check --cd ...`; Gemini via `gemini --sandbox --approval-mode default --output-format json -p ...`.
 - Local desktop configuration panel has an explicitly confirmed **4 · Ejecutar auditoría** action, run-status polling, and **Cancelar** action.
+- Optional `--emit-progress-jsonl` emits bounded schema-v1 `SSEC_PROGRESS` snapshots for the supervisor; the default CLI continues to print only its JSON report.
 - Dry-run is the default. The stage runs **audits only**. No file merges, code changes to the original project, real bills measured, or scientific certifications.
 
 ## Commands
@@ -20,9 +21,14 @@ python scripts/run_agents.py examples/seir_desktop_audit.json --project /path/to
 # explicit real execution; cost remains unmetered
 python scripts/run_agents.py examples/seir_desktop_audit.json --project /path/to/project --mode codex --execute --accept-unmetered-cost
 python scripts/run_agents.py examples/seir_desktop_audit.json --project /path/to/project --mode both --execute --accept-unmetered-cost
+
+# optional machine-readable progress events for a dashboard or log consumer
+python scripts/run_agents.py examples/seir_desktop_audit.json --project /path/to/project --mode gemini --execute --accept-unmetered-cost --emit-progress-jsonl
 ```
 
 If `.ssec/config.json` exists, it is loaded and provides concurrency, timeout and audit level. CLI `--mode` overrides the provider choice. Each run writes logs and `run_summary.json` inside `.ssec/runs/<run-id>/`. CLI exit status zero is recorded as `EXIT_ZERO_UNREVIEWED`, **not** `PASS` or `RELEASE_READY`. Review logs manually. Mode `both` invokes separate real processes, **not** an integrated multi-provider parent with autonomous inter-agent messaging.
+
+Progress events contain `schema_version`, run/task IDs, execution state, completed/total counts, per-agent role/provider/status, and `release_status=NOT_APPROVED`. `RUNNING` is emitted only after process creation succeeds. A process exit does not mean its review passed; a valid event never approves integration or release.
 
 ## Safety and limits
 
@@ -37,7 +43,7 @@ If `.ssec/config.json` exists, it is loaded and provides concurrency, timeout an
 
 ## Future milestone
 
-Worktree-based code editing and patch exchange; structured artifact review; hard controls on nested child agents and costs; secure containerized execution and automated release authorization. None of these are implied by this runner.
+Worktree-based code editing and patch exchange; structured artifact review; hard controls on nested child agents and costs; isolated execution for agent-generated model code; and automated release authorization. None of these are implied by this runner. The first SIR prototype runs only trusted callbacks explicitly reviewed and approved by a person; it does not automatically execute generated Python.
 
 Official CLI guidance:
 - https://learn.chatgpt.com/docs/non-interactive-mode

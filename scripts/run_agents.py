@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__:
     from .configuration import DEFAULT_CONFIG, config_path, load_config, validate_config
@@ -123,7 +123,8 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
 def run_one(agent: dict[str, Any], task_id: str,
             source_files: list[tuple[Path, Path]], profiles: dict[str, str],
             run_dir: Path, deadline: float, stop: threading.Event,
-            cancel_file: Path | None = None) -> dict[str, Any]:
+            cancel_file: Path | None = None,
+            on_started: Callable[[str], None] | None = None) -> dict[str, Any]:
     started = time.time()
     name = agent["agent"]
     logs = run_dir / "logs"
@@ -154,10 +155,14 @@ def run_one(agent: dict[str, Any], task_id: str,
             if os.name == "nt":
                 flags = subprocess.CREATE_NEW_PROCESS_GROUP
             with logpath.open("wb") as output, errpath.open("wb") as error:
+                if on_started is not None:
+                    on_started("STARTING")
                 proc = subprocess.Popen(cmd, cwd=workspace, shell=False,
                                         stdout=output, stderr=error,
                                         stdin=subprocess.DEVNULL, creationflags=flags,
                                         start_new_session=(os.name != "nt"))
+                if on_started is not None:
+                    on_started("RUNNING")
                 while proc.poll() is None:
                     if stop.is_set() or (cancel_file is not None and cancel_file.exists()):
                         stop.set()
@@ -203,7 +208,8 @@ def _safe_reports_dir(project: Path) -> Path:
 def execute(task: dict, config: dict, project: Path,
             *, execute_clis: bool = False,
             accept_unmetered_cost: bool = False,
-            cancel_file: Path | None = None) -> dict:
+            cancel_file: Path | None = None,
+            progress_callback: Callable[[dict[str, Any]], None] | None = None) -> dict:
     """Synchronous runner: shared deadline; skip further waves after any failures.
 
     Dry-run does not create files or invoke CLIs. Billing USD is never enforced.
@@ -234,11 +240,41 @@ def execute(task: dict, config: dict, project: Path,
     stop = threading.Event()
     deadline = time.monotonic() + config["budget"]["max_runtime_minutes"] * 60
     assignment_by_role = {a["role"]: a for a in manifest["assignments"]}
+    progress_lock = threading.Lock()
+    role_states = {
+        assignment["agent"]: {"agent": assignment["agent"],
+                              "role": assignment["role"],
+                              "provider": assignment["provider"],
+                              "status": "NOT_STARTED"}
+        for assignment in manifest["assignments"]
+    }
+
+    def emit_progress() -> None:
+        if progress_callback is None:
+            return
+        event = {"schema_version": 1, "run_id": run_id,
+                 "task_id": task["task_id"], "execution": summary["execution"],
+                 "completed": len(summary["results"]),
+                 "total": len(manifest["assignments"]),
+                 "release_status": "NOT_APPROVED",
+                 "roles": [dict(row) for row in role_states.values()]}
+        try:
+            progress_callback(event)
+        except Exception:
+            # Observability failures must not change execution or approval state.
+            pass
+
+    def update_status(agent_id: str, status: str) -> None:
+        with progress_lock:
+            role_states[agent_id]["status"] = status
+            emit_progress()
+
     summary["execution"] = "STARTED"
     summary["run_id"] = run_id
     summary["log_dir"] = str(run_dir)
     summary["max_runtime_minutes"] = config["budget"]["max_runtime_minutes"]
     try:
+        emit_progress()
         for wave in manifest["waves"]:
             if cancel_file is not None and cancel_file.exists():
                 stop.set()
@@ -249,11 +285,16 @@ def execute(task: dict, config: dict, project: Path,
             ) as pool:
                 futures = [pool.submit(
                     run_one, assignment_by_role[role], task["task_id"],
-                    files, p["profiles"], run_dir, deadline, stop, cancel_file
+                    files, p["profiles"], run_dir, deadline, stop, cancel_file,
+                    lambda status, agent_id=assignment_by_role[role]["agent"]:
+                        update_status(agent_id, status)
                 ) for role in wave["roles"]]
                 for future in concurrent.futures.as_completed(futures):
                     entry = future.result()
-                    summary["results"].append(entry)
+                    with progress_lock:
+                        summary["results"].append(entry)
+                        role_states[entry["agent"]]["status"] = entry["status"]
+                        emit_progress()
                     (run_dir / "progress.json").write_text(
                         json.dumps({"task_id": task["task_id"],
                                     "done": len(summary["results"]),
@@ -273,6 +314,7 @@ def execute(task: dict, config: dict, project: Path,
         passed = all(x["status"] == "EXIT_ZERO_UNREVIEWED" for x in summary["results"])
         summary["execution"] = ("PROCESSES_COMPLETED_NOT_AUDITED" if complete and passed
                                 else "PARTIAL_OR_FAILED")
+    emit_progress()
     summary["note"] = ("Exit 0 means CLI exited normally, NOT that audit passed; "
                        "review each log manually. Cost limits are only advisory.")
     (run_dir / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -291,6 +333,8 @@ def main() -> int:
                         help="optional file that cancels all active processes when created")
     parser.add_argument("--accept-unmetered-cost", action="store_true",
                         help="acknowledge that real provider cost is not reliably metered")
+    parser.add_argument("--emit-progress-jsonl", action="store_true",
+                        help="emit versioned SSEC_PROGRESS JSON Lines events on stdout")
     args = parser.parse_args()
     try:
         config_file = args.config or config_path(args.project)
@@ -299,9 +343,16 @@ def main() -> int:
             config["provider_mode"] = args.mode
         config = validate_config(config)
         task = json.loads(args.task_json.read_text(encoding="utf-8"))
+        progress_callback = None
+        if args.emit_progress_jsonl:
+            progress_callback = lambda event: print(
+                "SSEC_PROGRESS " + json.dumps(event, ensure_ascii=False,
+                                               separators=(",", ":")),
+                flush=True)
         report = execute(task, config, args.project, execute_clis=args.execute,
                          accept_unmetered_cost=args.accept_unmetered_cost,
-                         cancel_file=args.cancel_file)
+                         cancel_file=args.cancel_file,
+                         progress_callback=progress_callback)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     print(json.dumps(report, indent=2, ensure_ascii=False))
