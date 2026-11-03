@@ -1,6 +1,8 @@
 """Real process simulation without provider access or network."""
 from __future__ import annotations
 import copy
+import contextlib
+import io
 import json
 import os
 import sys
@@ -8,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from scripts.run_agents import command_for, execute, files_to_copy, plan
+from scripts.run_agents import command_for, execute, files_to_copy, main, plan
 from scripts.configuration import DEFAULT_CONFIG
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -84,6 +86,89 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue(all(x['status']=='EXIT_ZERO_UNREVIEWED' for x in report['results']))
             self.assertEqual((root/'src.py').read_text(),'important=1')
             self.assertFalse((root/'.codex').exists())
+
+    def test_progress_callback_reports_live_roles_without_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'src.py').write_text('a=1')
+            events=[]
+            c=dict(DEFAULT_CONFIG,provider_mode='both',max_parallel_agents=2)
+            command=lambda provider,prompt,cwd: [
+                sys.executable,'-c','import time; time.sleep(0.05)'
+            ]
+            with patch('scripts.run_agents.shutil.which',return_value=sys.executable), \
+                 patch('scripts.run_agents.command_for',side_effect=command):
+                report=execute(
+                    TASK,c,root,execute_clis=True,accept_unmetered_cost=True,
+                    progress_callback=events.append,
+                )
+
+        self.assertEqual(events[0]['schema_version'],1)
+        self.assertTrue(all(item['status']=='NOT_STARTED' for item in events[0]['roles']))
+        self.assertTrue(any(
+            item['status']=='RUNNING'
+            for event in events for item in event['roles']
+        ))
+        final=events[-1]
+        self.assertEqual(final['execution'],report['execution'])
+        self.assertEqual(final['release_status'],'NOT_APPROVED')
+        self.assertTrue(all(item['status']=='EXIT_ZERO_UNREVIEWED' for item in final['roles']))
+
+    def test_progress_jsonl_cli_flag_emits_complete_versioned_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'src.py').write_text('a=1')
+            task_path=root/'task.json'
+            task_path.write_text(json.dumps(TASK),encoding='utf-8')
+            args=[str(task_path),'--project',str(root),'--mode','gemini',
+                  '--execute','--accept-unmetered-cost','--emit-progress-jsonl']
+            output=io.StringIO()
+            command=lambda provider,prompt,cwd: [sys.executable,'-c','pass']
+            with patch('scripts.run_agents.shutil.which',return_value=sys.executable), \
+                 patch('scripts.run_agents.command_for',side_effect=command), \
+                 patch('sys.argv',['run_agents.py',*args]), \
+                 contextlib.redirect_stdout(output):
+                exit_code=main()
+
+        lines=[line for line in output.getvalue().splitlines() if line.startswith('SSEC_PROGRESS ')]
+        self.assertEqual(exit_code,0)
+        self.assertGreater(len(lines),1)
+        events=[json.loads(line.removeprefix('SSEC_PROGRESS ')) for line in lines]
+        self.assertTrue(all(event['schema_version']==1 for event in events))
+        self.assertEqual(events[-1]['release_status'],'NOT_APPROVED')
+
+    def test_progress_jsonl_is_opt_in_and_default_cli_output_stays_plain_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            task_path=root/'task.json'
+            task_path.write_text(json.dumps(TASK),encoding='utf-8')
+            output=io.StringIO()
+            with patch('sys.argv',['run_agents.py',str(task_path),'--project',str(root)]), \
+                 contextlib.redirect_stdout(output):
+                exit_code=main()
+
+        self.assertEqual(exit_code,0)
+        self.assertNotIn('SSEC_PROGRESS ',output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['execution'],'PREVIEW_ONLY')
+
+    def test_progress_keeps_later_roles_not_started_after_failed_wave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'src.py').write_text('a=1')
+            events=[]
+            c=dict(DEFAULT_CONFIG,provider_mode='both',max_parallel_agents=2)
+            command=lambda provider,prompt,cwd: [sys.executable,'-c','import sys; sys.exit(7)']
+            with patch('scripts.run_agents.shutil.which',return_value=sys.executable), \
+                 patch('scripts.run_agents.command_for',side_effect=command):
+                report=execute(
+                    TASK,c,root,execute_clis=True,accept_unmetered_cost=True,
+                    progress_callback=events.append,
+                )
+
+        final=events[-1]
+        self.assertEqual(report['execution'],'PARTIAL_OR_FAILED')
+        self.assertTrue(any(item['status']=='NOT_STARTED' for item in final['roles']))
+        self.assertEqual(final['release_status'],'NOT_APPROVED')
 
     def test_fake_cli_timeout_and_abort(self):
         with tempfile.TemporaryDirectory() as tmp:

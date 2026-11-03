@@ -62,6 +62,8 @@ python scripts/run_agents.py examples/seir_desktop_audit.json --mode both --proj
 python scripts/run_agents.py examples/seir_desktop_audit.json --mode both --project /ruta/proyecto --execute --accept-unmetered-cost
 ```
 
+El supervisor muestra progreso por especialista mediante eventos JSONL versionados (`--emit-progress-jsonl`, habilitado por la GUI). Estos estados describen procesos y conservan `NOT_APPROVED`; no significan que la auditoría haya sido aceptada. La salida JSON original del CLI permanece igual cuando no se activa el flag.
+
 Lee [RUNNER.md](references/RUNNER.md) antes de ejecutar: snapshots no son un sandbox del sistema operativo, límites de USD no son medibles, el resultado no certifica validez científica y no se integran cambios automáticamente.
 
 ## Worktrees y coordinación de desarrollo — v0.2-dev.4

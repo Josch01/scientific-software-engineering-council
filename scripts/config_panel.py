@@ -25,6 +25,65 @@ UI_NOTE = (
     "SSEC prepara perfiles y puede ejecutar auditorías bajo confirmación explícita. "
     "No garantiza aislamiento del SO ni limita el coste real en USD."
 )
+PROGRESS_PREFIX = "SSEC_PROGRESS "
+PROGRESS_LOG_LIMIT = 12000
+PROGRESS_EVENT_LIMIT = 8192
+PROGRESS_TERMINAL_STATES = {
+    "EXIT_ZERO_UNREVIEWED", "LAUNCH_FAILED", "CLI_FAILED", "TIMED_OUT", "CANCELLED"
+}
+PROGRESS_STATES = PROGRESS_TERMINAL_STATES | {"NOT_STARTED", "STARTING", "RUNNING"}
+
+
+def latest_progress_event(text: str) -> dict | None:
+    """Return the last valid bounded schema-v1 runner event from a log tail."""
+    if not isinstance(text, str):
+        return None
+    for line in reversed(text[-PROGRESS_LOG_LIMIT:].splitlines()):
+        if not line.startswith(PROGRESS_PREFIX):
+            continue
+        payload = line[len(PROGRESS_PREFIX):]
+        if len(payload) > PROGRESS_EVENT_LIMIT:
+            continue
+        try:
+            event = json.loads(payload)
+        except (ValueError, TypeError, RecursionError):
+            continue
+        if (not isinstance(event, dict) or type(event.get("schema_version")) is not int
+                or event["schema_version"] != 1):
+            continue
+        if (not isinstance(event.get("run_id"), str) or len(event["run_id"]) > 80
+                or not isinstance(event.get("task_id"), str) or len(event["task_id"]) > 128):
+            continue
+        execution = event.get("execution")
+        if (not isinstance(execution, str) or execution not in {
+            "STARTED", "PROCESSES_COMPLETED_NOT_AUDITED", "PARTIAL_OR_FAILED", "INTERRUPTED"
+        }) or event.get("release_status") != "NOT_APPROVED":
+            continue
+        total, completed, rows = event.get("total"), event.get("completed"), event.get("roles")
+        if (type(total) is not int or not 1 <= total <= 256
+                or type(completed) is not int or not 0 <= completed <= total
+                or not isinstance(rows, list) or len(rows) != total):
+            continue
+        agents = set()
+        valid = True
+        terminal_count = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                valid = False
+                break
+            agent, role = row.get("agent"), row.get("role")
+            provider, status = row.get("provider"), row.get("status")
+            if (not isinstance(agent, str) or not 1 <= len(agent) <= 128 or agent in agents
+                    or not isinstance(role, str) or not 1 <= len(role) <= 96
+                    or not isinstance(provider, str) or provider not in {"codex", "gemini"}
+                    or not isinstance(status, str) or status not in PROGRESS_STATES):
+                valid = False
+                break
+            agents.add(agent)
+            terminal_count += status in PROGRESS_TERMINAL_STATES
+        if valid and terminal_count == completed:
+            return event
+    return None
 
 
 def build_policy(provider: str, cap: str | int, permissions: str,
@@ -173,7 +232,22 @@ def main() -> int:
     ttk.Entry(panel, textvariable=cost, width=12).grid(row=2, column=3, sticky="w", pady=9)
 
     ttk.Label(main_frame, text=UI_NOTE, style="Note.TLabel", wraplength=790).pack(anchor="w", pady=(4, 8))
-    output = tk.Text(main_frame, height=14, wrap="word", bg="#0f1d30", fg="#e7ecf6",
+    progress_frame = ttk.Frame(main_frame, style="Panel.TFrame", padding=(12, 8))
+    progress_frame.pack(fill="x", pady=(4, 8))
+    progress_text = tk.StringVar(value="Sin auditoría activa")
+    ttk.Label(progress_frame, textvariable=progress_text, style="Panel.TLabel").pack(anchor="w")
+    progress_bar = ttk.Progressbar(progress_frame, maximum=1, value=0, mode="determinate")
+    progress_bar.pack(fill="x", pady=(5, 7))
+    progress_table = ttk.Treeview(progress_frame, columns=("role", "provider", "status"),
+                                  show="headings", height=4)
+    for key, title, width in (("role", "Especialista", 330),
+                              ("provider", "Proveedor", 110),
+                              ("status", "Estado", 220)):
+        progress_table.heading(key, text=title)
+        progress_table.column(key, width=width, anchor="w")
+    progress_table.pack(fill="x")
+
+    output = tk.Text(main_frame, height=9, wrap="word", bg="#0f1d30", fg="#e7ecf6",
                      insertbackground="white", font=("Consolas", 9), relief="flat", padx=15, pady=12)
     output.pack(fill="both", expand=True)
 
@@ -237,6 +311,17 @@ def main() -> int:
 
     active_run = {"process": None, "cancel": None, "log": None}
 
+    def show_progress(event: dict):
+        progress_bar.configure(maximum=event["total"], value=event["completed"])
+        progress_text.set(
+            f"{event['completed']} / {event['total']} procesos · {event['execution']} · "
+            "liberación NO APROBADA"
+        )
+        for item in progress_table.get_children():
+            progress_table.delete(item)
+        for row in event["roles"]:
+            progress_table.insert("", "end", values=(row["role"], row["provider"], row["status"]))
+
     def poll_run():
         proc = active_run["process"]
         if proc is None:
@@ -246,7 +331,11 @@ def main() -> int:
             if logfile and logfile.exists():
                 data = logfile.read_text(encoding="utf-8", errors="replace")
                 if data:
-                    write_output(data[-12000:])
+                    tail = data[-PROGRESS_LOG_LIMIT:]
+                    event = latest_progress_event(tail)
+                    if event is not None:
+                        show_progress(event)
+                    write_output(tail)
         except OSError:
             pass
         if proc.poll() is None:
@@ -290,7 +379,8 @@ def main() -> int:
             cmd = [sys.executable, str(_Path(__file__).resolve().parent / "run_agents.py"),
                    str(_Path(task_file.get()).resolve()), "--project", str(p),
                    "--config", str(config_path(p)), "--execute",
-                   "--accept-unmetered-cost", "--cancel-file", str(cancel)]
+                   "--accept-unmetered-cost", "--cancel-file", str(cancel),
+                   "--emit-progress-jsonl"]
             with log.open("wb") as handle:
                 active_run["process"] = subprocess.Popen(cmd, cwd=p, stdin=subprocess.DEVNULL,
                                                         stdout=handle, stderr=subprocess.STDOUT,

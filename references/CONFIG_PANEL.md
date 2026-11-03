@@ -46,8 +46,10 @@ Si se pasa `--mode` y `--config`, deben coincidir.
 
 ## Próximas integraciones
 
-Un runner multiplataforma real de los procesos (con sandbox/worktrees, kill-on-budget, resultados verificables, aprobaciones y control de concurrencia) sigue siendo el siguiente componente de v0.2. No se implementa accidentalmente desde el panel.
+El panel separa configuración, confirmación de ejecución y supervisión. Sus etiquetas de progreso reflejan estados de procesos y nunca equivalen a aprobación ni a sandbox efectivo.
 
 ## Ejecutar una auditoría real (v0.2-dev.3)
 
 Botón **4 · Ejecutar auditoría**: exige `kind=audit`, solicita confirmación explícita del gasto no medido, guarda la configuración y ejecuta el runner en un proceso independiente. Botón **Cancelar**: crea una señal que el runner comprueba mientras espera a sus procesos. El panel no permite ejecución real de tareas `build` o `debug` todavía. Consulte `references/RUNNER.md` para límites y logs.
+
+Durante la ejecución, la barra y tabla muestran estados por especialista a partir de eventos JSONL schema v1 del runner; el registro de texto combinado permanece visible. `EXIT_ZERO_UNREVIEWED` es solo una salida de proceso normal y la interfaz conserva `NOT_APPROVED`. El parser ignora líneas mal formadas, versiones desconocidas y eventos que reclamen aprobación.
