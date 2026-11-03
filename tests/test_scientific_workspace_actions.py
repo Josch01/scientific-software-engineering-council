@@ -11,8 +11,14 @@ from scripts.scientific_workspace_loader import load_scientific_workspace
 from scripts.scientific_workspace_view import build_workspace_view_model
 
 
-def _workspace(root: Path):
-    model_bytes = b'{"equations":"SIR test fixture"}'
+def _workspace(
+    root: Path,
+    *,
+    model_content: bytes | None = None,
+    additional_model_content: bytes | None = None,
+    series: tuple[str, ...] = ("I",),
+):
+    model_bytes = model_content or b'{"equations":"SIR test fixture"}'
     (root / "model.json").write_bytes(model_bytes)
     initial_solution = solve_rk4(
         OdeProblem(
@@ -25,21 +31,28 @@ def _workspace(root: Path):
     )
     result_bytes = json.dumps(initial_solution.to_dict()).encode("utf-8")
     (root / "simulation.json").write_bytes(result_bytes)
+    resources = [
+        {"id": "model", "kind": "model_spec", "path": "model.json",
+         "sha256": hashlib.sha256(model_bytes).hexdigest()},
+        {"id": "simulation", "kind": "simulation_result", "path": "simulation.json",
+         "sha256": hashlib.sha256(result_bytes).hexdigest()},
+    ]
+    if additional_model_content is not None:
+        (root / "model-additional.json").write_bytes(additional_model_content)
+        resources.append({
+            "id": "model-additional", "kind": "model_spec", "path": "model-additional.json",
+            "sha256": hashlib.sha256(additional_model_content).hexdigest(),
+        })
     manifest = {
         "schema_version": 1,
         "workspace_id": "approved-action-test",
         "title": "Approved action test",
-        "resources": [
-            {"id": "model", "kind": "model_spec", "path": "model.json",
-             "sha256": hashlib.sha256(model_bytes).hexdigest()},
-            {"id": "simulation", "kind": "simulation_result", "path": "simulation.json",
-             "sha256": hashlib.sha256(result_bytes).hexdigest()},
-        ],
+        "resources": resources,
         "sections": [{
             "id": "results", "title": "Results", "components": [{
                 "id": "trajectory", "type": "simulation_plot", "title": "Trajectory",
                 "resource_refs": ["simulation"],
-                "config": {"x_axis": "time", "series": ["I"]},
+                "config": {"x_axis": "time", "series": list(series)},
             }],
         }],
     }
@@ -49,7 +62,141 @@ def _workspace(root: Path):
     return loaded, component
 
 
+def _sir_model_bytes() -> bytes:
+    model = {
+        "schema_version": 1,
+        "model_type": "sir",
+        "equation_set": "sir_frequency_dependent_v1",
+        "equations": {
+            "dS/dt": "-beta(t) * S * I / N",
+            "dI/dt": "beta(t) * S * I / N - gamma(t) * I",
+            "dR/dt": "gamma(t) * I",
+        },
+        "states": ["S", "I", "R"],
+        "initial_conditions": {"S": 90.0, "I": 10.0, "R": 0.0},
+        "parameters": {
+            "beta": {"kind": "constant", "value": 0.3},
+            "gamma": {"kind": "constant", "value": 0.1},
+        },
+        "t_span": [0.0, 1.0],
+        "units": {"time": "day", "population": "person", "rate": "1/day"},
+        "integrator": {
+            "method": "RK4_FIXED_STEP", "max_step": 0.1, "max_steps": 10
+        },
+    }
+    return json.dumps(model).encode("utf-8")
+
+
 class ApprovedSimulationActionTests(unittest.TestCase):
+    def test_builtin_sir_action_runs_only_the_verified_model_spec(self):
+        from scripts import scientific_workspace_actions as actions_api
+        from scripts.scientific_workspace_actions import (
+            request_approved_simulation,
+            run_approved_simulation,
+        )
+        build_actions = getattr(actions_api, "sir_simulation_actions_for_workspace", None)
+        self.assertIsNotNone(build_actions, "SSEC must bind declarative SIR models to approved actions")
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, component = _workspace(
+                Path(temp), model_content=_sir_model_bytes()
+            )
+            actions = build_actions(workspace)
+            action = actions[component.component_id]
+            model_sha256 = next(
+                resource.sha256 for resource in workspace.resources
+                if resource.kind == "model_spec"
+            )
+            ticket = request_approved_simulation(
+                action, workspace, component, confirm=lambda _prompt: True
+            )
+            result = run_approved_simulation(ticket)
+
+        self.assertIn(model_sha256, action.label)
+        self.assertEqual(result.content["series_names"], ("I",))
+        self.assertGreater(result.content["values"][-1][1], 10.0)
+
+    def test_builtin_sir_action_refuses_ambiguous_model_specs(self):
+        from scripts.scientific_workspace_actions import sir_simulation_actions_for_workspace
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, _component = _workspace(
+                Path(temp),
+                model_content=_sir_model_bytes(),
+                additional_model_content=_sir_model_bytes(),
+            )
+
+            with self.assertRaisesRegex(ValueError, "exactly one model_spec"):
+                sir_simulation_actions_for_workspace(workspace)
+
+    def test_builtin_sir_action_rejects_plot_series_outside_contract_states(self):
+        from scripts.scientific_workspace_actions import sir_simulation_actions_for_workspace
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, _component = _workspace(
+                Path(temp), model_content=_sir_model_bytes(), series=("X",)
+            )
+
+            with self.assertRaisesRegex(ValueError, "outside the SIR model"):
+                sir_simulation_actions_for_workspace(workspace)
+
+    def test_builtin_sir_action_refuses_same_workspace_id_with_changed_model_digest(self):
+        from scripts.scientific_workspace_actions import (
+            request_approved_simulation,
+            run_approved_simulation,
+            sir_simulation_actions_for_workspace,
+        )
+
+        changed_model = json.loads(_sir_model_bytes())
+        changed_model["parameters"]["beta"]["value"] = 0.25
+        with tempfile.TemporaryDirectory() as first_temp, tempfile.TemporaryDirectory() as second_temp:
+            original, component = _workspace(Path(first_temp), model_content=_sir_model_bytes())
+            changed, changed_component = _workspace(
+                Path(second_temp), model_content=json.dumps(changed_model).encode("utf-8")
+            )
+            action = sir_simulation_actions_for_workspace(original)[component.component_id]
+            ticket = request_approved_simulation(
+                action, changed, changed_component, confirm=lambda _prompt: True
+            )
+
+            with self.assertRaisesRegex(ValueError, "digest changed"):
+                run_approved_simulation(ticket)
+
+    def test_workspace_window_actions_include_builtin_sir_and_host_override(self):
+        from scripts.scientific_workspace_actions import ApprovedSimulationAction
+        from scripts import scientific_workspace_app as app
+        prepare_actions = getattr(app, "_simulation_actions_for_workspace", None)
+        self.assertIsNotNone(prepare_actions, "workspace display must prepare SIR actions")
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, component = _workspace(Path(temp), model_content=_sir_model_bytes())
+            builtin_actions, error = prepare_actions(workspace, {})
+            host_action = ApprovedSimulationAction(
+                workspace_id=workspace.summary.workspace_id,
+                label="Host approved",
+                callback=lambda _loaded, _view: None,
+            )
+            effective_actions, override_error = prepare_actions(
+                workspace, {component.component_id: host_action}
+            )
+
+        self.assertIsNone(error)
+        self.assertIn(component.component_id, builtin_actions)
+        self.assertIsNone(override_error)
+        self.assertIs(effective_actions[component.component_id], host_action)
+
+    def test_workspace_window_exposes_invalid_sir_contract_error_and_no_action(self):
+        from scripts import scientific_workspace_app as app
+
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, _component = _workspace(
+                Path(temp), model_content=b'{"schema_version":1,"model_type":"sir"}'
+            )
+            actions, error = app._simulation_actions_for_workspace(workspace, {})
+
+        self.assertEqual(actions, {})
+        self.assertIn("missing or unknown fields", error)
+
     def test_ui_action_selection_uses_only_matching_host_registered_callback(self):
         from scripts.scientific_workspace_actions import ApprovedSimulationAction
         from scripts.scientific_workspace_app import _approved_action_for

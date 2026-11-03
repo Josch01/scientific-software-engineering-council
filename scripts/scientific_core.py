@@ -29,6 +29,16 @@ _MAX_OBSERVATION_VARIABLES = 100
 _MAX_OBSERVATION_VALUES = 1_000_000
 _MAX_OBSERVATION_PROVENANCE_FIELDS = 100
 _MAX_OBSERVATION_TEXT_LENGTH = 4096
+_SIR_STATE_NAMES = ("S", "I", "R")
+_SIR_EQUATION_SET = "sir_frequency_dependent_v1"
+_SIR_EQUATIONS = {
+    "dS/dt": "-beta(t) * S * I / N",
+    "dI/dt": "beta(t) * S * I / N - gamma(t) * I",
+    "dR/dt": "gamma(t) * I",
+}
+_MAX_SIR_CONTRACT_BYTES = 1_048_576
+_MAX_SIR_PROFILE_POINTS = 128
+_MAX_SIR_STEPS = 99_999
 
 
 def _finite_float(value: object, label: str) -> float:
@@ -103,6 +113,342 @@ def _finite_vector(
             f"{label} dimension mismatch: expected {expected_length}, got {len(raw_values)}"
         )
     return tuple(_finite_float(value, f"{label}[{index}]") for index, value in enumerate(raw_values))
+
+
+def _sir_text(value: object, label: str, *, maximum: int = 64) -> str:
+    if (not isinstance(value, str) or not value.strip() or value != value.strip()
+            or len(value) > maximum):
+        raise ValueError(f"{label} must be a non-empty trimmed string of at most {maximum} characters")
+    return value
+
+
+def _sir_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_sir_json_constant(token: str) -> object:
+    raise ValueError(f"non-standard JSON constant {token!r} is not allowed")
+
+
+@dataclass(frozen=True, slots=True)
+class TimeFunction:
+    """An explicitly admitted nonnegative coefficient profile."""
+
+    kind: str
+    value: float | None = None
+    points: tuple[tuple[float, float], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind == "constant":
+            if self.points:
+                raise ValueError("constant time function cannot contain points")
+            if self.value is None:
+                raise ValueError("constant time function requires a value")
+            value = _finite_float(self.value, "constant coefficient")
+            if value < 0.0:
+                raise ValueError("coefficient values must be nonnegative")
+            object.__setattr__(self, "value", value)
+            return
+        if self.kind != "piecewise_linear":
+            raise ValueError("time function kind must be 'constant' or 'piecewise_linear'")
+        if self.value is not None:
+            raise ValueError("piecewise_linear time function cannot contain a constant value")
+        if not isinstance(self.points, (tuple, list)) or not 2 <= len(self.points) <= _MAX_SIR_PROFILE_POINTS:
+            raise ValueError(
+                f"piecewise_linear points must contain 2 to {_MAX_SIR_PROFILE_POINTS} entries"
+            )
+        normalized: list[tuple[float, float]] = []
+        previous_time: float | None = None
+        for index, point in enumerate(self.points):
+            if not isinstance(point, (tuple, list)) or len(point) != 2:
+                raise ValueError(f"points[{index}] must contain exactly time and value")
+            time = _finite_float(point[0], f"points[{index}].time")
+            value = _finite_float(point[1], f"points[{index}].value")
+            if value < 0.0:
+                raise ValueError("coefficient values must be nonnegative")
+            if previous_time is not None and time <= previous_time:
+                raise ValueError("piecewise_linear point times must be strictly increasing")
+            previous_time = time
+            normalized.append((time, value))
+        object.__setattr__(self, "points", tuple(normalized))
+
+    @classmethod
+    def from_dict(
+        cls, payload: object, *, t_span: tuple[float, float]
+    ) -> "TimeFunction":
+        if not isinstance(payload, Mapping) or "kind" not in payload:
+            raise ValueError("time function must be an object with a declared kind")
+        kind = payload["kind"]
+        if kind == "constant":
+            if set(payload) != {"kind", "value"}:
+                raise ValueError("constant time function requires exactly kind and value")
+            return cls(kind="constant", value=payload["value"])
+        if kind != "piecewise_linear":
+            raise ValueError("time function kind must be 'constant' or 'piecewise_linear'")
+        if set(payload) != {"kind", "points"}:
+            raise ValueError("piecewise_linear time function requires exactly kind and points")
+        raw_points = payload["points"]
+        if (not isinstance(raw_points, Sequence)
+                or isinstance(raw_points, (str, bytes, bytearray))):
+            raise ValueError("piecewise_linear points must be a sequence")
+        if not 2 <= len(raw_points) <= _MAX_SIR_PROFILE_POINTS:
+            raise ValueError(
+                f"piecewise_linear points must contain 2 to {_MAX_SIR_PROFILE_POINTS} entries"
+            )
+        profile = cls(kind="piecewise_linear", points=tuple(raw_points))
+        if profile.points[0][0] != t_span[0] or profile.points[-1][0] != t_span[1]:
+            raise ValueError("piecewise_linear points must cover both t_span endpoints")
+        return profile
+
+    def evaluate(self, time: float) -> float:
+        time_value = _finite_float(time, "time function evaluation time")
+        if self.kind == "constant":
+            assert self.value is not None
+            return self.value
+        if time_value < self.points[0][0] or time_value > self.points[-1][0]:
+            raise ValueError("piecewise_linear evaluation time is outside its declared interval")
+        for (left_time, left_value), (right_time, right_value) in zip(
+            self.points, self.points[1:]
+        ):
+            if time_value <= right_time:
+                fraction = (time_value - left_time) / (right_time - left_time)
+                return left_value + fraction * (right_value - left_value)
+        return self.points[-1][1]
+
+    def to_dict(self) -> dict[str, object]:
+        if self.kind == "constant":
+            return {"kind": self.kind, "value": self.value}
+        return {"kind": self.kind, "points": [list(point) for point in self.points]}
+
+
+@dataclass(frozen=True, slots=True)
+class SirModelDefinition:
+    """Closed, versioned frequency-dependent SIR contract; no user expressions."""
+
+    t_span: tuple[float, float]
+    initial_state: tuple[float, float, float]
+    parameters: Mapping[str, TimeFunction]
+    time_unit: str
+    population_unit: str
+    rate_unit: str
+    max_step: float
+    max_steps: int
+    equation_set: str = _SIR_EQUATION_SET
+
+    def __post_init__(self) -> None:
+        if self.equation_set != _SIR_EQUATION_SET:
+            raise ValueError(f"unsupported SIR equation_set {self.equation_set!r}")
+        interval = _finite_vector(self.t_span, "t_span", expected_length=2)
+        if interval[1] <= interval[0]:
+            raise ValueError("t_span must be a finite forward interval with t1 > t0")
+        object.__setattr__(self, "t_span", (interval[0], interval[1]))
+
+        initial = _finite_vector(self.initial_state, "initial_conditions", expected_length=3)
+        if any(value < 0.0 for value in initial):
+            raise ValueError("SIR initial conditions must be nonnegative")
+        try:
+            population = math.fsum(initial)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("SIR initial population must be finite and positive") from exc
+        if not math.isfinite(population) or population <= 0.0:
+            raise ValueError("SIR initial population must be finite and positive")
+        object.__setattr__(self, "initial_state", initial)
+
+        if not isinstance(self.parameters, Mapping) or set(self.parameters) != {"beta", "gamma"}:
+            raise ValueError("SIR parameters must contain exactly beta and gamma")
+        profiles: dict[str, TimeFunction] = {}
+        for name in ("beta", "gamma"):
+            profile = self.parameters[name]
+            if not isinstance(profile, TimeFunction):
+                raise ValueError(f"SIR parameter {name!r} must be a TimeFunction")
+            if profile.kind == "piecewise_linear" and (
+                profile.points[0][0] != interval[0] or profile.points[-1][0] != interval[1]
+            ):
+                raise ValueError(f"SIR parameter {name!r} must cover both t_span endpoints")
+            profiles[name] = profile
+        object.__setattr__(self, "parameters", MappingProxyType(profiles))
+
+        time_unit = _sir_text(self.time_unit, "units.time")
+        population_unit = _sir_text(self.population_unit, "units.population")
+        rate_unit = _sir_text(self.rate_unit, "units.rate")
+        if rate_unit != f"1/{time_unit}":
+            raise ValueError("units.rate must equal 1/<units.time>")
+        object.__setattr__(self, "time_unit", time_unit)
+        object.__setattr__(self, "population_unit", population_unit)
+        object.__setattr__(self, "rate_unit", rate_unit)
+
+        max_step = _finite_float(self.max_step, "integrator.max_step")
+        if max_step <= 0.0:
+            raise ValueError("integrator.max_step must be positive")
+        if type(self.max_steps) is not int or not 1 <= self.max_steps <= _MAX_SIR_STEPS:
+            raise ValueError(f"integrator.max_steps must be from 1 to {_MAX_SIR_STEPS}")
+        needed = (interval[1] - interval[0]) / max_step
+        if not math.isfinite(needed) or math.ceil(needed) > self.max_steps:
+            raise ValueError("SIR integration exceeds the declared step budget")
+        step_count = max(1, math.ceil(needed))
+        actual_step = (interval[1] - interval[0]) / step_count
+        for profile in profiles.values():
+            if profile.kind != "piecewise_linear":
+                continue
+            for knot_time, _knot_value in profile.points:
+                grid_index = round((knot_time - interval[0]) / actual_step)
+                if not 0 <= grid_index <= step_count:
+                    raise ValueError("piecewise_linear knot must align with the RK4 time grid")
+                grid_time = interval[0] + grid_index * actual_step
+                tolerance = max(
+                    math.ulp(knot_time), math.ulp(grid_time), abs(actual_step) * 1e-12
+                )
+                if abs(knot_time - grid_time) > tolerance:
+                    raise ValueError("piecewise_linear knot must align with the RK4 time grid")
+        object.__setattr__(self, "max_step", max_step)
+
+    @property
+    def state_names(self) -> tuple[str, str, str]:
+        return _SIR_STATE_NAMES
+
+    @property
+    def initial_population(self) -> float:
+        return math.fsum(self.initial_state)
+
+    @classmethod
+    def from_json(cls, payload: bytes | str) -> "SirModelDefinition":
+        """Parse a bounded UTF-8 JSON contract with duplicate keys rejected."""
+        if isinstance(payload, bytes):
+            raw_bytes = payload
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("SIR model JSON must be valid UTF-8") from exc
+        elif isinstance(payload, str):
+            text = payload
+            try:
+                raw_bytes = text.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("SIR model JSON must be valid UTF-8") from exc
+        else:
+            raise ValueError("SIR model JSON must be bytes or text")
+        if len(raw_bytes) > _MAX_SIR_CONTRACT_BYTES:
+            raise ValueError(
+                f"SIR model JSON exceeds the {_MAX_SIR_CONTRACT_BYTES}-byte limit"
+            )
+        try:
+            parsed = json.loads(
+                text,
+                object_pairs_hook=_sir_json_object,
+                parse_constant=_reject_sir_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+            raise ValueError(f"invalid SIR model JSON: {exc}") from exc
+        return cls.from_dict(parsed)
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "SirModelDefinition":
+        required = {
+            "schema_version", "model_type", "equation_set", "equations", "states",
+            "initial_conditions", "parameters", "t_span", "units", "integrator",
+        }
+        if not isinstance(payload, Mapping) or set(payload) != required:
+            raise ValueError("SIR model contract has missing or unknown fields")
+        if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+            raise ValueError("unsupported SIR model schema_version; expected 1")
+        if payload["model_type"] != "sir":
+            raise ValueError("model_type must be 'sir'")
+        if payload["equation_set"] != _SIR_EQUATION_SET:
+            raise ValueError(f"unsupported SIR equation_set; expected {_SIR_EQUATION_SET!r}")
+        equations = payload["equations"]
+        if not isinstance(equations, Mapping) or dict(equations) != _SIR_EQUATIONS:
+            raise ValueError("equations must exactly match the declared SIR equation_set")
+        states = payload["states"]
+        if (not isinstance(states, Sequence) or isinstance(states, (str, bytes, bytearray))
+                or len(states) != len(_SIR_STATE_NAMES)
+                or tuple(states) != _SIR_STATE_NAMES):
+            raise ValueError("states must be exactly ['S', 'I', 'R'] in that order")
+
+        initial = payload["initial_conditions"]
+        if not isinstance(initial, Mapping) or set(initial) != set(_SIR_STATE_NAMES):
+            raise ValueError("initial_conditions must contain exactly S, I, and R")
+        initial_state = tuple(
+            _finite_float(initial[name], f"initial_conditions.{name}")
+            for name in _SIR_STATE_NAMES
+        )
+        raw_interval = payload["t_span"]
+        if (not isinstance(raw_interval, Sequence)
+                or isinstance(raw_interval, (str, bytes, bytearray))
+                or len(raw_interval) != 2):
+            raise ValueError("t_span dimension mismatch: expected 2 values")
+        interval = _finite_vector(raw_interval, "t_span", expected_length=2)
+        if interval[1] <= interval[0]:
+            raise ValueError("t_span must be a finite forward interval with t1 > t0")
+
+        parameters = payload["parameters"]
+        if not isinstance(parameters, Mapping) or set(parameters) != {"beta", "gamma"}:
+            raise ValueError("SIR parameters must contain exactly beta and gamma")
+        profiles = {
+            name: TimeFunction.from_dict(parameters[name], t_span=interval)
+            for name in ("beta", "gamma")
+        }
+        units = payload["units"]
+        if not isinstance(units, Mapping) or set(units) != {"time", "population", "rate"}:
+            raise ValueError("units must contain exactly time, population, and rate")
+        integrator = payload["integrator"]
+        if (not isinstance(integrator, Mapping)
+                or set(integrator) != {"method", "max_step", "max_steps"}):
+            raise ValueError("integrator must contain exactly method, max_step, and max_steps")
+        if integrator["method"] != "RK4_FIXED_STEP":
+            raise ValueError("integrator.method must be 'RK4_FIXED_STEP'")
+        return cls(
+            t_span=interval,
+            initial_state=initial_state,
+            parameters=profiles,
+            time_unit=units["time"],
+            population_unit=units["population"],
+            rate_unit=units["rate"],
+            max_step=integrator["max_step"],
+            max_steps=integrator["max_steps"],
+            equation_set=payload["equation_set"],
+        )
+
+    def rhs(
+        self, time: float, state: State, _parameters: Mapping[str, float]
+    ) -> State:
+        time_value = _finite_float(time, "SIR evaluation time")
+        if time_value < self.t_span[0] or time_value > self.t_span[1]:
+            raise ValueError("SIR evaluation time is outside t_span")
+        state_values = _finite_vector(state, "SIR state", expected_length=3)
+        susceptible, infectious, recovered = state_values
+        beta = self.parameters["beta"].evaluate(time_value)
+        gamma = self.parameters["gamma"].evaluate(time_value)
+        incidence = beta * susceptible * infectious / self.initial_population
+        removal = gamma * infectious
+        derivative = (-incidence, incidence - removal, removal)
+        return _finite_vector(derivative, "SIR derivative", expected_length=3)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "model_type": "sir",
+            "equation_set": self.equation_set,
+            "equations": dict(_SIR_EQUATIONS),
+            "states": list(_SIR_STATE_NAMES),
+            "initial_conditions": dict(zip(_SIR_STATE_NAMES, self.initial_state)),
+            "parameters": {name: profile.to_dict() for name, profile in self.parameters.items()},
+            "t_span": list(self.t_span),
+            "units": {
+                "time": self.time_unit,
+                "population": self.population_unit,
+                "rate": self.rate_unit,
+            },
+            "integrator": {
+                "method": "RK4_FIXED_STEP",
+                "max_step": self.max_step,
+                "max_steps": self.max_steps,
+            },
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,6 +973,43 @@ def solve_rk4(
         step_size=step_size,
         step_count=step_count,
     )
+
+
+def solve_sir_model(definition: SirModelDefinition) -> OdeSolution:
+    """Run the validated SIR contract with the existing RK4 solver.
+
+    The exact SIR invariants are checked after integration. Invalid numerical
+    output is rejected; compartments are never clipped or projected.
+    """
+    if not isinstance(definition, SirModelDefinition):
+        raise ValueError("definition must be a validated SirModelDefinition")
+    problem = OdeProblem(
+        rhs=definition.rhs,
+        t_span=definition.t_span,
+        initial_state=definition.initial_state,
+        parameters={},
+        state_names=definition.state_names,
+    )
+    solution = solve_rk4(
+        problem,
+        max_step=definition.max_step,
+        max_steps=definition.max_steps,
+    )
+    population = definition.initial_population
+    population_tolerance = max(1e-12, population * 1e-9)
+    for index, state in enumerate(solution.states):
+        if any(value < 0.0 for value in state):
+            raise ValueError(
+                f"RK4 produced a negative compartment at step {index}; reduce max_step"
+            )
+        try:
+            state_population = math.fsum(state)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(f"SIR population invariant failed at step {index}") from exc
+        if (not math.isfinite(state_population)
+                or abs(state_population - population) > population_tolerance):
+            raise ValueError(f"SIR population invariant drift exceeded tolerance at step {index}")
+    return solution
 
 
 def evaluate_observations(
