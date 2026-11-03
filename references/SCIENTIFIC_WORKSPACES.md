@@ -38,7 +38,7 @@ Open the first reusable Tkinter workspace window with:
 python scripts/scientific_workspace_app.py --project-root PROJECT_ROOT workspace.json
 ```
 
-The window can also start without arguments and use **Abrir espacio…** to select a project root and its manifest. The loader checks the manifest and every declared SHA-256 before the UI receives captured bytes. Sections and components come from the validated manifest and are rendered by a fixed registry; manifest text cannot provide Python renderer code. The `code_view` component displays bounded UTF-8 text only. No project or agent-generated Python is imported or executed.
+The window can also start without arguments and use **Abrir espacio…** to select a project root and its manifest. From the SSEC configuration panel, **Abrir espacio científico** creates a child `Toplevel` on the existing Tk root and starts the manifest picker in the selected project. Both paths use the same loader, which checks the manifest and every declared SHA-256 before the UI receives captured bytes. Sections and components come from the validated manifest and are rendered by a fixed registry; manifest text cannot provide Python renderer code. The `code_view` component displays bounded UTF-8 text only. No project or agent-generated Python is imported or executed.
 
 To exercise loading and view preparation without Tk or a display server:
 

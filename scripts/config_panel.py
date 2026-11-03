@@ -50,6 +50,17 @@ def build_policy(provider: str, cap: str | int, permissions: str,
     })
 
 
+def open_scientific_workspace(parent, project_root, *, window_factory=None):
+    """Open the workspace view as a child of the already-running supervisor."""
+    if window_factory is None:
+        if __package__:
+            from .scientific_workspace_app import create_workspace_window
+        else:
+            from scientific_workspace_app import create_workspace_window
+        window_factory = create_workspace_window
+    return window_factory(None, parent=parent, project_root=project_root)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
@@ -299,6 +310,12 @@ def main() -> int:
             active_run["cancel"].write_text("cancel", encoding="utf-8")
             write_output("Cancelación solicitada. Los agentes terminarán al recibir la señal.")
 
+    def open_workspace():
+        try:
+            open_scientific_workspace(root, project.get())
+        except (OSError, ValueError, TypeError, ImportError, tk.TclError) as exc:
+            messagebox.showerror("No se pudo abrir el espacio científico", str(exc), parent=root)
+
     buttons = ttk.Frame(main_frame, style="Main.TFrame")
     buttons.pack(fill="x", pady=(12, 0))
     ttk.Button(buttons, text="1 · Previsualizar", command=preview,
@@ -307,6 +324,8 @@ def main() -> int:
                style="Panel.TButton").pack(side="left", padx=(0, 9))
     ttk.Button(buttons, text="3 · Preparar perfiles", command=apply,
                style="Panel.TButton").pack(side="right")
+    ttk.Button(buttons, text="Abrir espacio científico", command=open_workspace,
+               style="Panel.TButton").pack(side="right", padx=5)
     run_button = ttk.Button(buttons, text="4 · Ejecutar auditoría", command=start_audit,
                             style="Panel.TButton")
     run_button.pack(side="left", padx=5)

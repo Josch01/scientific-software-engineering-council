@@ -137,6 +137,47 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
         self.assertEqual(fraction, 1.0)
         self.assertEqual(middle, 0.0)
 
+    def test_window_root_uses_child_toplevel_when_parent_is_supplied(self):
+        from scripts.scientific_workspace_app import _create_window_root
+
+        class TkFactory:
+            def __init__(self):
+                self.calls = []
+
+            def Tk(self):
+                value = object()
+                self.calls.append(("root", None, value))
+                return value
+
+            def Toplevel(self, parent):
+                value = object()
+                self.calls.append(("child", parent, value))
+                return value
+
+        toolkit = TkFactory()
+        parent = object()
+        child = _create_window_root(toolkit, parent)
+        root = _create_window_root(toolkit, None)
+
+        self.assertEqual(toolkit.calls[0][0], "child")
+        self.assertIs(toolkit.calls[0][1], parent)
+        self.assertIs(child, toolkit.calls[0][2])
+        self.assertEqual(toolkit.calls[1][0], "root")
+        self.assertIsNone(toolkit.calls[1][1])
+        self.assertIs(root, toolkit.calls[1][2])
+
+    def test_project_root_hint_accepts_only_an_existing_directory(self):
+        from scripts.scientific_workspace_app import _project_root_hint
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            hint = _project_root_hint(root)
+            self.assertIsNotNone(hint)
+            self.assertTrue(hint.samefile(root))
+            self.assertIsNone(_project_root_hint(root / "missing"))
+            self.assertIsNone(_project_root_hint(None))
+            self.assertIsNone(_project_root_hint(""))
+
 
 if __name__ == "__main__":
     unittest.main()
