@@ -1,6 +1,6 @@
 # P2.3 bounded least-squares evidence
 
-**State:** local verification complete; branch CI pending. This is an experimental numerical utility, not a scientific result.
+**State:** local verification and branch CI complete. This is an experimental numerical utility, not a scientific result.
 
 ## Implemented
 
@@ -16,6 +16,7 @@ The API composes with the existing fixed-step RK4 solver. A synthetic decay exam
 | Docker/Linux, `python:3.14.0-bookworm` | Same unittest command | PASS, 39 tests |
 | Windows, local Python | `python -m py_compile scripts/scientific_core.py tests/test_scientific_optimization.py` | PASS |
 | Windows, local Python | `git diff --check` | PASS |
+| GitHub Actions | [Run #94](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41690005347), Windows/Ubuntu × Python 3.11/3.12 | PASS, 4/4 jobs |
 
 Focused cases cover overdetermined analytic recovery, a constrained optimum, nonlinear recovery from a bound, small and underflowing residual scales, mismatched Jacobian column magnitudes, exact initial-value preservation under wide bounds, finite-difference cancellation at wide bounds, synthetic RK4 composition, immutable JSON output, input/callback failures, dimension changes, work limits, and Jacobian allocation bounds.
 
@@ -27,9 +28,9 @@ Focused cases cover overdetermined analytic recovery, a constrained optimum, non
 - Callbacks execute in-process and are not sandboxed. The optimizer bounds its own callback count and dense Jacobian dimensions, but not callback runtime or memory.
 - Extreme finite inputs whose least-squares cost overflows are rejected with `ValueError`; cost underflow is represented explicitly while optimization compares the residual norm.
 - No modified SIR equations, initial conditions, units, or experimental data were provided. SIR-specific fitting and scientific review are therefore `NOT_RUN`.
-- AGY CLI E2E/provider-backed review is `NOT_RUN`; branch CI is pending. The local independent code review recorded below is not a provider E2E. This report does not substitute for either.
+- AGY CLI E2E/provider-backed review is `NOT_RUN`; the local independent code review recorded below is not a provider E2E. This report does not substitute for either.
 
-An independent read-only code review reproduced three numerical defects during development (column-scale masking, initial-value rounding, and finite-difference cancellation); each now has a regression test that passes. The final review found no remaining critical or important defect. Branch CI is still pending.
+An independent read-only code review reproduced three numerical defects during development (column-scale masking, initial-value rounding, and finite-difference cancellation); each now has a regression test that passes. The final review found no remaining critical or important defect. Branch CI run #94 passed all four Windows/Ubuntu × Python 3.11/3.12 jobs.
 
 ## Next increment
 
