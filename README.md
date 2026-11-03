@@ -85,4 +85,4 @@ python scripts/scientific_workspace_app.py --project-root /ruta/al/proyecto work
 python scripts/scientific_workspace_app.py --check --project-root /ruta/al/proyecto workspace.json
 ```
 
-Los recursos de código se muestran como texto inerte. La visualización no ejecuta callbacks generados ni valida ciencia. Consulte [manifiestos, loader y espacio de escritorio](references/SCIENTIFIC_WORKSPACES.md) para contratos, límites, muestreo y estados.
+Los recursos de código se muestran como texto inerte y la app no importa código del proyecto o del manifiesto. Un host confiable puede inyectar un callback de simulación ya revisado; el usuario debe confirmar cada ejecución, la salida se muestra en memoria y no valida ciencia. Consulte [manifiestos, loader y espacio de escritorio](references/SCIENTIFIC_WORKSPACES.md) para el contrato y sus límites.

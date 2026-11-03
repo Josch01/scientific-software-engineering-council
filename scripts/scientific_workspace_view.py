@@ -9,10 +9,10 @@ from types import MappingProxyType
 import unicodedata
 
 try:
-    from .scientific_core import ObservationDataset
+    from .scientific_core import OdeSolution, ObservationDataset
     from .scientific_workspace_loader import LoadedResource, LoadedWorkspace
 except ImportError:  # Support direct script execution/import by the desktop shell.
-    from scientific_core import ObservationDataset
+    from scientific_core import OdeSolution, ObservationDataset
     from scientific_workspace_loader import LoadedResource, LoadedWorkspace
 
 
@@ -23,6 +23,9 @@ MAX_TEXT_PREVIEW_BYTES = 256 * 1024
 MAX_UI_COMPONENTS = 100
 MAX_JSON_DEPTH = 32
 MAX_SIMULATION_ROWS = 100_000
+MAX_SIMULATION_VIEW_VALUES = 1_000_000
+MAX_SIMULATION_VIEW_PARAMETERS = 100
+MAX_SIMULATION_VIEW_STATES = 100
 
 SUPPORTED_COMPONENT_TYPES = frozenset(
     {
@@ -278,6 +281,71 @@ def _simulation_content(
             "series_indices": series_indices,
             "row_count": base["row_count"],
         }
+    )
+
+
+def build_simulation_result_view(
+    component: ComponentView,
+    solution: OdeSolution,
+    *,
+    series: Sequence[str],
+    action_label: str,
+) -> ComponentView:
+    """Validate a trusted callback's in-memory solver result for the existing plot renderer."""
+    if component.component_type != "simulation_plot":
+        raise ValueError("approved simulation output requires a simulation_plot component")
+    if not isinstance(solution, OdeSolution):
+        raise ValueError("approved simulation callback must return an OdeSolution")
+    if type(solution.step_count) is not int or solution.step_count < 1:
+        raise ValueError("simulation step_count must be a positive integer")
+    if (not isinstance(solution.method, str) or not solution.method
+            or len(solution.method) > 64):
+        raise ValueError("simulation method must be a non-empty string of at most 64 characters")
+    row_count = solution.step_count + 1
+    if row_count > MAX_SIMULATION_ROWS:
+        raise ValueError(f"simulation exceeds the {MAX_SIMULATION_ROWS}-row UI limit")
+    if (not isinstance(solution.times, (tuple, list))
+            or len(solution.times) != row_count):
+        raise ValueError("simulation step_count must match the time grid before serialization")
+    if (not isinstance(solution.states, (tuple, list))
+            or len(solution.states) != row_count):
+        raise ValueError("simulation states must match the time grid before serialization")
+    if not isinstance(solution.state_names, (tuple, list)) or not solution.state_names:
+        raise ValueError("simulation state_names must be a non-empty sequence")
+    state_count = len(solution.state_names)
+    if state_count > MAX_SIMULATION_VIEW_STATES:
+        raise ValueError(
+            f"simulation exceeds the {MAX_SIMULATION_VIEW_STATES}-state UI limit"
+        )
+    if row_count * (state_count + 1) > MAX_SIMULATION_VIEW_VALUES:
+        raise ValueError(
+            f"simulation exceeds the {MAX_SIMULATION_VIEW_VALUES}-value UI limit"
+        )
+    if any(not isinstance(name, str) or not name or len(name) > 128
+           for name in solution.state_names):
+        raise ValueError("simulation state_names must be bounded non-empty strings")
+    if (not isinstance(solution.parameters, Mapping)
+            or len(solution.parameters) > MAX_SIMULATION_VIEW_PARAMETERS):
+        raise ValueError(
+            f"simulation exceeds the {MAX_SIMULATION_VIEW_PARAMETERS}-parameter UI limit"
+        )
+    if any(not isinstance(row, (tuple, list)) or len(row) != state_count
+           for row in solution.states):
+        raise ValueError("simulation states must match state_names before serialization")
+    base = _simulation_base_content(solution.to_dict())
+    content = _simulation_content(base, {"series": series})
+    safe_label = sanitize_display_text(action_label)
+    message = (
+        f"Salida en memoria de la acción aprobada «{safe_label}». "
+        "Esto no valida el modelo ni su validez científica."
+    )
+    return ComponentView(
+        component_id=component.component_id,
+        component_type="simulation_plot",
+        title=component.title,
+        status="ok",
+        message=message,
+        content=content,
     )
 
 

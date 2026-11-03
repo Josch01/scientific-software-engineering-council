@@ -6,11 +6,19 @@ from collections.abc import Mapping
 import json
 import math
 from pathlib import Path
+import queue
 import sys
+import threading
 from typing import Callable
 
 try:
+    from .scientific_workspace_actions import (
+        ApprovedSimulationAction,
+        request_approved_simulation,
+        run_approved_simulation,
+    )
     from .scientific_workspace_loader import load_scientific_workspace
+    from .scientific_workspace_loader import LoadedWorkspace
     from .scientific_workspace_view import (
         ComponentView,
         WorkspaceViewModel,
@@ -19,7 +27,13 @@ try:
     )
 except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.scientific_workspace_actions import (
+        ApprovedSimulationAction,
+        request_approved_simulation,
+        run_approved_simulation,
+    )
     from scripts.scientific_workspace_loader import load_scientific_workspace
+    from scripts.scientific_workspace_loader import LoadedWorkspace
     from scripts.scientific_workspace_view import (
         ComponentView,
         WorkspaceViewModel,
@@ -31,6 +45,29 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
 MAX_TABLE_ROWS = 1_000
 _SERIES_COLORS = ("#075985", "#9A3412", "#166534", "#6B21A8", "#155E75")
 _SERIES_DASHES = ((), (7, 3), (2, 2), (8, 2, 2, 2), (4, 2))
+
+
+def _approved_action_for(
+    component: ComponentView,
+    workspace: LoadedWorkspace | None,
+    approved_simulations: Mapping[str, ApprovedSimulationAction],
+) -> ApprovedSimulationAction | None:
+    if (workspace is None or component.component_type != "simulation_plot"
+            or not isinstance(approved_simulations, Mapping)):
+        return None
+    action = approved_simulations.get(component.component_id)
+    if (not isinstance(action, ApprovedSimulationAction)
+            or action.workspace_id != workspace.summary.workspace_id):
+        return None
+    return action
+
+
+def _run_simulation_ticket_for_ui(ticket):
+    """Always return a terminal queue payload so Tk can restore its controls."""
+    try:
+        return "ok", run_approved_simulation(ticket)
+    except BaseException as exc:
+        return "error", f"{type(exc).__name__}: {exc}"[:2000]
 
 
 def _thaw(value: object) -> object:
@@ -283,19 +320,36 @@ def _render_simulation(parent, component: ComponentView, tk, ttk) -> None:
     _make_data_table(parent, columns, rows, ttk, height=8)
 
 
-def _render_component(parent, component: ComponentView, tk, ttk) -> None:
+def _render_component(
+    parent,
+    component: ComponentView,
+    tk,
+    ttk,
+    *,
+    run_action=None,
+    run_label: str = "Ejecutar simulación aprobada",
+):
     frame = ttk.LabelFrame(parent, text=component.title, padding=6)
     frame.pack(fill="both", expand=True, padx=8, pady=6)
     if component.status == "error":
         ttk.Label(frame, text=component.message, foreground="#9B1C1C", wraplength=850).pack(
             fill="x", anchor="w", padx=8, pady=8
         )
-        return
+        if run_action is not None:
+            action_button = ttk.Button(frame, text=run_label, command=run_action)
+            action_button.pack(anchor="w", padx=8, pady=6)
+            return action_button
+        return None
     ttk.Label(frame, text=component.message, wraplength=1000, justify="left").pack(
         fill="x", anchor="w", padx=8, pady=(4, 0)
     )
+    action_button = None
+    if run_action is not None:
+        action_button = ttk.Button(frame, text=run_label, command=run_action)
+        action_button.pack(anchor="w", padx=8, pady=6)
     renderer = COMPONENT_RENDERERS.get(component.component_type, _render_json)
     renderer(frame, component, tk, ttk)
+    return action_button
 
 
 COMPONENT_RENDERERS: Mapping[str, Callable] = {
@@ -352,6 +406,8 @@ def create_workspace_window(
     *,
     parent=None,
     project_root: str | Path | None = None,
+    loaded_workspace: LoadedWorkspace | None = None,
+    approved_simulations: Mapping[str, ApprovedSimulationAction] | None = None,
 ):
     """Create the reusable Tk window; importing this module alone stays headless."""
     import tkinter as tk
@@ -409,6 +465,11 @@ def create_workspace_window(
     notebook.pack(fill="both", expand=True)
 
     def display(model: WorkspaceViewModel | None) -> None:
+        for page in result_tabs.values():
+            notebook.forget(page)
+            page.destroy()
+        result_tabs.clear()
+        simulation_buttons.clear()
         for tab in notebook.tabs():
             notebook.forget(tab)
         for item in resource_tree.get_children():
@@ -458,10 +519,32 @@ def create_workspace_window(
                     foreground="#7C2D12",
                 ).pack(fill="x", padx=8, pady=6)
             for component in section.components:
-                _render_component(inner, component, tk, ttk)
+                action = _approved_action_for(
+                    component, active_workspace[0], approved_simulations
+                )
+                if action is None:
+                    _render_component(inner, component, tk, ttk)
+                    continue
+                button_ref = {}
+
+                def invoke(component=component, action=action, button_ref=button_ref):
+                    run_simulation(component, action, button_ref["button"])
+
+                button = _render_component(
+                    inner,
+                    component,
+                    tk,
+                    ttk,
+                    run_action=invoke,
+                    run_label=f"Ejecutar: {action.label}",
+                )
+                button_ref["button"] = button
+                simulation_buttons[component.component_id] = button
             notebook.add(page, text=section.title)
 
     def open_workspace() -> None:
+        if active_simulation[0] is not None:
+            return
         selected_root = project_hint
         if selected_root is None:
             selected_root = filedialog.askdirectory(parent=root, title="Seleccionar raíz del proyecto")
@@ -484,10 +567,114 @@ def create_workspace_window(
         except (OSError, ValueError, TypeError) as exc:
             messagebox.showerror("No se pudo abrir el espacio", str(exc), parent=root)
             return
+        active_workspace[0] = workspace
         display(model)
 
     open_button.configure(command=open_workspace)
     root.bind("<Control-o>", lambda _event: open_workspace())
+    active_workspace = [loaded_workspace]
+    approved_simulations = dict(approved_simulations or {})
+    simulation_buttons: dict[str, object] = {}
+    result_tabs: dict[str, object] = {}
+    active_simulation = [None]
+
+    def show_simulation_result(component: ComponentView, result: ComponentView) -> None:
+        previous = result_tabs.pop(component.component_id, None)
+        if previous is not None:
+            notebook.forget(previous)
+            previous.destroy()
+        page = ttk.Frame(notebook)
+        _render_component(page, result, tk, ttk)
+        notebook.add(page, text=f"Resultado · {component.title}")
+        result_tabs[component.component_id] = page
+        notebook.select(page)
+
+    def run_simulation(component: ComponentView, action: ApprovedSimulationAction,
+                       button) -> None:
+        if active_simulation[0] is not None:
+            return
+        workspace = active_workspace[0]
+        if workspace is None:
+            messagebox.showerror(
+                "No hay recursos verificados",
+                "Abra primero un workspace validado por el loader seguro.",
+                parent=root,
+            )
+            return
+        try:
+            ticket = request_approved_simulation(
+                action,
+                workspace,
+                component,
+                confirm=lambda prompt: messagebox.askyesno(
+                    "Confirmar ejecución de callback", prompt, parent=root
+                ),
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("No se pudo preparar la simulación", str(exc), parent=root)
+            return
+        if ticket is None:
+            return
+        for action_button in simulation_buttons.values():
+            action_button.configure(state="disabled")
+        button.configure(text="Ejecutando…")
+        open_button.configure(state="disabled")
+        status_var.set("Simulación en curso · callback aprobado · SIN VALIDACIÓN CIENTÍFICA")
+        root.update_idletasks()
+
+        result_queue = queue.Queue()
+        active_simulation[0] = {"queue": result_queue, "component": component}
+
+        def worker() -> None:
+            result_queue.put(_run_simulation_ticket_for_ui(ticket))
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"ssec-simulation-{component.component_id}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            active_simulation[0] = None
+            open_button.configure(state="normal")
+            for action_button in simulation_buttons.values():
+                action_button.configure(state="normal")
+            button.configure(text=f"Ejecutar: {action.label}")
+            messagebox.showerror("No se pudo iniciar la simulación", str(exc), parent=root)
+            return
+        root.after(100, poll_simulation_result)
+
+    def poll_simulation_result() -> None:
+        active = active_simulation[0]
+        if active is None:
+            return
+        try:
+            outcome, payload = active["queue"].get_nowait()
+        except queue.Empty:
+            root.after(100, poll_simulation_result)
+            return
+        component = active["component"]
+        active_simulation[0] = None
+        open_button.configure(state="normal")
+        for component_id, action_button in simulation_buttons.items():
+            action_button.configure(state="normal")
+            action = approved_simulations.get(component_id)
+            if action is not None:
+                action_button.configure(text=f"Ejecutar: {action.label}")
+        if outcome == "error":
+            status_var.set("Simulación fallida · resultado no publicado")
+            messagebox.showerror(
+                "No se pudo mostrar el resultado",
+                payload,
+                parent=root,
+            )
+        else:
+            status_var.set("Resultado de simulación en memoria · NO VALIDADO CIENTÍFICAMENTE")
+            show_simulation_result(component, payload)
+
+    # Component rendering occurs after all action handlers are defined so button
+    # closures bind to the active, SHA-256-verified workspace.
     display(view_model)
     return root
 
@@ -524,11 +711,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--project-root and manifest must be provided together")
 
     model = None
+    loaded_workspace = None
     if arguments.manifest:
         try:
-            model = build_workspace_view_model(
-                load_scientific_workspace(arguments.project_root, arguments.manifest)
+            loaded_workspace = load_scientific_workspace(
+                arguments.project_root, arguments.manifest
             )
+            model = build_workspace_view_model(loaded_workspace)
         except (OSError, TypeError, ValueError, RecursionError) as exc:
             print(json.dumps({"status": "INVALID", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 2
@@ -544,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SSEC desktop UI is unavailable: {exc}", file=sys.stderr)
         return 2
     try:
-        root = create_workspace_window(model)
+        root = create_workspace_window(model, loaded_workspace=loaded_workspace)
         root.mainloop()
     except (OSError, tkinter.TclError) as exc:
         print(f"SSEC desktop UI is unavailable: {exc}", file=sys.stderr)
