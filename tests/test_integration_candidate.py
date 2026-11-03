@@ -147,6 +147,16 @@ class IntegrationCandidateTests(unittest.TestCase):
                       process_execution="PROCESSES_FINISHED_UNREVIEWED",
                       check_status="CHECKS_VERIFIED_AWAITING_REVIEW",
                       review_status="WORKER_REVIEWS_COMPLETE_AWAITING_INTEGRATION", results=[], review_evidence=[])
+        for worker in self.state["workers"]:
+            session = "implementation-" + worker["role"]
+            report["results"].append(dict(role=worker["role"], provider=worker["provider"],
+                                         provider_session_id=session, status="SUCCEEDED"))
+            event = (dict(type="thread.started", thread_id=session) if worker["provider"] == "codex"
+                     else dict(type="init", session_id=session))
+            terminal = (dict(type="turn.completed", usage={}) if worker["provider"] == "codex"
+                        else dict(type="result", status="success", stats={}))
+            (self.meta / "dev-logs" / self.run_id / (worker["role"] + ".stdout")).write_text(
+                json.dumps(event) + "\n" + json.dumps(terminal) + "\n", encoding="utf-8")
         for path in self.reviews:
             item = json.loads(path.read_text())
             report["review_evidence"].append(dict(worker_role=item["worker_role"],
@@ -190,6 +200,36 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertEqual(report["status"], "PREVIEW_NOT_STARTED")
         self.assertEqual(report["review_roles"], self.state["review_roles"])
         self.assertEqual(before, sorted(str(p) for p in self.meta.rglob("*")))
+
+    def test_integrated_review_rejects_incomplete_implementation_history(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        path = self.meta / "dev-logs" / self.run_id / "runtime-sessions.json"
+        original = json.loads(path.read_text())
+        for entries in ([], original["implementation_sessions"][:-1],
+                        [dict(item, provider_session_id="omitted-real-session-" + item["role"])
+                         for item in original["implementation_sessions"]]):
+            path.write_text(json.dumps(dict(original, implementation_sessions=entries)), encoding="utf-8")
+            with self.subTest(entries=entries), self.assertRaisesRegex(ValueError, "implementation"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id)
+        path.write_text(json.dumps(original), encoding="utf-8")
+        (path.parent / (self.state["workers"][0]["role"] + ".stdout")).unlink()
+        with self.assertRaisesRegex(ValueError, "implementation"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id)
+
+    def test_integrated_review_rejects_interrupted_launch_without_manifest(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result)
+        bundle_path = self.meta / report["bundle_path"]
+        bundle = json.loads(bundle_path.read_text())
+        reviewer_manifest = self.meta / bundle["reviewers"][0]["manifest_path"]
+        self.assertIn("session_id", (reviewer_manifest.parent / "stdout.jsonl").read_text())
+        reviewer_manifest.unlink()
+        for interrupted in (bundle, dict(bundle, terminal=False, status="RUNNING", reviewers=[])):
+            bundle_path.write_text(json.dumps(interrupted), encoding="utf-8")
+            with self.subTest(status=interrupted["status"]), self.assertRaisesRegex(ValueError, "historical.*incomplete|historical.*manifest"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id)
 
     def test_integrated_review_requires_latest_checked_candidate(self):
         from scripts.integration_review import run_integration_review

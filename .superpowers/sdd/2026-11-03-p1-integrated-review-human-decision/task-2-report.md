@@ -27,3 +27,40 @@ Malformed-roster audit: `reviewers=[null]` reproduced AttributeError (RED). The 
 
 
 Final frozen-code verification after the malformed-roster guard: exact six Task 2 tests from the brief plus `test_executable_index_mode_is_preserved` and `test_integrated_checks_run_against_composed_candidate_and_gate_stays_blocked` — PASS, 8 tests in 200.813s. `git diff --cached --check` and compilation also pass. No provider calls, approval, merge, release, or broader suite.
+
+## Task 2 fix round 1 — corroborated session history
+
+Review finding 1: “Incomplete implementation inventories are accepted. `integration_review.py:99` validates individual entries but never requires a complete implementation roster or binds its sessions to implementation records. A terminal successful inventory containing `implementation_sessions=[]` passes. An integrated reviewer can therefore reuse an omitted implementation session undetected. Require corroborated completeness, or reject inventories that cannot establish it. The test fixture itself generates an empty implementation inventory, so existing coverage misses this requirement.”
+
+The inventory must now contain exactly one session for every configured worker. Each entry's provider must match its worker assignment; successful execution records require SUCCEEDED worker outcomes. Every session is corroborated against the provider's session events in its canonical `dev-logs/<execution_id>/<worker_role>.stdout` record, with bounded strict JSONL parsing, reparse guards, and before/after hashes. Missing/empty/partial inventories, missing transcripts, and session mismatches block before any reviewer runtime. The offline fixture now includes the complete worker roster and provider-shaped implementation transcripts.
+
+Review finding 2: “Interrupted integrated reviews can disappear from session history. `integration_review.py:146` accepts an earlier bundle with no recorded reviewers; `integration_review.py:161` silently ignores reviewer directories without manifests. If execution stops after the provider launches and writes its session to stdout, but before `_review_one()` persists its manifest, a subsequent attempt neither recovers that session nor rejects the incomplete history. Require complete, corroborated launch history or block the new attempt.”
+
+Earlier integrated attempts must now have terminal full-roster bundles and each exact reviewer manifest with its bound digest and validated evidence/session identity. A RUNNING bundle or missing manifest blocks a later review, even when output already contains the launched provider session. Reviewer directories with missing manifests or unknown roles also block. Tests cover both a terminal bundle whose reviewer manifest disappeared and a RUNNING bundle with no recorded reviewers after stdout was written.
+
+Exact RED command:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_incomplete_implementation_history tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_interrupted_launch_without_manifest
+```
+
+Result: FAILED (5 failures), reproducing acceptance of incomplete/unbound implementation history and interrupted launch history. Refined the misbound-session fixture to use distinct wrong IDs so duplicate-session rejection could not mask the missing transcript binding. Exact refined RED command:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_incomplete_implementation_history
+```
+
+Result: FAILED (4 failures, 28.025s): empty roster, partial roster, distinct misbound sessions, and missing implementation stdout all remained accepted.
+
+The initial two-test command above then passed after the production fix: 2 tests in 54.513s. Compilation and `git diff --check` pass. Final verification includes the two affected tests, the exact six Task 2 tests, and the required executable-mode and composed-candidate-check regressions; its exact command/result follow below.
+
+Limit: older partial launches or interrupted integrated reviews whose session history cannot be corroborated now block conservatively. They require a fresh task/workspace with complete history rather than silently claiming non-reuse. No provider E2E, paid CLI call, `execute()` invocation, acceptance, merge, or release was introduced.
+
+
+Final frozen-code command:
+
+```text
+python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_incomplete_implementation_history tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_interrupted_launch_without_manifest tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_preview_makes_no_provider_call tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_requires_latest_checked_candidate tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_reused_runtime_session tests.test_integration_candidate.IntegrationCandidateTests.test_review_bundle_rejects_incomplete_or_misbound_roster tests.test_integration_candidate.IntegrationCandidateTests.test_latest_incomplete_review_does_not_reuse_previous_pass tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_metadata_reparse_path tests.test_integration_candidate.IntegrationCandidateTests.test_executable_index_mode_is_preserved tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_checks_run_against_composed_candidate_and_gate_stays_blocked
+```
+
+Result: OK — 10 tests in 254.829s, no skips or failures. Also ran `python -m py_compile scripts/integration_review.py tests/test_integration_candidate.py` and `git diff --cached --check`: both pass. Only the requested affected/focused/regression cases were run; no broad repository suite.

@@ -16,6 +16,7 @@ from .integration_candidate import (_INTEGRATION_ID_RE, _json_file, _new_integra
 from .prepare_agents import provider_for
 from .provider_runtimes import create_runtime
 from .review_evidence import validate_review_manifest
+from .reviewer_output import _read_log, _MAX_LOG_BYTES
 from .worktree_coordinator import directory, load
 
 
@@ -41,6 +42,31 @@ def _session(item):
     if provider not in {"codex", "gemini"} or type(session) is not str or not session or "\x00" in session:
         raise ValueError("invalid historical runtime session identity")
     return provider, session
+
+
+def _corroborate_implementation_sessions(run, entries, state, *, successful):
+    workers = {worker["role"]: worker for worker in state["workers"]}
+    if sorted(item["role"] for item in entries) != sorted(workers):
+        raise ValueError("implementation session inventory must contain the complete exact worker roster")
+    for item in entries:
+        role, provider = item["role"], item["provider"]
+        if provider != workers[role]["provider"] or (successful and item["outcome"] != "SUCCEEDED"):
+            raise ValueError("implementation session provider/outcome does not match the worker")
+        path = run / (role + ".stdout")
+        _ensure_no_symlink_path(path)
+        if not path.is_file() or path.stat().st_size > _MAX_LOG_BYTES:
+            raise ValueError("implementation session requires a bounded regular stdout record")
+        before = _sha256(path)
+        try:
+            events = _read_log(path)
+            kind, field = (("thread.started", "thread_id") if provider == "codex" else ("init", "session_id"))
+            observed = [event.get(field) for event in events if event["type"] == kind]
+            if not observed or any(value != item["provider_session_id"] for value in observed):
+                raise ValueError("implementation session does not match the implementation stdout record")
+            if _sha256(path) != before:
+                raise ValueError("implementation stdout changed during validation")
+        except (OSError, ValueError) as exc:
+            raise ValueError("implementation session cannot be corroborated: " + str(exc)) from exc
 
 
 def _historical_sessions(metadata, state, integration, *, exclude=None):
@@ -112,6 +138,8 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
                 add(item)
                 if field == "worker_review_sessions":
                     worker_reviews[(run.name, role, item["reviewer_role"])] = _session(item)
+        _corroborate_implementation_sessions(run, data["implementation_sessions"], state,
+            successful=data["process_execution"] == "PROCESSES_FINISHED_UNREVIEWED")
         reviews = run / "reviews"
         _ensure_no_symlink_path(reviews)
         if reviews.exists():
@@ -141,16 +169,38 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
                 continue
             bundle = attempt / "bundle.json"
             _ensure_no_symlink_path(bundle)
-            # Recover sessions from manifests even if publication was interrupted.
+            # Missing terminal evidence cannot prove that an earlier launch's
+            # observed session was inventoried. Block rather than infer no launch.
             recorded = set()
-            if bundle.exists():
-                data = _json_file(bundle)
-                if type(data) is not dict or type(data.get("reviewers")) is not list:
-                    raise ValueError("invalid historical integrated review bundle")
-                for item in data["reviewers"]:
-                    if item.get("provider_session_id") is not None:
-                        add(item)
-                        recorded.add(_session(item))
+            if not bundle.is_file():
+                raise ValueError("historical integrated review is incomplete: missing bundle")
+            data = _json_file(bundle)
+            if (type(data) is not dict or set(data) != _BUNDLE_FIELDS or data["terminal"] is not True or
+                    data["status"] not in ("PASSED", "CHANGES_REQUESTED", "BLOCKED") or
+                    data["review_attempt_id"] != attempt.name or data["integration_id"] != candidate.name or
+                    data["review_roles"] != state["review_roles"] or type(data["reviewers"]) is not list or
+                    any(type(item) is not dict for item in data["reviewers"]) or
+                    [item.get("reviewer_role") for item in data["reviewers"]] != state["review_roles"]):
+                raise ValueError("historical integrated review is incomplete or has an invalid roster")
+            for item in data["reviewers"]:
+                canonical = metadata / "dev-logs" / attempt.name / "reviews" / "integration_candidate" / item["reviewer_role"] / "manifest.json"
+                _ensure_no_symlink_path(canonical)
+                if not canonical.is_file() or item.get("manifest_path") != canonical.relative_to(metadata).as_posix():
+                    raise ValueError("historical integrated review is incomplete: missing reviewer manifest")
+                if _sha256(canonical) != item.get("manifest_sha256"):
+                    raise ValueError("historical reviewer manifest digest mismatch")
+                review = validate_review_manifest(_json_file(canonical), metadata)
+                if (any(item.get(key) != review[key] for key in ("status", "verdict", "provider_session_id")) or
+                        item.get("provider") != review["observed_provider"] or
+                        review["reviewer_role"] != item["reviewer_role"] or review["worker_role"] != "integration_candidate"):
+                    raise ValueError("historical reviewer manifest/session binding mismatch")
+                if item.get("provider_session_id") is not None:
+                    add(item)
+                    recorded.add(_session(item))
+                elif review["stdout_path"] is not None:
+                    stdout = _resolve_evidence_path(metadata, review["stdout_path"], directory=False)
+                    if stdout.stat().st_size:
+                        raise ValueError("historical reviewer output has no corroborated session")
             reviews = metadata / "dev-logs" / attempt.name / "reviews" / "integration_candidate"
             _ensure_no_symlink_path(reviews)
             if reviews.exists():
@@ -158,6 +208,8 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
                     _ensure_no_symlink_path(reviewer)
                     manifest = reviewer / "manifest.json"
                     _ensure_no_symlink_path(manifest)
+                    if not manifest.is_file() or reviewer.name not in state["review_roles"]:
+                        raise ValueError("historical integrated review is incomplete: missing reviewer manifest")
                     if manifest.exists():
                         data = _json_file(manifest)
                         if data.get("provider_session_id") is not None:
