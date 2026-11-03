@@ -177,7 +177,8 @@ class WorktreeTests(unittest.TestCase):
         state=initialize(task,POLICY,self.root,apply=True)
         report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,parallel=2,
                        minutes=1,runtime_factory=lambda provider: LocalPythonRuntime())
-        self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED")
+        self.assertEqual(report["process_execution"],"PROCESSES_FINISHED_UNREVIEWED",
+                         report["results"])
         self.assertEqual(report["execution"],"CHECKS_VERIFIED_AWAITING_REVIEW",
                          report["check_evidence"])
         self.assertEqual(report["release_status"],"NOT_APPROVED")
