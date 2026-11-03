@@ -80,6 +80,21 @@ class WorkItemTests(unittest.TestCase):
                 with self.subTest(field=field, path=path), self.assertRaises(ValueError):
                     self.validate([work_item(**{field: [path]})])
 
+    def test_windows_superscript_device_components_are_rejected_in_all_path_fields(self):
+        for field in ("inputs", "outputs", "file_ownership"):
+            for prefix in ("COM", "LPT"):
+                for digit in ("\u00b9", "\u00b2", "\u00b3"):
+                    for path in (prefix + digit, prefix + digit + ".txt",
+                                 "src/" + prefix.lower() + digit + "/result.py"):
+                        item = work_item(**{field: [path]})
+                        # Keep ownership valid so the rejection must concern the path.
+                        if field == "outputs":
+                            item["file_ownership"] = [path]
+                        elif field == "file_ownership":
+                            item["outputs"] = [path]
+                        with self.subTest(field=field, path=path), self.assertRaises(ValueError):
+                            self.validate([item])
+
     def test_outputs_must_be_covered_by_ownership_with_directory_boundary(self):
         for output in ("elsewhere.py", "implementation_engineer2/x.py", "implementation_engineer"):
             with self.subTest(output=output), self.assertRaises(ValueError):

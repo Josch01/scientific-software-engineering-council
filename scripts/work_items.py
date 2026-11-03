@@ -10,7 +10,8 @@ _FIELDS = frozenset({"id", "role", "reason", "risk", "inputs", "outputs", "depen
                      "file_ownership", "tests", "required_reviewers", "acceptance_criteria"})
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _RESERVED = frozenset({"con", "prn", "aux", "nul", "conin$", "conout$"} |
-                      {f"{prefix}{i}" for prefix in ("com", "lpt") for i in range(1, 10)})
+                      {f"{prefix}{digit}" for prefix in ("com", "lpt")
+                       for digit in "123456789\u00b9\u00b2\u00b3"})
 
 
 @dataclass(frozen=True)
