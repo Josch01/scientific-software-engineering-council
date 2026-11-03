@@ -142,15 +142,15 @@ Run: los cinco tests, los seis tests de Task 2 y P1.3 history/tamper/executable-
 - Create: `docs/test-reports/p1-integrated-review-human-decision-2026-11-03.md`
 - Update: `docs/roadmap/FEATURE_MATRIX.md` solo cuando el ciclo P1 completo tenga evidencia; no adelantar estados P2.
 
-- [ ] **Step 1: Ejecutar pruebas enfocadas en Windows y Docker/Linux**
+- [x] **Step 1: Ejecutar pruebas enfocadas en Windows y Docker/Linux**
 
 Registrar RED/GREEN, skips, resultados con fixture, y `NOT_RUN` provider E2E. Los fixtures de PASS no son evidencia de provider E2E.
 
-- [ ] **Step 2: Ejecutar suite final de P1 y validación estructural**
+- [x] **Step 2: Ejecutar suite final de P1 y validación estructural**
 
 Run: `python -m unittest discover -v -s tests`; `python scripts/validate_skill.py`; `python -m compileall -q scripts tests`; `git diff --check`. Repetir la suite Python en la imagen Docker local si el tiempo es razonable. Reportar `NOT_RUN` o errores de privilegios sin ocultarlos.
 
-- [ ] **Step 3: Registrar decisión arquitectónica y límites**
+- [x] **Step 3: Registrar decisión arquitectónica y límites**
 
 Documentar commits, tests, review, provider/sandbox `UNVERIFIED`, operador no autenticado, retry manual y ausencia de validez científica/GUI.
 
@@ -161,3 +161,6 @@ Usar un paquete de review acotado de esta rama; corregir findings Critical/Impor
 - [ ] **Step 5: Commit y crear PR draft separado**
 
 Base: `codex/p1-integration-candidate`. No merge a `main`, tag ni release.
+
+
+**Verificación documental Task 4 (2026-11-03):** [informe](../../test-reports/p1-integrated-review-human-decision-2026-11-03.md). Windows: 298 tests, 289 PASS, 1 failure por nombre del worktree, 2 errors por privilegio symlink, 6 skips; no suite global verde. Inventario/reparse enfocado: 6/6 PASS. Docker/Linux `BLOCKED` (daemon), provider E2E `NOT_RUN`. Validador directo falla por nombre del worktree; export HEAD con nombre correcto pasa validador y test de estructura. Compileall/diff-check pasan. Steps 4–5 quedan para revisión independiente final y draft PR del controlador; sin merge/tag/release.
