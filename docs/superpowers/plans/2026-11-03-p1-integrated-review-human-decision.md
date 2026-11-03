@@ -79,25 +79,25 @@ Run: los dos tests anteriores y `python -m unittest -v tests.test_development_wo
 - CLI: `python -m scripts.integration_review review --project PATH --task-id ID --integration-id ID [--execute --accept-unmetered-cost] [--max-minutes N]`.
 - Bundle path: `metadata/integrations/<integration_id>/review-attempts/<review_attempt_id>/bundle.json`.
 
-- [ ] **Step 1: Escribir pruebas RED**
+- [x] **Step 1: Escribir pruebas RED**
 
 Añadir `test_integrated_review_preview_makes_no_provider_call`, `test_integrated_review_requires_latest_checked_candidate`, `test_integrated_review_rejects_reused_runtime_session`, `test_review_bundle_rejects_incomplete_or_misbound_roster`, `test_latest_incomplete_review_does_not_reuse_previous_pass` y `test_integrated_review_rejects_metadata_reparse_path`.
 
-- [ ] **Step 2: Ejecutar y confirmar RED**
+- [x] **Step 2: Ejecutar y confirmar RED**
 
 Run: `python -m unittest -v tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_preview_makes_no_provider_call tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_requires_latest_checked_candidate tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_reused_runtime_session tests.test_integration_candidate.IntegrationCandidateTests.test_review_bundle_rejects_incomplete_or_misbound_roster tests.test_integration_candidate.IntegrationCandidateTests.test_latest_incomplete_review_does_not_reuse_previous_pass tests.test_integration_candidate.IntegrationCandidateTests.test_integrated_review_rejects_metadata_reparse_path`
 
 Expected: el comando/validador no existe.
 
-- [ ] **Step 3: Reusar `_review_one()` sin lanzar workers**
+- [x] **Step 3: Reusar `_review_one()` sin lanzar workers**
 
 Exigir que `integration_id` sea el latest, que su manifest/check estén validados y PASSED, que el `runtime-sessions.json` corresponda al mismo execution ID y que todas las sesiones históricas conocidas sean únicas. Ejecutar exactamente una vez cada `state["review_roles"]`, en snapshots no-writable, con deadline/cancelación existentes. Bundle liga hashes de integration manifest, check y cada review manifest.
 
-- [ ] **Step 4: Ejecutar GREEN y casos Windows/Linux**
+- [x] **Step 4: Ejecutar GREEN y regresiones relacionadas**
 
 Run: los seis tests de Task 2 y los tests de `test_executable_index_mode_is_preserved` y `test_integrated_checks_run_against_composed_candidate_and_gate_stays_blocked`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** — `94d2524` (flujo inicial), `b3808e9` (historias verificables; revisión independiente aprobada).
 
 `feat: review integrated candidate with bound evidence`.
 
