@@ -42,25 +42,25 @@
 - Añadir al reporte `runtime_sessions_manifest_path` y `runtime_sessions_manifest_sha256`. La escritura atómica falla cerrada: el reporte no marca reviews completas si no se puede persistir el manifest.
 - No se invocan runtimes adicionales en preview.
 
-- [ ] **Step 1: Escribir pruebas RED**
+- [x] **Step 1: Escribir pruebas RED**
 
 Añadir `test_execute_persists_runtime_session_inventory` y `test_execute_session_manifest_failure_keeps_review_incomplete`. Usar el runtime local/fake existente solo para probar los datos persistidos; no marcarlo como review válida.
 
-- [ ] **Step 2: Ejecutar y confirmar RED**
+- [x] **Step 2: Ejecutar y confirmar RED**
 
 Run: `python -m unittest -v tests.test_development_worktrees.WorktreeTests.test_execute_persists_runtime_session_inventory tests.test_development_worktrees.WorktreeTests.test_execute_session_manifest_failure_keeps_review_incomplete`
 
 Expected: los campos/archivo de sesiones no existen o el fallo de escritura no bloquea el estado.
 
-- [ ] **Step 3: Implementar persistencia atómica y guarda reparse-aware**
+- [x] **Step 3: Implementar persistencia atómica y guarda reparse-aware**
 
 Usar la identidad de `state`, `report["results"]` y `report["review_evidence"]`. No escribir secretos ni prompts/logs en este inventario.
 
-- [ ] **Step 4: Ejecutar GREEN y regressions relacionadas**
+- [x] **Step 4: Ejecutar GREEN y regressions relacionadas**
 
 Run: los dos tests anteriores y `python -m unittest -v tests.test_development_worktrees.WorktreeTests.test_offline_provider_fixture_cannot_be_counted_as_review_evidence`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** — `680e1b7` (implementación), `4ea29fb` (fix de revisión independiente).
 
 `feat: persist runtime session inventory`.
 
