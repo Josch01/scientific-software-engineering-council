@@ -78,7 +78,7 @@ class LoadedWorkspace:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "status": "VERIFIED",
+            "status": "ARTIFACT_DIGESTS_MATCHED",
             "schema_version": 1,
             "workspace_id": self.summary.workspace_id,
             "title": self.summary.title,

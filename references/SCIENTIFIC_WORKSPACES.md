@@ -24,7 +24,7 @@ Run:
 python scripts/scientific_workspace_loader.py --project-root PROJECT_ROOT workspace.json
 ```
 
-The loader requires the manifest and declared resources to remain under the project root, rejects observed symlinks/reparse points and escaping handles, reads regular files only, and enforces a 16 MiB per-resource and 64 MiB aggregate default budget. Callers may lower either limit. It captures bytes from the checked open handle, verifies every declared SHA-256, and returns no workspace if any resource fails. The CLI prints only IDs, paths, sizes, and digests; it never prints file contents.
+The loader requires the manifest and declared resources to remain under the project root, rejects observed symlinks/reparse points and escaping handles, reads regular files only, and enforces a 16 MiB per-resource and 64 MiB aggregate default budget. Callers may lower either limit. It captures bytes from the checked open handle, verifies every declared SHA-256, and returns no workspace if any resource fails. The CLI prints only IDs, paths, sizes, and digests; its `ARTIFACT_DIGESTS_MATCHED` status describes the digest comparison only, not model or scientific validity.
 
 Python consumers can call `load_scientific_workspace(project_root, "workspace.json")` and read the resulting `LoadedResource.content` bytes. Consume those captured bytes; do not reopen the recorded path after verification. File bytes remain inert: the loader does not parse CSV, import Python, execute code, render UI, or assess scientific validity. A matching digest establishes byte equality with the value declared in the same manifest; it does not authenticate who produced either one.
 

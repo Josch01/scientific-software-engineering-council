@@ -219,7 +219,7 @@ class ScientificWorkspaceLoaderTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
-        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(result["status"], "ARTIFACT_DIGESTS_MATCHED")
         self.assertEqual(result["resources"][0]["byte_count"], len(content))
         self.assertNotIn(content.decode(), completed.stdout)
 

@@ -32,7 +32,7 @@ Allow the SSEC engine and headless tools to consume declared workspace artifacts
 - Public API: `load_scientific_workspace(project_root, manifest_relative_path) -> LoadedWorkspace`; loaded resources are immutable records containing the declared ID/kind/path/digest and verified `bytes`.
 - Manifest and artifacts must be project-relative and read with the same root-containment policy. The existing JSON byte/depth/duplicate-key/non-finite checks are reused.
 - Initial budgets: at most 16 MiB per resource and 64 MiB aggregate, configurable only downward by callers. Reject non-regular files and missing digests. If any resource fails, return no `LoadedWorkspace`.
-- CLI: `python scripts/scientific_workspace_loader.py --project-root PROJECT_ROOT MANIFEST_RELATIVE_PATH`; print only workspace/resource IDs, sizes, and verified digests. Exit 0 on verified load, 2 on failure.
+- CLI: `python scripts/scientific_workspace_loader.py --project-root PROJECT_ROOT MANIFEST_RELATIVE_PATH`; print only workspace/resource IDs, sizes, and digests with status `ARTIFACT_DIGESTS_MATCHED`. Exit 0 when declared hashes match, 2 on failure. This status is not a scientific-validity claim.
 - `SHA256_VERIFIED` means the captured bytes match the manifest digest. It does not authenticate who created either the manifest or artifact.
 
 ## Constraints

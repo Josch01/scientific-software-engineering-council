@@ -8,7 +8,7 @@
 
 En POSIX abre cada segmento desde descriptores relativos con `O_NOFOLLOW` y `O_NONBLOCK`, y rechaza todo archivo que no sea regular. En Windows rechaza symlinks/reparse points observados y comprueba la ruta final del mismo handle ya abierto; normaliza prefijos de ruta extendida/UNC y usa `commonpath` por componentes. El CLI imprime solo metadatos y el digest, nunca el contenido. El acceso está limitado a 16 MiB por recurso y 64 MiB total; la API permite reducir, no aumentar, esos límites.
 
-El digest comprueba igualdad de bytes respecto al manifiesto recibido; no autentica al productor ni protege contra la sustitución coordinada del manifiesto y los datos. El loader mantiene los recursos inertes: no importa ni ejecuta código, interpreta CSV, renderiza vistas ni otorga una evaluación científica.
+El CLI usa `ARTIFACT_DIGESTS_MATCHED` para indicar que los bytes capturados coinciden con los hashes declarados; no autentica al productor ni protege contra la sustitución coordinada del manifiesto y los datos. El loader mantiene los recursos inertes: no importa ni ejecuta código, interpreta CSV, renderiza vistas ni otorga una evaluación científica.
 
 ## Verificación
 
