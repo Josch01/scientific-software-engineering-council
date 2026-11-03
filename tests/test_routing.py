@@ -57,3 +57,12 @@ class RoutingTests(unittest.TestCase):
         task["check_specs"][0]["cwd"] = "../outside"
         with self.assertRaises(ValueError):
             validate_task(task)
+
+    def test_required_checks_also_rejects_invalid_check_specs(self):
+        task = copy.deepcopy(self.task)
+        task["check_specs"] = [{
+            "check_id": "unit_tests", "argv": ["python", "-m", "unittest"],
+            "cwd": ".", "timeout_seconds": 30, "protocol": "exit_code",
+        }]
+        with self.assertRaises(ValueError):
+            required_checks(task)

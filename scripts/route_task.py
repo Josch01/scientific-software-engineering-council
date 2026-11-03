@@ -66,7 +66,7 @@ def validate_task(task: dict[str, Any]) -> None:
 
 
 def required_checks(task: dict[str, Any]) -> list[str]:
-    _validate_task_fields(task)
+    validate_task(task)
     return _required_checks_for_valid_task(task)
 
 
