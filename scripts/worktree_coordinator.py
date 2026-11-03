@@ -418,6 +418,80 @@ def gate(project,task_id):
                 missing.append({"role":role,"missing_process_check_ids":[],
                                 "missing_spec_ids":sorted(missing_specs)})
     checks_verified=bool(state["workers"]) and not missing and not unsupported_specs
+    integrated_checks_verified=False
+    integrated_check_status=None
+    integrated_check_evidence=None
+    invalid_integration_manifests=[]
+    integration_root=metadata/"integrations"
+    integration_attempts=[]
+    if integration_root.exists() or integration_root.is_symlink():
+        if integration_root.is_symlink() or not integration_root.is_dir():
+            invalid_integration_manifests.append({"path":"integrations",
+                "error":"integration root is not a regular directory"})
+        else:
+            try:
+                integration_attempts=sorted(integration_root.iterdir(),key=lambda item:item.name)
+            except OSError as exc:
+                invalid_integration_manifests.append({"path":"integrations",
+                    "error":f"could not inspect integration attempts: {exc}"})
+    if integration_attempts:
+        # IDs carry a fixed-width timestamp, so lexical order is the persisted
+        # attempt order and a newer incomplete attempt cannot be hidden by an older pass.
+        latest=integration_attempts[-1]
+        latest_relative=latest.relative_to(metadata).as_posix()
+        latest_data=None
+        latest_check=None
+        for attempt in integration_attempts:
+            relative=attempt.relative_to(metadata).as_posix()
+            if attempt.is_symlink() or not attempt.is_dir():
+                invalid_integration_manifests.append({"path":relative,
+                    "error":"integration attempt is not a regular directory"})
+                continue
+            manifest_path=attempt/"manifest.json"
+            if not manifest_path.exists() and not manifest_path.is_symlink():
+                invalid_integration_manifests.append({"path":relative+"/manifest.json",
+                    "error":"integration attempt has no published manifest; it may have stopped during composition"})
+                continue
+            try:
+                if __package__:
+                    from .integration_candidate import validate_integration_manifest
+                else:
+                    from integration_candidate import validate_integration_manifest
+                manifest,checked=validate_integration_manifest(manifest_path,metadata,state,specs)
+                if attempt==latest:
+                    latest_data,latest_check=manifest,checked
+            except (OSError,ValueError,TypeError,KeyError,UnicodeError,RecursionError) as exc:
+                invalid_integration_manifests.append({"path":relative+"/manifest.json","error":str(exc)})
+        if latest_data is not None:
+            integrated_check_status=latest_check["status"] if latest_check is not None else latest_data["check_status"]
+            check_ids=sorted(item["check_id"] for item in latest_check["checks"]) if latest_check else []
+            integrated_check_evidence={
+                "integration_id":latest_data["integration_id"],
+                "status":latest_data["status"],
+                "role":latest_data["integration_role"],
+                "branch":latest_data["candidate_branch"],
+                "candidate_tree_sha256":latest_data["candidate_tree_sha256"],
+                "check_manifest_path":latest_data["check_manifest_path"],
+                "check_manifest_sha256":latest_data["check_manifest_sha256"],
+                "check_status":integrated_check_status,
+                "verified_check_ids":check_ids,
+            }
+            if latest_check is None:
+                invalid_integration_manifests.append({"path":latest_relative+"/manifest.json",
+                    "error":"latest integration attempt has no validated terminal check manifest"})
+            integrated_checks_verified=(
+                latest_data["status"]=="CHECKED_AWAITING_INTEGRATED_REVIEW" and
+                latest_check is not None and latest_check["status"]=="PASSED" and
+                not invalid_integration_manifests
+            )
+            if not integrated_checks_verified:
+                errors.append("latest integrated candidate checks are missing, failed, or unverified")
+        else:
+            errors.append("latest integrated candidate attempt is missing or invalid")
+    else:
+        errors.append("integrated check evidence for the combined candidate is missing")
+    if invalid_integration_manifests:
+        errors.append("one or more integration manifests are invalid or tampered")
     if not status["base_unchanged"] or not status["source_clean"]:
         errors.append("original checkout changed since initialization")
     seen={}
@@ -432,7 +506,7 @@ def gate(project,task_id):
     if not checks_verified:
         errors.append("deterministic check evidence is missing, incomplete, or invalid")
     # Deterministic checks cannot replace an independent review or authorize release.
-    errors.append("coordinator cannot infer non-process review or release acceptance from deterministic checks")
+    errors.append("coordinator requires independent integrated review and human approval; release remains blocked")
     events=status["events"]
     for w in state["workers"]:
         if not any(e["sender"]==w["role"] and e["kind"]=="WORKER_RESULT" for e in events):
@@ -444,8 +518,12 @@ def gate(project,task_id):
             "verified_process_check_ids":verified,"missing_process_checks":missing,
             "pending_evidence_ids":sorted(pending_evidence),
             "invalid_check_manifests":invalid_manifests,
+            "integrated_checks_verified":integrated_checks_verified,
+            "integrated_check_status":integrated_check_status,
+            "integrated_check_evidence":integrated_check_evidence,
+            "invalid_integration_manifests":invalid_integration_manifests,
             "evidence_verified":False,"release_status":"NOT_APPROVED",
-            "note":"Verified worker checks apply only to their separate candidates; mailbox claims cannot establish review or release approval."}
+            "note":"Integrated checks apply only to the disposable combined candidate; independent integrated review and human approval are still required."}
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
@@ -449,6 +450,27 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(result["status"],"BLOCKED")
         self.assertFalse(result["evidence_verified"])
         self.assertEqual(result["release_status"],"NOT_APPROVED")
+
+    def test_passing_worker_only_checks_do_not_satisfy_integrated_check_obligation(self):
+        from scripts.check_runner import run_checks
+        task = task_with_checks()
+        state = initialize(task, POLICY, self.root, apply=True)
+        _, metadata = load(self.root, task["task_id"])
+        for worker in state["workers"]:
+            checked = run_checks(task, state, worker, metadata, stop_event=threading.Event(),
+                                 deadline=time.monotonic() + 60)
+            self.assertEqual(checked.status, "PASSED", checked.errors)
+
+        result = gate(self.root, task["task_id"])
+
+        self.assertTrue(result["checks_verified"], result["invalid_check_manifests"])
+        self.assertFalse(result["integrated_checks_verified"])
+        self.assertIsNone(result["integrated_check_status"])
+        self.assertTrue(any("integrated check" in item.casefold() for item in result["blockers"]))
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertFalse(result["evidence_verified"])
+        self.assertEqual(result["release_status"], "NOT_APPROVED")
+        self.assertFalse(result["automatic_merge"])
 
     def test_process_check_specs_cannot_claim_review_or_scientific_obligations(self):
         task=task_with_checks()

@@ -17,7 +17,7 @@ from scripts.configuration import DEFAULT_CONFIG
 from scripts.execution_evidence import candidate_tree_sha256
 from scripts.prepare_agents import choose_roles
 from scripts.review_evidence import report_sha256, validate_review_manifest
-from scripts.worktree_coordinator import initialize, load
+from scripts.worktree_coordinator import gate, initialize, load
 from tests.test_work_items import work_item
 
 
@@ -138,6 +138,24 @@ class IntegrationCandidateTests(unittest.TestCase):
         from scripts.integration_candidate import build_integration_candidate
         return build_integration_candidate(self.root, self.task["task_id"], run_id or self.run_id)
 
+    def add_integration_probe(self, code, *, timeout=20):
+        """Add a real Python check that is meaningful on the composed candidate."""
+        from scripts.execution_evidence import canonical_task_sha256
+        spec = next(item for item in self.state["task_packet"]["check_specs"]
+                    if item["check_id"] == "static_analysis")
+        spec["argv"] = [sys.executable, "-c", code]
+        spec["timeout_seconds"] = timeout
+        self.task = self.state["task_packet"]
+        self.state["task_sha256"] = canonical_task_sha256(self.task)
+        (self.meta / "state.json").write_text(json.dumps(self.state), encoding="utf-8")
+
+    def combined_candidate_probe(self):
+        role_paths = repr([worker["role"] + "/new.txt" for worker in self.state["workers"]])
+        return ("from pathlib import Path; import sys; "
+                f"paths={role_paths}; "
+                "sys.exit(0 if Path.cwd().parent.name != 'integration_candidate' or "
+                "all(Path(p).is_file() for p in paths) else 17)")
+
     def blocked(self, text=None, run_id=None):
         before = git(self.root, "worktree", "list", "--porcelain")
         result = self.build(run_id)
@@ -168,8 +186,8 @@ class IntegrationCandidateTests(unittest.TestCase):
                    for w in self.state["workers"]]
         first, second = self.build(), self.build()
         for result in (first, second):
-            self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
-            self.assertIsNone(result.check_manifest_path)
+            self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
+            self.assertIsNotNone(result.check_manifest_path)
             self.assertFalse(hasattr(result, "release_status"))
             tree = Path(result.candidate_worktree_path)
             self.assertEqual(git(tree, "rev-parse", "HEAD"), self.state["base_commit"])
@@ -179,9 +197,10 @@ class IntegrationCandidateTests(unittest.TestCase):
                 self.assertFalse((tree / w["role"] / "old.txt").exists())
                 self.assertFalse((tree / w["role"] / "skip.ignored").exists())
             data = json.loads(Path(result.integration_manifest_path).read_text())
-            self.assertEqual(data["schema_version"], 1)
-            self.assertEqual(data["status"], "BUILT_AWAITING_CHECKS")
-            self.assertIsNone(data["check_manifest_path"])
+            self.assertEqual(data["schema_version"], 2)
+            self.assertEqual(data["status"], "CHECKED_AWAITING_INTEGRATED_REVIEW")
+            self.assertIsNotNone(data["check_manifest_path"])
+            self.assertEqual(data["check_manifest_sha256"], digest(result.check_manifest_path))
             self.assertEqual(data["candidate_tree_sha256"], candidate_tree_sha256(tree))
             self.assertEqual(len(data["worker_tree_hashes"]), len(self.state["workers"]))
             self.assertTrue(data["input_manifests"])
@@ -195,6 +214,232 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertEqual((candidate_tree_sha256(self.root), git(self.root, "status", "--porcelain=v1")), source)
         self.assertEqual([(candidate_tree_sha256(Path(w["path"])), git(Path(w["path"]), "status", "--porcelain=v1"))
                           for w in self.state["workers"]], workers)
+
+    def test_integrated_checks_run_against_composed_candidate_and_gate_stays_blocked(self):
+        self.add_integration_probe(self.combined_candidate_probe())
+        self.evidence()
+
+        result = self.build()
+
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
+        self.assertIsNotNone(result.check_manifest_path)
+        integration = json.loads(Path(result.integration_manifest_path).read_text(encoding="utf-8"))
+        check_path = Path(result.check_manifest_path)
+        checked = read_check_manifest(check_path, self.meta)
+        self.assertEqual(integration["schema_version"], 2)
+        self.assertEqual(integration["status"], result.status)
+        self.assertEqual(integration["integration_role"], "integration_candidate")
+        self.assertEqual(integration["candidate_branch"], checked["worker_branch"])
+        self.assertEqual(integration["check_manifest_path"], check_path.relative_to(self.meta).as_posix())
+        self.assertEqual(integration["check_manifest_sha256"], digest(check_path))
+        self.assertEqual(integration["candidate_tree_sha256"], checked["candidate_tree_sha256"])
+        self.assertEqual(integration["check_specs"], [
+            dict(check_id=spec["check_id"], argv=spec["argv"], cwd=spec["cwd"],
+                 timeout_seconds=spec["timeout_seconds"], protocol=spec["protocol"])
+            for spec in self.task["check_specs"]])
+        self.assertEqual(checked["worker_role"], "integration_candidate")
+        self.assertTrue(all(item["result_status"] == "PASSED" for item in checked["checks"]))
+
+        result_gate = gate(self.root, self.task["task_id"])
+
+        self.assertEqual(result_gate["status"], "BLOCKED")
+        self.assertTrue(result_gate["integrated_checks_verified"], result_gate)
+        self.assertEqual(result_gate["integrated_check_status"], "PASSED")
+        self.assertFalse(result_gate["evidence_verified"])
+        self.assertEqual(result_gate["release_status"], "NOT_APPROVED")
+        self.assertFalse(result_gate["automatic_merge"])
+        self.assertTrue(any("integrated review" in item.casefold() and "human approval" in item.casefold()
+                            for item in result_gate["blockers"]))
+
+    def test_integration_only_failure_is_terminal_failed_even_when_workers_pass(self):
+        failure = ("from pathlib import Path; import sys; "
+                   "sys.exit(23 if Path.cwd().parent.name == 'integration_candidate' else 0)")
+        self.add_integration_probe(failure)
+        self.evidence()
+
+        result = self.build()
+
+        self.assertEqual(result.status, "FAILED", result.blockers)
+        self.assertIsNotNone(result.check_manifest_path)
+        integration = json.loads(Path(result.integration_manifest_path).read_text(encoding="utf-8"))
+        checked = read_check_manifest(Path(result.check_manifest_path), self.meta)
+        self.assertEqual(integration["status"], "FAILED")
+        self.assertEqual(checked["status"], "FAILED")
+        self.assertEqual(checked["worker_role"], "integration_candidate")
+        self.assertEqual(checked["checks"][-1]["result_status"], "FAILED")
+        self.assertFalse(gate(self.root, self.task["task_id"])["integrated_checks_verified"])
+
+    def test_candidate_mutation_after_integrated_check_invalidates_gate_evidence(self):
+        self.evidence()
+        result = self.build()
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
+
+        (Path(result.candidate_worktree_path) / "baseline.txt").write_text("post-check mutation\n", encoding="utf-8")
+        result_gate = gate(self.root, self.task["task_id"])
+
+        self.assertFalse(result_gate["integrated_checks_verified"])
+        self.assertTrue(result_gate["invalid_integration_manifests"])
+        self.assertEqual(result_gate["status"], "BLOCKED")
+
+    def test_integrated_manifest_and_check_identity_tampering_are_rejected_by_gate(self):
+        self.evidence()
+        result = self.build()
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
+        manifest_path = Path(result.integration_manifest_path)
+        check_path = Path(result.check_manifest_path)
+        good_manifest = manifest_path.read_bytes()
+        good_check = check_path.read_bytes()
+
+        mutations = (
+            ("missing check path", lambda data: data.update(check_manifest_path=None)),
+            ("path escape", lambda data: data.update(check_manifest_path="../escape")),
+            ("wrong role", lambda data: data.update(integration_role="worker")),
+            ("wrong branch", lambda data: data.update(candidate_branch="ssec/integration/wrong")),
+            ("wrong base", lambda data: data.update(base_commit="f" * 40)),
+            ("extra check spec", lambda data: data["check_specs"].append(
+                dict(check_id="extra", argv=[sys.executable, "-c", "pass"], cwd=".",
+                     timeout_seconds=1, protocol="exit_code"))),
+            ("incomplete check specs", lambda data: data.update(check_specs=data["check_specs"][:-1])),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                data = json.loads(good_manifest)
+                mutate(data)
+                manifest_path.write_text(json.dumps(data), encoding="utf-8")
+                result_gate = gate(self.root, self.task["task_id"])
+                self.assertFalse(result_gate["integrated_checks_verified"])
+                self.assertTrue(result_gate["invalid_integration_manifests"])
+            manifest_path.write_bytes(good_manifest)
+
+        for field, value in (("worker_role", "worker"), ("worker_branch", "wrong-branch"),
+                             ("base_commit", "f" * 40)):
+            with self.subTest(check_identity=field):
+                data = json.loads(good_check)
+                data[field] = value
+                check_path.write_text(json.dumps(data), encoding="utf-8")
+                integration = json.loads(good_manifest)
+                integration["check_manifest_sha256"] = digest(check_path)
+                manifest_path.write_text(json.dumps(integration), encoding="utf-8")
+                result_gate = gate(self.root, self.task["task_id"])
+                self.assertFalse(result_gate["integrated_checks_verified"])
+                self.assertTrue(result_gate["invalid_integration_manifests"])
+            check_path.write_bytes(good_check)
+            manifest_path.write_bytes(good_manifest)
+
+        check_path.write_bytes(good_check + b" ")
+        result_gate = gate(self.root, self.task["task_id"])
+        self.assertFalse(result_gate["integrated_checks_verified"])
+        self.assertTrue(result_gate["invalid_integration_manifests"])
+        check_path.write_bytes(good_check)
+
+        check_path.unlink()
+        result_gate = gate(self.root, self.task["task_id"])
+        self.assertFalse(result_gate["integrated_checks_verified"])
+        self.assertTrue(result_gate["invalid_integration_manifests"])
+        check_path.write_bytes(good_check)
+
+    def test_integrated_manifest_readback_failure_never_reports_checked(self):
+        self.evidence()
+        from scripts.integration_candidate import _json_file
+        original_json_file = _json_file
+
+        def fail_checked_readback(path):
+            data = original_json_file(path)
+            if data.get("status") == "CHECKED_AWAITING_INTEGRATED_REVIEW":
+                raise OSError("injected integrated manifest readback failure")
+            return data
+
+        with patch("scripts.integration_candidate._json_file", side_effect=fail_checked_readback):
+            result = self.build()
+
+        self.assertNotEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW")
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertTrue(result.candidate_worktree_path and Path(result.candidate_worktree_path).is_dir())
+        self.assertTrue(result.check_manifest_path and Path(result.check_manifest_path).is_file())
+        result_gate = gate(self.root, self.task["task_id"])
+        self.assertFalse(result_gate["integrated_checks_verified"])
+
+    def test_integration_manifest_rejects_metadata_reparse_path(self):
+        from scripts.integration_candidate import validate_integration_manifest
+        metadata_alias = Path(self.temp.name) / "metadata-alias"
+        if os.name == "nt":
+            completed = subprocess.run(["cmd", "/c", "mklink", "/J", str(metadata_alias), str(self.meta)],
+                                       capture_output=True)
+            if completed.returncode:
+                self.skipTest("metadata junction creation unavailable")
+        else:
+            try:
+                metadata_alias.symlink_to(self.meta, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest("metadata symlink creation unavailable: " + str(exc))
+
+        with self.assertRaisesRegex(ValueError, "symlinked or reparse path component"):
+            validate_integration_manifest(self.meta / "integrations" / "fake" / "manifest.json",
+                                           metadata_alias, {}, ())
+
+    def test_integrated_manifest_publication_failure_never_reports_checked(self):
+        self.evidence()
+        from scripts.integration_candidate import _write_atomic_manifest
+
+        def fail_checked_publication(path, data):
+            if data.get("status") == "CHECKED_AWAITING_INTEGRATED_REVIEW":
+                raise OSError("injected checked manifest publication failure")
+            return _write_atomic_manifest(path, data)
+
+        with patch("scripts.integration_candidate._write_atomic_manifest", side_effect=fail_checked_publication):
+            result = self.build()
+
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertTrue(result.blockers)
+        self.assertTrue(Path(result.integration_manifest_path).is_file())
+        self.assertTrue(Path(result.check_manifest_path).is_file())
+        self.assertEqual(json.loads(Path(result.integration_manifest_path).read_text())["status"],
+                         "BUILT_AWAITING_CHECKS")
+        self.assertFalse(gate(self.root, self.task["task_id"])["integrated_checks_verified"])
+
+    def test_cancelled_integrated_checks_remain_failed(self):
+        self.evidence()
+        stop_event = threading.Event()
+        stop_event.set()
+        from scripts.integration_candidate import build_integration_candidate
+
+        result = build_integration_candidate(self.root, self.task["task_id"], self.run_id,
+                                             stop_event=stop_event)
+
+        self.assertEqual(result.status, "FAILED", result.blockers)
+        checked = read_check_manifest(Path(result.check_manifest_path), self.meta)
+        self.assertEqual(checked["status"], "FAILED")
+        self.assertTrue(all(item["result_status"] == "NOT_RUN" for item in checked["checks"]))
+
+    def test_timed_out_integrated_check_is_terminal_failed(self):
+        timeout_code = ("from pathlib import Path; import time; "
+                        "time.sleep(5) if Path.cwd().parent.name == 'integration_candidate' else None")
+        self.add_integration_probe(timeout_code, timeout=0.15)
+        self.evidence()
+
+        result = self.build()
+
+        self.assertEqual(result.status, "FAILED", result.blockers)
+        checked = read_check_manifest(Path(result.check_manifest_path), self.meta)
+        self.assertEqual(checked["status"], "FAILED")
+        self.assertEqual(checked["checks"][-1]["result_status"], "FAILED")
+        self.assertIn("timed_out", checked["checks"][-1]["record"]["process_status"])
+
+    def test_crash_after_built_publication_cannot_pass_gate(self):
+        self.evidence()
+        with patch("scripts.integration_candidate.run_checks", side_effect=SystemExit("simulated process crash")):
+            with self.assertRaisesRegex(SystemExit, "simulated process crash"):
+                self.build()
+
+        attempts = sorted((self.meta / "integrations").iterdir(), key=lambda item: item.name)
+        latest_manifest = attempts[-1] / "manifest.json"
+        data = json.loads(latest_manifest.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "BUILT_AWAITING_CHECKS")
+        result_gate = gate(self.root, self.task["task_id"])
+        self.assertFalse(result_gate["integrated_checks_verified"])
+        self.assertTrue(result_gate["invalid_integration_manifests"])
+        self.assertTrue(any("terminal check manifest" in item["error"]
+                            for item in result_gate["invalid_integration_manifests"]))
 
     def test_missing_reviewer_and_missing_check_are_rejected(self):
         self.evidence()
@@ -211,7 +456,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                            stop_event=threading.Event(), deadline=time.monotonic() + 60)
         decoy.manifest_path.write_text("corrupted newer check run", encoding="utf-8")
         result = self.build()
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
 
     def test_all_required_reviewers_must_reference_one_check_manifest(self):
         from scripts.execution_evidence import canonical_task_sha256
@@ -385,7 +630,7 @@ class IntegrationCandidateTests(unittest.TestCase):
         git(folder, "update-index", "--chmod=+x", relative)
         self.evidence()
         result = self.build()
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
         self.assertTrue(git(Path(result.candidate_worktree_path), "ls-files", "--stage", relative).startswith("100755"))
 
     def test_overlay_preserves_exact_bytes_and_executable_index_mode_on_host(self):
@@ -411,7 +656,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                             for w in self.state["workers"]))
         self.evidence()
         result = self.build()
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
 
     def test_checkout_hooks_cannot_inject_undeclared_candidate_outputs(self):
         self.evidence()
@@ -419,7 +664,7 @@ class IntegrationCandidateTests(unittest.TestCase):
         hook.write_bytes(b"#!/bin/sh\nprintf 'injected' > injected.txt\n")
         hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
         result = self.build()
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
         self.assertFalse((Path(result.candidate_worktree_path) / "injected.txt").exists())
 
     def test_atomic_publication_failure_does_not_report_built(self):
@@ -473,7 +718,7 @@ class IntegrationCandidateTests(unittest.TestCase):
         result = self.build()
         # Compare index bytes before any assertion or helper invokes git status.
         self.assert_index_bytes_unchanged(indexes)
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
 
     def test_blocked_build_preserves_source_and_worker_index_bytes_with_stale_stats(self):
         worker = sorted(self.state["workers"], key=lambda item: item["role"])[0]
@@ -519,16 +764,17 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertFalse((Path(result.candidate_worktree_path).parent / "manifest.json").exists())
         self.assertTrue(written[0].is_file())
 
-    def test_canonical_manifest_is_published_after_all_fallible_validation(self):
+    def test_checked_manifest_is_published_after_all_fallible_validation(self):
         self.evidence()
         def refuse_validation_after_publication(root):
-            if (Path(root).parent / "manifest.json").exists():
-                raise ValueError("candidate validation happened after canonical publication")
+            manifest = Path(root).parent / "manifest.json"
+            if manifest.exists() and json.loads(manifest.read_text(encoding="utf-8"))["status"] == "CHECKED_AWAITING_INTEGRATED_REVIEW":
+                raise ValueError("candidate validation happened after checked publication")
             return candidate_tree_sha256(root)
         with patch("scripts.integration_candidate.candidate_tree_sha256",
                    side_effect=refuse_validation_after_publication):
             result = self.build()
-        self.assertEqual(result.status, "BUILT_AWAITING_CHECKS", result.blockers)
+        self.assertEqual(result.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", result.blockers)
         data = json.loads(Path(result.integration_manifest_path).read_text())
         self.assertEqual(data["status"], result.status)
         self.assertEqual(data["candidate_tree_sha256"], candidate_tree_sha256(Path(result.candidate_worktree_path)))
