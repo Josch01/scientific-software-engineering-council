@@ -10,15 +10,17 @@
 - Adaptador a `OdeProblem`/`solve_rk4`; rechaza compartimentos negativos y deriva poblacional sobre `max(1e-12, N*1e-9)`, sin recortar o proyectar la trayectoria.
 - El botón built-in se habilita solo si existe un `model_spec` válido único. La ejecución requiere confirmación; digest, estado matemático y fallo permanecen vinculados a la salida o al error visible.
 - Contrato, resultado y manifest de ejemplo en `examples/`; el manifest puede abrirse con la app desde la raíz `examples`.
+- `.gitattributes` fija LF para los JSON SIR cuyos bytes se referencian por SHA-256. Un worktree Windows con `core.autocrlf=true` reveló que CRLF rompía los digests; se añadió una regresión para cargar el manifest incluido con el loader real.
 
 ## Verificación ejecutada
 
 | Entorno | Comando/actividad | Resultado |
 |---|---|---|
-| Windows, Python 3.14.0 | `python -m unittest discover -s tests -p 'test_scientific*.py' -q` | PASS: 127 tests, 1 omitido |
+| Windows, Python 3.14.0 | `python -m unittest discover -s tests -p 'test_scientific*.py' -q` | PASS: 128 tests, 1 omitido |
+| Windows, Python 3.14.0 | `test_checked_in_sir_demo_workspace_verifies_resource_digests` | PASS después de fijar LF para los recursos hasheados |
 | Windows, Tkinter real oculto | Abrir `sir_scientific_workspace.json`; rechazo y aprobación; revisar pestaña y hash de archivos | PASS: rechazo = 0 ejecuciones; aprobación = 1; pestaña resultado; archivos intactos |
 | Windows, Tkinter real oculto | Workspace con `model_spec` JSON inválido | PASS: error de contrato visible; botón ausente |
-| Docker/Linux, Python 3.14.0 | `python -m unittest discover -s tests -v` | PASS: 438 tests, 6 omitidos. Log en [`p3-sir-declarative-ode-2026-11-03-docker-full.log`](p3-sir-declarative-ode-2026-11-03-docker-full.log) |
+| Docker/Linux, Python 3.14.0 | `python -m unittest discover -s tests -v` | PASS en SHA original `45ad639`: 438 tests, 6 omitidos; esta corrida precede al fix LF. La suite completa posterior al fix queda cubierta por el incremento apilado. Log en [`p3-sir-declarative-ode-2026-11-03-docker-full.log`](p3-sir-declarative-ode-2026-11-03-docker-full.log) |
 | Docker/Linux, Python 3.14.0 | `python scripts/validate_skill.py` | PASS: `VALID STRUCTURE` |
 | Docker/Linux, Python 3.14.0 | `python scripts/scientific_workspace_app.py --check --project-root examples sir_scientific_workspace.json` | PASS: `VIEW_PREPARED`, 2 componentes, 0 errores |
 | Windows, Python 3.14.0 | `python examples/run_sir_model_demo.py` | PASS: `SIMULATED_FIXTURE`, 100 pasos, `scientific_validity=NOT_ASSESSED`, hash del modelo `a131a2b9e2e06544ef165419be769eb025f74529941171c1711b2f0803a38cef` |
@@ -26,14 +28,18 @@
 | Revisión independiente | Contrato, solver y enlace al workspace; alcance estático acotado | PASS: sin hallazgos críticos/importantes reproducibles; revisión no ejecutó Tk visible |
 | GitHub Actions de P3.7 | Requiere push/PR | `NOT_RUN` |
 
+## Defecto encontrado y corrección
+
+Un checkout limpio de Windows con `core.autocrlf=true` transformó los JSON del demo de LF a CRLF. El loader, correctamente, comparó los bytes reales con los SHA-256 declarados y rechazó el workspace. Se fijó `eol=lf` para `examples/sir_*.json` y se agregó una prueba que carga el workspace del repositorio con el loader de producción. El CI del commit corregido debe confirmar la matriz de checkout.
+
 ## Limitaciones y riesgos
 
 - El usuario aún no ha proporcionado ecuaciones exactas, parámetros, unidades, condiciones iniciales ni datos. Su SIR, residuales, ajuste, sensibilidad, identificabilidad, auditoría científica y validez siguen `NOT_RUN`.
 - `beta` y `gamma` no negativas, población constante y las fórmulas de frecuencia dependiente son supuestos de este contrato específico. No hay conversión de unidades ni análisis dimensional general; las unidades son etiquetas con una comprobación de tasa `1/<tiempo>`.
 - RK4 es fijo y no estima error local ni detecta rigidez. Una trayectoria que viole positividad o conservación se rechaza; el contrato no garantiza que el paso aceptado sea suficientemente preciso.
 - La salida aparece en memoria y no se persiste. Callbacks personalizados suministrados por un host siguen ejecutándose dentro del proceso y no están aislados; el workspace no puede registrar callbacks ni ejecutar Python generado.
-- Fit SIR integrado al workspace, incertidumbre, auditoría automatizada, selección de múltiples modelos y espacio configurado directamente por agentes siguen pendientes. CI P3.7 se ejecutará al publicar el PR.
+- Fit SIR integrado al workspace, incertidumbre, auditoría automatizada, selección de múltiples modelos y espacio configurado directamente por agentes siguen pendientes. CI del SHA corregido está pendiente.
 
 ## Entrega Git
 
-Rama `codex/p3-sir-declarative-ode`, basada en `codex/p3-workspace-approved-simulation` (P3.6). Commit/push/PR pendiente; sin merge ni release.
+Rama `codex/p3-sir-declarative-ode`, basada en `codex/p3-workspace-approved-simulation` (P3.6), commit original `45ad639` más corrección de portabilidad posterior. PR borrador #29; CI del SHA corregido pendiente. Sin merge ni release.

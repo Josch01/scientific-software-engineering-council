@@ -88,6 +88,18 @@ def _sir_model_bytes() -> bytes:
 
 
 class ApprovedSimulationActionTests(unittest.TestCase):
+    def test_checked_in_sir_demo_workspace_verifies_resource_digests(self):
+        repository = Path(__file__).resolve().parents[1]
+        workspace = load_scientific_workspace(
+            repository / "examples", "sir_scientific_workspace.json"
+        )
+
+        self.assertEqual(workspace.summary.workspace_id, "sir-demo")
+        self.assertEqual(
+            {resource.kind for resource in workspace.resources},
+            {"model_spec", "simulation_result"},
+        )
+
     def test_builtin_sir_action_runs_only_the_verified_model_spec(self):
         from scripts import scientific_workspace_actions as actions_api
         from scripts.scientific_workspace_actions import (
