@@ -71,6 +71,7 @@ def sample_record(**changes) -> EvidenceRecord:
         "finished_at_utc": "2026-11-02T18:00:03.250000Z",
         "timeout_seconds": 120.0,
         "process_status": "exited",
+        "containment_status": "confirmed",
         "exit_code": 0,
         "unittest_count": 4,
         "stdout_path": "check-runs/exec-22/unit_tests.stdout",
@@ -337,6 +338,11 @@ class EvidenceRecordTests(unittest.TestCase):
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 sample_record(**changes)
+
+    def test_pass_requires_confirmed_process_containment(self):
+        for status in ("not_started", "unverified"):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                sample_record(containment_status=status)
 
     def test_failed_exit_code_record_is_representable(self):
         record = sample_record(process_status="exited", exit_code=1, passed=False)

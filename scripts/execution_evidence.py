@@ -27,6 +27,7 @@ ALLOWED_ENVIRONMENT_KEYS = frozenset({
     "PYTHONHASHSEED",
     "PYTHONIOENCODING",
     "PYTHONUTF8",
+    "PYTHONDONTWRITEBYTECODE",
     "SYSTEMROOT",
     "TEMP",
     "TMP",
@@ -35,7 +36,8 @@ ALLOWED_ENVIRONMENT_KEYS = frozenset({
 })
 _CHECK_SPEC_FIELDS = frozenset({"check_id", "argv", "cwd", "timeout_seconds", "protocol"})
 _PROTOCOLS = frozenset({"exit_code", "unittest"})
-_EVIDENCE_PROCESS_STATUSES = frozenset({"exited", "timed_out", "cancelled", "spawn_error"})
+_EVIDENCE_PROCESS_STATUSES = frozenset({"exited", "timed_out", "cancelled", "spawn_error", "containment_error"})
+_CONTAINMENT_STATUSES = frozenset({"not_started", "confirmed", "unverified"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _UTC_TIMESTAMP_RE = re.compile(
@@ -64,6 +66,7 @@ _EVIDENCE_FIELDS = (
     "finished_at_utc",
     "timeout_seconds",
     "process_status",
+    "containment_status",
     "exit_code",
     "unittest_count",
     "stdout_path",
@@ -72,6 +75,7 @@ _EVIDENCE_FIELDS = (
     "stderr_sha256",
     "passed",
 )
+_CANDIDATE_TREE_PREFIX = b"ssec-candidate-tree-v1\x00"
 
 
 def _require_nonempty_string(value: Any, label: str, *, allow_nul: bool = False) -> str:
@@ -387,14 +391,16 @@ def _hash_file_into(digest, path: Path, initial_stat, label: str) -> int:
     return count
 
 
-def candidate_tree_sha256(root: Path) -> str:
-    """Hash tracked and non-ignored untracked regular files in a Git root.
+@dataclass(frozen=True)
+class _CandidateTreeEntry:
+    relative_path: str
+    raw_path: bytes
+    path: Path
+    executable: bool
+    root: Path
 
-    Each sorted record uses length-prefixed path bytes, an executable-bit byte,
-    a length-prefixed file size, and the exact file bytes. Git metadata and
-    ignored files are excluded. Symlinks, submodules, special files, and read
-    errors fail closed.
-    """
+
+def _candidate_tree_entries(root: Path) -> tuple[_CandidateTreeEntry, ...]:
     original_root = Path(root)
     try:
         original_stat = original_root.lstat()
@@ -422,8 +428,7 @@ def candidate_tree_sha256(root: Path) -> str:
     untracked = {entry for entry in untracked_raw.split(b"\x00") if entry}
     paths = sorted(set(tracked) | untracked)
 
-    digest = hashlib.sha256()
-    digest.update(b"ssec-candidate-tree-v1\x00")
+    entries: list[_CandidateTreeEntry] = []
     for raw_path in paths:
         components = _validate_git_path(raw_path)
         if components is None:
@@ -440,12 +445,37 @@ def candidate_tree_sha256(root: Path) -> str:
             executable = tracked[raw_path] == b"100755"
         else:
             executable = bool(file_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-        path_bytes = raw_path
-        digest.update(len(path_bytes).to_bytes(8, "big"))
-        digest.update(path_bytes)
+        entries.append(_CandidateTreeEntry("/".join(components), raw_path, file_path, executable, root_path))
+    return tuple(entries)
+
+
+def _hash_candidate_entries(entries) -> str:
+    digest = hashlib.sha256()
+    digest.update(_CANDIDATE_TREE_PREFIX)
+    for entry in sorted(entries, key=lambda item: item.raw_path):
+        components = tuple(entry.relative_path.split("/"))
+        file_stat = _lstat_candidate(entry.path, entry.root, components, entry.raw_path)
+        if file_stat is None:
+            raise ValueError(f"candidate file disappeared while hashing: {entry.relative_path!r}")
+        digest.update(len(entry.raw_path).to_bytes(8, "big"))
+        digest.update(entry.raw_path)
+        executable = entry.executable if os.name == "nt" else bool(
+            file_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
         digest.update(b"\x01" if executable else b"\x00")
-        _hash_file_into(digest, file_path, file_stat, os.fsdecode(raw_path))
+        _hash_file_into(digest, entry.path, file_stat, entry.relative_path)
     return digest.hexdigest()
+
+
+def candidate_tree_sha256(root: Path) -> str:
+    """Hash tracked and non-ignored untracked regular files in a Git root.
+
+    Each sorted record uses length-prefixed path bytes, an executable-bit byte,
+    a length-prefixed file size, and the exact file bytes. Git metadata and
+    ignored files are excluded. Symlinks, submodules, special files, and read
+    errors fail closed.
+    """
+    return _hash_candidate_entries(_candidate_tree_entries(root))
 
 
 def _parse_utc_timestamp(value: Any, label: str) -> datetime:
@@ -488,6 +518,7 @@ class EvidenceRecord:
     finished_at_utc: str
     timeout_seconds: float
     process_status: str
+    containment_status: str
     exit_code: int | None
     unittest_count: int | None
     stdout_path: str
@@ -544,6 +575,10 @@ class EvidenceRecord:
 
         if type(self.process_status) is not str or self.process_status not in _EVIDENCE_PROCESS_STATUSES:
             raise ValueError(f"process_status must be one of {sorted(_EVIDENCE_PROCESS_STATUSES)}")
+        if type(self.containment_status) is not str or self.containment_status not in _CONTAINMENT_STATUSES:
+            raise ValueError(f"containment_status must be one of {sorted(_CONTAINMENT_STATUSES)}")
+        if self.process_status != "spawn_error" and self.containment_status == "not_started":
+            raise ValueError("started processes require a containment status")
         if self.exit_code is not None and type(self.exit_code) is not int:
             raise ValueError("exit_code must be an integer or null")
         if self.unittest_count is not None and (type(self.unittest_count) is not int or self.unittest_count < 0):
@@ -561,6 +596,8 @@ class EvidenceRecord:
         if self.stdout_path == self.stderr_path:
             raise ValueError("stdout_path and stderr_path must be distinct")
         if self.passed:
+            if self.containment_status != "confirmed":
+                raise ValueError("passed evidence requires confirmed process containment")
             if self.process_status != "exited" or self.exit_code != 0:
                 raise ValueError("passed evidence requires an exited process with exit_code 0")
             if self.candidate_tree_sha256_before != self.candidate_tree_sha256_after:
