@@ -30,6 +30,7 @@ La prueba local de escape por symlink en Windows también queda `NOT_RUN` por `W
 - El loader solo verifica archivos regular-bounded; no parsea el formato ni prueba consistencia entre artefactos.
 - POSIX requiere `dir_fd`, `O_NOFOLLOW` y `O_NONBLOCK`; si faltan, rechaza la carga.
 - No hay GUI, ejecución aislada, recuperación de cargas interrumpidas ni verificación de procedencia firmada.
+- Decisión del propietario para el primer prototipo: solo ejecutar callbacks confiables, revisados y aprobados explícitamente por una persona; no autoejecutar código Python arbitrario generado por agentes. El runner aislado queda como requisito futuro, no bloquea la GUI/loader actuales.
 - P3.1 y P3.2 siguen en PRs borrador apilados; no se hizo merge.
 
 Antes de ampliar otro componente, confirmar si es necesario para el caso integral SIR.
