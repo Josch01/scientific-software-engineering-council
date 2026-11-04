@@ -217,6 +217,31 @@ class ProviderRuntimeTests(unittest.TestCase):
             runtime = self.module.create_runtime("gemini")
             self.assertEqual(runtime._parse(path), ("conv-1", ("child-1",), None))
 
+    def test_agy_requires_valid_init_and_matching_terminal_conversation(self):
+        result = {"event": "result", "result": {
+            "conversation_id": "conv-1", "status": "SUCCESS", "response": "ok",
+            "usage": {}}}
+        cases = (
+            ([result], "missing init"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": False}, result],
+             "invalid init payload"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": {}},
+              {"event": "result", "result": {key: value for key, value in result["result"].items()
+                                               if key != "conversation_id"}}],
+             "missing terminal conversation ID"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": {}},
+              {"event": "result", "result": dict(result["result"], conversation_id="conv-2")}],
+             "conflicting terminal conversation ID"),
+        )
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            runtime = self.module.create_runtime("gemini")
+            for events, label in cases:
+                with self.subTest(case=label):
+                    path = Path(self.temp.name) / "invalid-agy.jsonl"
+                    path.write_text("\n".join(json.dumps(event) for event in events),
+                                    encoding="utf-8")
+                    self.assertIsNotNone(runtime._parse(path)[2])
+
     def test_agy_rejects_non_success_and_unsupported_per_run_policy(self):
         path = Path(self.temp.name) / "agy-error.jsonl"
         path.write_text("\n".join((

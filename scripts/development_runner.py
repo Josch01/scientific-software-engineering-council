@@ -23,7 +23,8 @@ if not __package__:
     # with the adapters' package imports as well as module-based invocation.
     sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from scripts.agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeStatus
-from scripts.provider_runtimes import CodexRuntime, GeminiRuntime, create_runtime
+from scripts.provider_runtimes import (AgyGeminiRuntime, CodexRuntime, GeminiRuntime,
+                                       create_runtime)
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
 from scripts.check_runner import (run_checks, read_check_manifest, capture_snapshot,
                                   snapshot_artifact_sha256, _ensure_no_symlink_path)
@@ -36,7 +37,7 @@ from scripts.worktree_coordinator import load, inspect, message, git, check_requ
 
 _MAX_REVIEW_DIFF_BYTES=1024*1024
 _MAX_REVIEW_INVOCATIONS=12
-_REVIEW_ADAPTER_TYPES={"codex":CodexRuntime,"gemini":GeminiRuntime}
+_REVIEW_ADAPTER_TYPES={"codex":(CodexRuntime,),"gemini":(GeminiRuntime,AgyGeminiRuntime)}
 
 
 def _utc_now():
@@ -360,7 +361,7 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
             status="TIMED_OUT"
             raise ValueError("global deadline elapsed before reviewer launch")
         runtime=runtime_factory(provider)
-        if type(runtime) is not _REVIEW_ADAPTER_TYPES[provider]:
+        if type(runtime) not in _REVIEW_ADAPTER_TYPES[provider]:
             status="UNVERIFIED_RUNTIME_ADAPTER"
             raise ValueError("custom or fixture runtime cannot establish provider review evidence")
         capabilities=runtime.discover_capabilities()
@@ -434,7 +435,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
                 _sha256_file(stderr)!=observed.stderr_sha256):
             status="FAILED"
             raise ValueError("reviewer runtime log hashes do not match persisted log bytes")
-        response=extract_final_response(provider,stdout)
+        runtime_adapter_type=(type(runtime).__module__+"."+type(runtime).__qualname__)
+        response=extract_final_response(provider,stdout,
+                                        runtime_adapter_type=runtime_adapter_type)
         report=parse_review_report(response,identity)
         status={"PASS":"REVIEW_REPORT_VALID","REQUEST_CHANGES":"REVIEW_FINDINGS_RECORDED",
                 "BLOCKED":"REVIEW_BLOCKED"}[report["verdict"]]

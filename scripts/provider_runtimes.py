@@ -484,6 +484,7 @@ class AgyGeminiRuntime(GeminiRuntime):
     def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
         conversation_id = None
         children: list[str] = []
+        initialized = False
         terminal = False
         error = None
 
@@ -508,13 +509,16 @@ class AgyGeminiRuntime(GeminiRuntime):
                     if terminal:
                         raise ValueError("AGY emitted data after terminal result")
                     if kind == "init":
-                        if conversation_id is not None:
+                        if initialized:
                             raise ValueError("Duplicate AGY init event")
+                        if not isinstance(event.get("init"), dict):
+                            raise ValueError("Malformed AGY init event")
                         bind_conversation(event.get("conversation_id"))
+                        initialized = True
                     elif kind == "step_update":
                         update = event.get("step_update")
-                        if not isinstance(update, dict):
-                            raise ValueError("Malformed AGY step_update event")
+                        if not initialized or not isinstance(update, dict):
+                            raise ValueError("Malformed or out-of-order AGY step_update event")
                         value = update.get("conversation_id")
                         if value is not None:
                             bind_conversation(value)
@@ -532,14 +536,16 @@ class AgyGeminiRuntime(GeminiRuntime):
                                     children.append(child_id)
                     elif kind == "result":
                         result = event.get("result")
-                        if not isinstance(result, dict):
-                            raise ValueError("Malformed AGY result event")
-                        value = event.get("conversation_id", result.get("conversation_id"))
-                        if value is not None:
-                            bind_conversation(value)
-                        nested_id = result.get("conversation_id")
-                        if nested_id is not None:
-                            bind_conversation(nested_id)
+                        if not initialized or not isinstance(result, dict):
+                            raise ValueError("Malformed or out-of-order AGY result event")
+                        event_id = event.get("conversation_id")
+                        result_id = result.get("conversation_id")
+                        if event_id is None and result_id is None:
+                            raise ValueError("AGY terminal event is missing its conversation ID")
+                        if event_id is not None:
+                            bind_conversation(event_id)
+                        if result_id is not None:
+                            bind_conversation(result_id)
                         if not isinstance(result.get("status"), str):
                             raise ValueError("Malformed AGY result status")
                         if result.get("status") != "SUCCESS" or result.get("error"):

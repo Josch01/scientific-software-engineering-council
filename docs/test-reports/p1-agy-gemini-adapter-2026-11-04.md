@@ -1,6 +1,6 @@
 # P1 — Compatibilidad offline del CLI AGY en el slot Gemini
 
-**Estado:** `EXPERIMENTAL`; el E2E AGY real sigue `NOT_RUN`.
+**Estado:** `EXPERIMENTAL`.
 **Base:** P4.5 commit `42a308f`; este cambio conserva `gemini` como proveedor lógico.
 
 ## Cambio
@@ -16,13 +16,21 @@
 - RED: 3 pruebas focalizadas fallaron antes del cambio porque el argv emitía `--mode default` y el detector de capacidades exigía un modo no admitido.
 - `agy --version`: `1.4.12`; `agy --help`: exit 0, 0 bytes en stdout y 3,052 bytes en stderr. Confirma `--settings`, `--sandbox`, `--mode (accept-edits, auto, plan)` y `--output-format stream-json`.
 - `python -m unittest -q tests.test_provider_runtimes tests.test_runner`: **64/64 PASS** en Windows. Incluye argv, parser NDJSON, modo scoped, detección de flags en stderr, ausencia de fallback, y regresiones existentes de ambos módulos.
+- Verificación final focalizada tras revisión independiente: `python -m unittest -q tests.test_provider_runtimes tests.test_runner tests.test_reviewer_output tests.test_review_evidence tests.test_development_worktrees`: **157 pruebas ejecutadas, OK; 2 omitidas por condiciones de plataforma**. Incluye el ciclo integrado de revisión usando un proceso Python local y eventos AGY deterministas; no es una invocación del proveedor.
 - Probe local `create_runtime("gemini").discover_capabilities()` con `SSEC_GEMINI_CLI=agy`: `available=True`, `version=1.4.12`; `sandbox_effective=None`, `native_subagents=UNKNOWN`. Solo ejecutó `--version`/`--help`; no envió prompt.
 - `python scripts/validate_skill.py`: PASS; `python -m compileall -q scripts tests`: exit 0; `git diff --check`: PASS.
-- CI Linux y Windows queda pendiente de los checks remotos para esta rama. No se envió prompt a AGY ni a Gemini. El E2E autenticado AGY/P1.4 sigue `NOT_RUN`; la autorización de invocación única ya se consumió en el intento Gemini anterior, que terminó con código 41 y sin respuesta.
+- La revisión independiente halló y motivó dos correcciones: admitir solo la clase concreta `AgyGeminiRuntime` en el flujo P1.4, extractor y manifiesto; y rechazar streams sin `init` válido o un ID terminal vinculado. La prueba de proceso local recorre runner, parser, reporte, persistencia y revalidación; no establece validez ni independencia real.
+- CI Linux y Windows queda pendiente de los checks remotos para esta rama. E2E autenticado AGY/P1.4 sigue `NOT_RUN`; la autorización de invocación única ya se consumió en el intento Gemini anterior, que terminó con código 41 y sin respuesta. No se hicieron nuevas invocaciones de modelos.
 - No se envió prompt a AGY ni a Gemini. La autenticación y el comportamiento real del protocolo en la instalación del usuario siguen `NOT_RUN`.
 
 ## Límites
 
-El modo `default`/`accept-edits` y `--sandbox` son controles del CLI local, no prueba de aislamiento del sistema operativo. El adaptador no admite archivos de política de herramientas por ejecución de Gemini. El runner de desarrollo conserva el proveedor lógico `gemini`; el subtipo del runtime distingue AGY en sus evidencias. Ningún PASS offline demuestra autenticación, independencia de revisión ni validez científica.
+El modo de revisión por sesión, `accept-edits` y `--sandbox` son controles del CLI local, no prueba de aislamiento del sistema operativo. El adaptador no admite archivos de política de herramientas por ejecución de Gemini. El runner de desarrollo conserva el proveedor lógico `gemini`; el subtipo del runtime distingue AGY en sus evidencias. Ningún PASS offline demuestra autenticación, independencia de revisión ni validez científica.
+
+## Limitaciones diferidas de la revisión
+
+- `run_agents.py` y `AgyGeminiRuntime` no comparten una política de resolución de shims `.cmd`/`.bat`; la instalación observada es un `.exe`. Los fallos de lanzamiento continúan como no aprobados, sin fallback.
+- Falta una regresión dedicada para probes de versión/ayuda que terminen con código distinto de cero; una comprobación de revisión verificó el comportamiento actual como no disponible.
+- No se verificaron autenticación live, contenido de eventos del AGY real, significado efectivo de `--settings`, permisos, sandbox ni independencia del revisor. Permanecen `NOT_RUN`/`UNKNOWN` hasta una autorización y evidencia reales.
 
 Fuentes de protocolo y permisos: [AGY headless mode](https://antigravity.google/docs/cli/headless/) y [AGY execution modes](https://antigravity.google/docs/cli/modes/).

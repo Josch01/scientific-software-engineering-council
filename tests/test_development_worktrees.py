@@ -20,7 +20,7 @@ from scripts.development_runner import (_cli_exit_code, execute, run_worker, _re
                                        _MAX_REVIEW_DIFF_BYTES, _persist_review_artifacts,
                                        _relative_metadata_path)
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
-from scripts.provider_runtimes import GeminiRuntime
+from scripts.provider_runtimes import AgyGeminiRuntime, GeminiRuntime
 
 TASK={"task_id":"SSEC-TEST","kind":"build","request":"Implement a scientific solver",
       "domains":["numerical"],"languages":["python"],"interfaces":["cli"],
@@ -580,6 +580,57 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(report["release_status"],"NOT_APPROVED")
         self.assertFalse(any(event["kind"]=="REVIEW_ACCEPTED"
                              for event in inspect(self.root,task["task_id"])["events"]))
+
+    def test_agy_runtime_completes_local_integrated_review_pipeline(self):
+        from scripts.review_evidence import validate_review_manifest
+        task=task_with_checks()
+        task["check_specs"]=[dict(task["check_specs"][0],argv=[sys.executable,"-P","-m",
+            "unittest","discover","-s","tests","-t",".","-v"]),
+            dict(task["check_specs"][1],argv=[sys.executable,"-c","pass"])]
+        state=initialize(task,POLICY,self.root,apply=True)
+        calls=[]
+
+        def factory(provider):
+            reviewer=len(calls)>=len(state["workers"])
+            calls.append(("reviewer" if reviewer else "worker",provider))
+            return AgyGeminiRuntime() if reviewer else LocalPythonRuntime()
+
+        def discover(runtime):
+            runtime._command=(sys.executable,"-c")
+            return RuntimeCapabilities("gemini",True,"offline-fixture",(),None,
+                                       RuntimeCapabilityStatus.UNKNOWN)
+
+        def build_argv(_runtime,request):
+            identity_text=request.prompt.split("Exact evidence identity to echo: ",1)[1].split("\n",1)[0]
+            report={"schema_version":1,**json.loads(identity_text),"verdict":"PASS",
+                    "summary":"Deterministic local adapter fixture.","findings":[]}
+            response=json.dumps(report,ensure_ascii=False,separators=(",",":"))
+            session="local-agy-"+request.run_id
+            init={"event":"init","conversation_id":session,"init":{"cwd":"fixture"}}
+            result={"event":"result","result":{"conversation_id":session,
+                "status":"SUCCESS","response":response,"usage":{"input_tokens":1,"output_tokens":1}}}
+            code=("import json; print(json.dumps("+repr(init)+")); "
+                  "print(json.dumps("+repr(result)+"))")
+            return ("agy",code)
+
+        with patch.object(AgyGeminiRuntime,"discover_capabilities",discover), \
+                patch.object(AgyGeminiRuntime,"build_argv",build_argv):
+            report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                           parallel=1,minutes=2,runtime_factory=factory)
+
+        self.assertEqual(report["review_status"],"WORKER_REVIEWS_COMPLETE_AWAITING_INTEGRATION",
+                         report["review_evidence"])
+        self.assertEqual(report["execution"],"REVIEWED_WORKER_CANDIDATES_AWAITING_INTEGRATION")
+        self.assertTrue(all(item["status"]=="REVIEW_REPORT_VALID" for item in report["review_evidence"]))
+        self.assertTrue(all(item["runtime_adapter_type"].endswith(".AgyGeminiRuntime")
+                            for item in report["review_evidence"]))
+        _,metadata=load(self.root,task["task_id"])
+        for evidence in report["review_evidence"]:
+            manifest=json.loads((metadata/Path(evidence["manifest_path"])).read_text(encoding="utf-8"))
+            validated=validate_review_manifest(manifest,metadata)
+            self.assertEqual(validated["status"],"PASSED")
+            self.assertEqual(validated["runtime_adapter_type"],
+                             "scripts.provider_runtimes.AgyGeminiRuntime")
 
     def test_review_persists_logical_modes_for_executable_baseline_without_provider_e2e(self):
         from scripts.review_evidence import validate_review_manifest
