@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 
 try:
@@ -32,6 +33,7 @@ try:
         configured_proposal_providers,
         generate_workspace_proposal,
     )
+    from .scientific_workspace_audit import run_workspace_audit
     from .scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
     from .scientific_workspace_proposals import (
         approve_workspace_proposal,
@@ -47,6 +49,7 @@ try:
         sanitize_display_text,
     )
 except ImportError:  # Direct execution from the scripts directory.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from configuration import DEFAULT_CONFIG, config_path, load_config
     from scientific_workspace_actions import (
         ApprovedSimulationRun,
@@ -58,6 +61,7 @@ except ImportError:  # Direct execution from the scripts directory.
         configured_proposal_providers,
         generate_workspace_proposal,
     )
+    from scientific_workspace_audit import run_workspace_audit
     from scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
     from scientific_workspace_proposals import (
         approve_workspace_proposal,
@@ -170,6 +174,36 @@ if QtWidgets is not None:
                 self.completed.emit(summary)
 
 
+    class _AuditThread(QtCore.QThread):
+        progress = QtCore.Signal(object)
+        completed = QtCore.Signal(object)
+        failed = QtCore.Signal(str)
+
+        def __init__(self, project_root, workspace, resource_ids, config, cancel_file, parent=None):
+            super().__init__(parent)
+            self._project_root = project_root
+            self._workspace = workspace
+            self._resource_ids = tuple(resource_ids)
+            self._config = config
+            self._cancel_file = cancel_file
+
+        def run(self) -> None:
+            try:
+                report = run_workspace_audit(
+                    self._project_root,
+                    self._workspace,
+                    self._resource_ids,
+                    self._config,
+                    accept_unmetered_cost=True,
+                    cancel_file=self._cancel_file,
+                    progress_callback=self.progress.emit,
+                )
+            except BaseException as exc:
+                self.failed.emit(f"{type(exc).__name__}: {exc}"[:2000])
+            else:
+                self.completed.emit(report)
+
+
     class _TrajectoryPlot(QtWidgets.QFrame):
         """Small native Qt plot for the verified time series already in memory."""
 
@@ -268,6 +302,14 @@ if QtWidgets is not None:
             self._proposal_progress_dialog = None
             self._proposal_workspace: LoadedWorkspace | None = None
             self._proposal_project_root: Path | None = None
+            self._audit_worker: _AuditThread | None = None
+            self._audit_terminal: tuple[str, object] | None = None
+            self._audit_progress_dialog = None
+            self._audit_cancel_temp: tempfile.TemporaryDirectory | None = None
+            self._audit_cancel_file: Path | None = None
+            self._audit_cancel_requested = False
+            self.audit_result: dict[str, object] | None = None
+            self._audit_result_dialog = None
             self._generation = 0
             self._project_root: Path | None = None
             self._manifest_relative_path: str | None = None
@@ -316,12 +358,17 @@ if QtWidgets is not None:
         def proposal_running(self) -> bool:
             return self._proposal_worker is not None
 
+        @property
+        def audit_running(self) -> bool:
+            return self._audit_worker is not None
+
         def _update_action_controls(self) -> None:
             has_workspace = self._loaded_workspace is not None and self._project_root is not None
-            self.open_button.setEnabled(not self.proposal_running)
-            workflow_busy = self.simulation_running or self.proposal_running
+            self.open_button.setEnabled(not self.proposal_running and not self.audit_running)
+            workflow_busy = self.simulation_running or self.proposal_running or self.audit_running
             self.propose_button.setEnabled(has_workspace and not workflow_busy)
             self.import_proposal_button.setEnabled(has_workspace and not workflow_busy)
+            self.audit_button.setEnabled(has_workspace and not workflow_busy)
 
         def _build_shell(self) -> None:
             toolbar = self.addToolBar("Proyecto")
@@ -348,6 +395,12 @@ if QtWidgets is not None:
             import_button.clicked.connect(self._import_workspace_proposal)
             toolbar.addWidget(import_button)
             self.import_proposal_button = import_button
+            audit_button = QtWidgets.QPushButton("Solicitar auditoría…")
+            audit_button.setObjectName("auditWorkspaceButton")
+            audit_button.setAccessibleName("Solicitar auditoría de recursos verificados")
+            audit_button.clicked.connect(self._open_workspace_audit_dialog)
+            toolbar.addWidget(audit_button)
+            self.audit_button = audit_button
 
             shell = QtWidgets.QWidget(self)
             layout = QtWidgets.QVBoxLayout(shell)
@@ -420,6 +473,301 @@ if QtWidgets is not None:
                 raise ValueError(".ssec existe, pero no es un directorio")
             policy = load_config(policy_path) if policy_path.exists() else dict(DEFAULT_CONFIG)
             return policy, configured_proposal_providers(policy)
+
+        def _audit_config(self, project_root: Path) -> dict[str, object]:
+            policy_path = config_path(project_root)
+            policy_folder = policy_path.parent
+            if policy_folder.is_symlink() or policy_path.is_symlink():
+                raise ValueError("la configuración SSEC no puede atravesar symlinks")
+            if policy_folder.exists() and not policy_folder.is_dir():
+                raise ValueError(".ssec existe, pero no es un directorio")
+            return load_config(policy_path) if policy_path.exists() else dict(DEFAULT_CONFIG)
+
+        def _open_workspace_audit_dialog(self):
+            workspace = self._loaded_workspace
+            project_root = self._project_root
+            if workspace is None or project_root is None:
+                QtWidgets.QMessageBox.information(
+                    self, "Abre un workspace primero", "La auditoría requiere un workspace verificado."
+                )
+                return None
+            try:
+                policy = self._audit_config(project_root)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                QtWidgets.QMessageBox.critical(
+                    self, "Configuración SSEC no válida", sanitize_display_text(str(exc))[:1000]
+                )
+                return None
+
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("workspaceAuditRequestDialog")
+            dialog.setWindowTitle("Solicitar auditoría del workspace")
+            dialog.resize(900, 560)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            intro = QtWidgets.QLabel(
+                f"Workspace: {workspace.summary.title} · {workspace.summary.workspace_id}\n"
+                "Selecciona únicamente recursos verificados que se compartirán con especialistas."
+            )
+            intro.setWordWrap(True)
+            intro.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(intro)
+
+            table = QtWidgets.QTableWidget(len(workspace.resources), 5)
+            table.setObjectName("workspaceAuditResourceTable")
+            table.setHorizontalHeaderLabels(("ID", "Tipo", "Ruta", "Bytes", "SHA-256"))
+            table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+            table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setAlternatingRowColors(True)
+            for row, resource in enumerate(workspace.resources):
+                values = (resource.resource_id, resource.kind, resource.path,
+                          str(len(resource.content)), resource.sha256)
+                for column, value in enumerate(values):
+                    item = QtWidgets.QTableWidgetItem(sanitize_display_text(value))
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+                    table.setItem(row, column, item)
+            table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            layout.addWidget(table, 1)
+
+            note = QtWidgets.QLabel(
+                f"Proveedor configurado: {policy['provider_mode']}. La ejecución CLI puede consumir cuota; "
+                "SSEC no mide ni limita el coste. Solo se enviarán los recursos seleccionados y el contexto "
+                "derivado. La salida es informativa: no equivale a una revisión independiente de SSEC, "
+                "certificación científica ni aprobación."
+            )
+            note.setObjectName("workspaceAuditSafetyNotice")
+            note.setWordWrap(True)
+            note.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(note)
+
+            buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            dispatch = buttons.addButton(
+                "Enviar a especialistas…", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            )
+            dispatch.setObjectName("dispatchWorkspaceAuditButton")
+            buttons.rejected.connect(dialog.reject)
+            dispatch.clicked.connect(
+                lambda: self._dispatch_workspace_audit(dialog, table, workspace, project_root, policy)
+            )
+            layout.addWidget(buttons)
+            dialog.setModal(True)
+            dialog.show()
+            self._audit_request_dialog = dialog
+            return dialog
+
+        def _dispatch_workspace_audit(self, dialog, table, workspace, project_root, policy) -> None:
+            selected_rows = sorted(index.row() for index in table.selectionModel().selectedRows())
+            selected_ids = tuple(table.item(row, 0).text() for row in selected_rows)
+            if not selected_ids:
+                QtWidgets.QMessageBox.information(
+                    dialog, "Selecciona recursos", "Selecciona al menos un recurso verificado."
+                )
+                return
+            if self._loaded_workspace is not workspace or self._project_root != project_root:
+                QtWidgets.QMessageBox.warning(
+                    dialog, "Workspace cambió", "Vuelve a abrir la solicitud con el workspace activo."
+                )
+                return
+            answer = QtWidgets.QMessageBox.question(
+                dialog,
+                "Confirmar envío a especialistas",
+                f"Enviar {len(selected_ids)} recurso(s) de {workspace.summary.workspace_id!r} "
+                f"al proveedor {policy['provider_mode']!r}? La operación CLI puede consumir cuota. "
+                "SSEC no mide el coste. La salida no aprobará cambios ni certificará resultados. ¿Continuar?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            dialog.accept()
+            self._start_workspace_audit(workspace, project_root, selected_ids, policy)
+
+        def _start_workspace_audit(self, workspace, project_root, selected_ids, policy) -> None:
+            if self.audit_running or self.proposal_running or self.simulation_running:
+                return
+            cancel_temp = tempfile.TemporaryDirectory(prefix="ssec-qt-audit-cancel-")
+            cancel_file = Path(cancel_temp.name) / "cancel.requested"
+            progress = QtWidgets.QProgressDialog(
+                "Preparando snapshot verificado…", "Cancelar", 0, 0, self
+            )
+            progress.setObjectName("workspaceAuditProgressDialog")
+            progress.setWindowTitle("Auditoría del workspace")
+            progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            progress.canceled.connect(self._cancel_workspace_audit)
+            worker = _AuditThread(project_root, workspace, selected_ids, policy, cancel_file, self)
+            worker.progress.connect(self._on_workspace_audit_progress)
+            worker.completed.connect(self._on_workspace_audit_completed)
+            worker.failed.connect(self._on_workspace_audit_failed)
+            worker.finished.connect(self._on_workspace_audit_finished)
+            self._audit_worker = worker
+            self._audit_terminal = None
+            self._audit_progress_dialog = progress
+            self._audit_cancel_temp = cancel_temp
+            self._audit_cancel_file = cancel_file
+            self._audit_cancel_requested = False
+            self._update_action_controls()
+            self.statusBar().showMessage("Auditoría en curso · salida no aprobada")
+            progress.show()
+            try:
+                worker.start()
+            except RuntimeError as exc:
+                if worker.isRunning():
+                    progress.setLabelText("La auditoría inició; espera el resultado terminal.")
+                    return
+                self._audit_worker = None
+                self._audit_progress_dialog = None
+                self._audit_cancel_temp = None
+                self._audit_cancel_file = None
+                cancel_temp.cleanup()
+                progress.reset()
+                progress.hide()
+                progress.deleteLater()
+                worker.deleteLater()
+                self._update_action_controls()
+                self.statusBar().showMessage(
+                    f"No se pudo iniciar la auditoría; sin aprobación: {sanitize_display_text(str(exc))[:300]}",
+                    10_000,
+                )
+
+        def _cancel_workspace_audit(self) -> None:
+            cancel_file = self._audit_cancel_file
+            if cancel_file is None or self._audit_cancel_requested:
+                return
+            try:
+                cancel_file.write_text("cancel requested\n", encoding="utf-8")
+            except OSError as exc:
+                QtWidgets.QMessageBox.critical(
+                    self, "No se pudo solicitar cancelación", sanitize_display_text(str(exc))[:500]
+                )
+                return
+            self._audit_cancel_requested = True
+            progress = self._audit_progress_dialog
+            if progress is not None:
+                progress.setLabelText("Cancelación solicitada · esperando el cierre de procesos locales")
+                cancel_button = progress.findChild(QtWidgets.QPushButton)
+                if cancel_button is not None:
+                    cancel_button.setEnabled(False)
+                progress.show()
+            self.statusBar().showMessage("Cancelación solicitada · esperando el cierre de procesos locales")
+
+        @QtCore.Slot(object)
+        def _on_workspace_audit_progress(self, event: object) -> None:
+            if self._audit_worker is None or not isinstance(event, Mapping):
+                return
+            label = sanitize_display_text(str(event.get("status", "Especialista trabajando")))[:300]
+            if self._audit_progress_dialog is not None:
+                self._audit_progress_dialog.setLabelText(label)
+            if not self._audit_cancel_requested:
+                self.statusBar().showMessage(f"Auditoría en curso · {label} · sin aprobación")
+
+        @QtCore.Slot(object)
+        def _on_workspace_audit_completed(self, result: object) -> None:
+            self._audit_terminal = ("result", result)
+
+        @QtCore.Slot(str)
+        def _on_workspace_audit_failed(self, message: str) -> None:
+            self._audit_terminal = ("error", sanitize_display_text(message)[:2000])
+
+        @QtCore.Slot()
+        def _on_workspace_audit_finished(self) -> None:
+            worker = self.sender()
+            if worker is not self._audit_worker:
+                return
+            terminal = self._audit_terminal
+            progress = self._audit_progress_dialog
+            cancel_temp = self._audit_cancel_temp
+            cancel_requested = self._audit_cancel_requested
+            self._audit_worker = None
+            self._audit_terminal = None
+            self._audit_progress_dialog = None
+            self._audit_cancel_temp = None
+            self._audit_cancel_file = None
+            self._audit_cancel_requested = False
+            if cancel_temp is not None:
+                cancel_temp.cleanup()
+            if progress is not None:
+                progress.reset()
+                progress.hide()
+                progress.deleteLater()
+            self._update_action_controls()
+            worker.deleteLater()
+            if terminal is None:
+                report = {
+                    "execution": "FAILED",
+                    "error": "worker terminó sin resultado verificable",
+                    "release_status": "NOT_APPROVED",
+                    "scientific_validity": "NOT_CERTIFIED",
+                }
+            elif terminal[0] == "error":
+                report = {
+                    "execution": "FAILED",
+                    "error": terminal[1],
+                    "release_status": "NOT_APPROVED",
+                    "scientific_validity": "NOT_CERTIFIED",
+                }
+            elif isinstance(terminal[1], Mapping):
+                report = dict(terminal[1])
+            else:
+                report = {"execution": "FAILED", "error": "respuesta de auditoría inválida"}
+            valid_states = {
+                "PROCESSES_COMPLETED_NOT_AUDITED", "PARTIAL_OR_FAILED", "INTERRUPTED", "CANCELLED", "FAILED"
+            }
+            if report.get("execution") not in valid_states:
+                report["unexpected_execution"] = report.get("execution")
+                report["execution"] = "FAILED"
+                report["error"] = "estado terminal no reconocido"
+            report["release_status"] = "NOT_APPROVED"
+            report["scientific_validity"] = "NOT_CERTIFIED"
+            report["human_review"] = "NOT_PERFORMED"
+            self.audit_result = report
+            execution = report["execution"]
+            if execution == "FAILED":
+                message = "Auditoría fallida · sin aprobación"
+            elif execution == "CANCELLED" or cancel_requested:
+                message = f"Cancelación solicitada · {execution} · sin aprobación"
+            elif execution == "PROCESSES_COMPLETED_NOT_AUDITED":
+                message = "Procesos completados · salida no auditada independientemente ni aprobada"
+            else:
+                message = f"Auditoría {execution} · sin aprobación"
+            self.statusBar().showMessage(message, 10_000)
+            self._show_workspace_audit_result(report)
+
+        def _show_workspace_audit_result(self, report: Mapping[str, object]) -> None:
+            previous = self._audit_result_dialog
+            if previous is not None:
+                previous.close()
+                previous.deleteLater()
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("workspaceAuditResultDialog")
+            dialog.setWindowTitle("Resultado de auditoría · no aprobado")
+            dialog.resize(880, 620)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            notice = QtWidgets.QLabel(
+                "Los procesos CLI no constituyen una revisión independiente de SSEC, prueba aprobada, "
+                "validación científica ni aprobación de cambios."
+            )
+            notice.setWordWrap(True)
+            notice.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(notice)
+            output = QtWidgets.QPlainTextEdit()
+            output.setObjectName("workspaceAuditResultText")
+            output.setReadOnly(True)
+            output.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+            display = _display_json(report)
+            if len(display) > 60_000:
+                display = display[:60_000] + "\n… resultado truncado en la vista; el informe guardado conserva el contenido completo."
+            output.setPlainText(display)
+            layout.addWidget(output, 1)
+            buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(dialog.reject)
+            buttons.accepted.connect(dialog.accept)
+            layout.addWidget(buttons)
+            self._audit_result_dialog = dialog
+            dialog.show()
 
         def _open_workspace_proposal_dialog(self):
             workspace = self._loaded_workspace
@@ -557,7 +905,7 @@ if QtWidgets is not None:
         def _start_workspace_proposal(
             self, workspace, project_root, selected_ids, objective, policy
         ) -> None:
-            if self.proposal_running or self.simulation_running:
+            if self.proposal_running or self.simulation_running or self.audit_running:
                 return
             cancel_event = threading.Event()
             progress = QtWidgets.QProgressDialog(
@@ -991,7 +1339,9 @@ if QtWidgets is not None:
                 button.setObjectName(f"run-simulation-{component.component_id}")
                 button.setAccessibleName(f"Solicitar confirmación y ejecutar {action.label}")
                 button.setToolTip("Requiere confirmación humana antes de iniciar la acción confiable de SSEC")
-                button.setEnabled(not self.simulation_running and not self.proposal_running)
+                button.setEnabled(
+                    not self.simulation_running and not self.proposal_running and not self.audit_running
+                )
                 button.clicked.connect(
                     lambda _checked=False, selected=component, approved=action:
                     self._request_and_run_simulation(selected, approved)
@@ -1074,7 +1424,7 @@ if QtWidgets is not None:
 
         def _request_and_run_simulation(self, component: ComponentView, action) -> None:
             workspace = self._loaded_workspace
-            if workspace is None or self.simulation_running or self.proposal_running:
+            if workspace is None or self.simulation_running or self.proposal_running or self.audit_running:
                 return
             try:
                 ticket = request_approved_simulation(
@@ -1146,6 +1496,15 @@ if QtWidgets is not None:
             thread.deleteLater()
 
         def closeEvent(self, event) -> None:
+            if self.audit_running:
+                self._cancel_workspace_audit()
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Auditoría en curso",
+                    "Se solicitó cancelación. Espera a que terminen los procesos CLI locales antes de cerrar.",
+                )
+                event.ignore()
+                return
             if self.proposal_running:
                 self._cancel_workspace_proposal()
                 QtWidgets.QMessageBox.information(
