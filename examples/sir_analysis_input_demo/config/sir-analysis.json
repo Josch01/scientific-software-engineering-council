@@ -1,0 +1,1 @@
+{"bounds":{"beta_knot_1":[0.05,0.8],"gamma":[0.02,0.4]},"fit_knots":{"beta":[1]},"initial_parameters":{"beta_knot_1":0.3,"gamma":0.08},"max_function_evaluations":500,"max_iterations":100,"perturbations":{"beta_knot_1":0.001,"gamma":0.001},"schema_version":1}

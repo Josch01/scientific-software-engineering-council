@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
@@ -12,16 +13,20 @@ try:
     from .scientific_core import (
         ObservationDataset,
         SirModelDefinition,
+        SirParameterAnalysis,
         analyze_sir_parameters,
         solve_sir_model,
     )
+    from .scientific_workspace_loader import load_scientific_workspace
 except ImportError:  # Support direct execution: python scripts/build_sir_analysis_demo.py
     from scientific_core import (
         ObservationDataset,
         SirModelDefinition,
+        SirParameterAnalysis,
         analyze_sir_parameters,
         solve_sir_model,
     )
+    from scientific_workspace_loader import load_scientific_workspace
 
 
 _SIR_FIXTURE: dict[str, object] = {
@@ -56,6 +61,275 @@ def _json_bytes(payload: object) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(token: str) -> object:
+    raise ValueError(f"non-finite JSON value {token!r} is not allowed")
+
+
+def _strict_json_resource(content: bytes, label: str) -> object:
+    try:
+        return json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"{label} JSON is invalid: {exc}") from exc
+
+
+def _analysis_config(content: bytes) -> dict[str, object]:
+    payload = _strict_json_resource(content, "analysis configuration")
+    required = {
+        "schema_version", "initial_parameters", "bounds", "perturbations",
+        "fit_knots", "max_iterations", "max_function_evaluations",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != required:
+        raise ValueError("analysis configuration has missing or unknown fields")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError("analysis configuration schema_version must be 1")
+    for name in ("initial_parameters", "bounds", "perturbations"):
+        if not isinstance(payload[name], Mapping):
+            raise ValueError(f"analysis configuration {name} must be an object")
+    fit_knots = payload["fit_knots"]
+    if fit_knots is not None and not isinstance(fit_knots, Mapping):
+        raise ValueError("analysis configuration fit_knots must be an object or null")
+    for name in ("max_iterations", "max_function_evaluations"):
+        if type(payload[name]) is not int or payload[name] < 1:
+            raise ValueError(f"analysis configuration {name} must be a positive integer")
+    return dict(payload)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _create_analysis_output(
+    output_dir: str | Path,
+    *,
+    source_root: Path,
+    model_content: bytes,
+    observations_content: bytes,
+    analysis_config_content: bytes,
+    dataset: ObservationDataset,
+    analysis: SirParameterAnalysis,
+    source_manifest_sha256: str,
+    input_resource_sha256: Mapping[str, str],
+) -> None:
+    """Write a complete, digest-linked workspace into a new or empty directory."""
+    root = Path(output_dir).resolve(strict=False)
+    source = source_root.resolve(strict=True)
+    if _is_relative_to(root, source) or _is_relative_to(source, root):
+        raise ValueError("analysis output must be outside the source project")
+    if root.exists():
+        if not root.is_dir() or any(root.iterdir()):
+            raise ValueError("output directory must be empty")
+
+    source_content = Path(__file__).resolve().read_bytes().replace(b"\r\n", b"\n")
+    core_content = (
+        Path(__file__).resolve().with_name("scientific_core.py")
+        .read_bytes()
+        .replace(b"\r\n", b"\n")
+    )
+    provenance = {
+        "schema_version": 1,
+        "status": "CALCULATED_FROM_DIGEST_MATCHED_INPUTS",
+        "source_workspace_manifest_sha256": source_manifest_sha256,
+        "input_resource_sha256": dict(input_resource_sha256),
+        "scientific_core_sha256": hashlib.sha256(core_content).hexdigest(),
+        "python_version": sys.version.split()[0],
+        "data_status": dataset.provenance.get("data_status", "NOT_DECLARED"),
+        "input_source_authentication": "NOT_ASSESSED",
+        "scientific_validity": "NOT_ASSESSED",
+        "identifiability": "NOT_ASSESSED",
+        "uncertainty": "NOT_CALCULATED",
+    }
+    uncertainty = {
+        "schema_version": 1,
+        "status": "NOT_CALCULATED",
+        "scientific_validity": "NOT_ASSESSED",
+        "identifiability": "NOT_ASSESSED",
+        "reason": "No uncertainty estimator is defined in this analysis workflow.",
+    }
+    payloads: tuple[tuple[str, str, str, bytes], ...] = (
+        ("model", "model_spec", "model/model.json", model_content),
+        ("observations", "observations", "data/observations.json", observations_content),
+        ("analysis-config", "generic", "config/sir-analysis.json", analysis_config_content),
+        ("simulation", "simulation_result", "results/simulation.json",
+         _json_bytes(analysis.solution.to_dict())),
+        ("fit", "fit_result", "results/fit.json", _json_bytes(analysis.fit.to_dict())),
+        ("sensitivity", "sensitivity_result", "results/sensitivity.json",
+         _json_bytes(analysis.sensitivity.to_dict())),
+        ("evaluation", "observation_evaluation", "results/evaluation.json",
+         _json_bytes(analysis.evaluation.to_dict())),
+        ("uncertainty", "uncertainty_result", "results/uncertainty.json",
+         _json_bytes(uncertainty)),
+        ("analysis-provenance", "generic", "results/provenance.json",
+         _json_bytes(provenance)),
+        ("scientific-core", "source_code", "code/scientific_core.py", core_content),
+        ("analysis-builder", "source_code", "code/build_sir_analysis_demo.py", source_content),
+    )
+    resources = [
+        {"id": resource_id, "kind": kind, "path": path,
+         "sha256": hashlib.sha256(content).hexdigest()}
+        for resource_id, kind, path, content in payloads
+    ]
+    manifest = {
+        "schema_version": 1,
+        "workspace_id": f"sir-analysis-{source_manifest_sha256[:16]}",
+        "title": "Análisis SIR a partir de recursos con digest coincidente",
+        "description": (
+            "Análisis calculado con recursos cuyas huellas coinciden con el manifiesto fuente. "
+            "Esto no autentica procedencia; validez e identificabilidad: NOT_ASSESSED; "
+            "incertidumbre: NOT_CALCULATED."
+        ),
+        "resources": resources,
+        "sections": [
+            {
+                "id": "model-data",
+                "title": "Modelo y observaciones de entrada",
+                "components": [
+                    {"id": "equations", "type": "equation_view", "title": "Ecuaciones",
+                     "resource_refs": ["model"], "config": {}},
+                    {"id": "parameters", "type": "parameter_table", "title": "Parámetros declarados",
+                     "resource_refs": ["model"], "config": {}},
+                    {"id": "observations-view", "type": "observation_table", "title": "Observaciones declaradas",
+                     "resource_refs": ["observations"], "config": {}},
+                ],
+            },
+            {
+                "id": "analysis-results",
+                "title": "Resultados calculados",
+                "components": [
+                    {"id": "trajectory", "type": "simulation_plot", "title": "Trayectorias RK4",
+                     "resource_refs": ["simulation"],
+                     "config": {"x_axis": "time", "series": ["S", "I", "R"],
+                                "context_refs": ["model"]}},
+                    {"id": "fit-view", "type": "fit_summary", "title": "Ajuste local calculado",
+                     "resource_refs": ["fit"],
+                     "config": {"parameter_names": list(analysis.fit.parameters),
+                                "context_refs": ["model", "observations"]}},
+                    {"id": "sensitivity-view", "type": "sensitivity_plot", "title": "Sensibilidad local",
+                     "resource_refs": ["sensitivity"],
+                     "config": {"state_names": ["S", "I", "R"],
+                                "parameter_names": list(analysis.sensitivity.parameter_names),
+                                "context_refs": ["model"]}},
+                    {"id": "residual-view", "type": "residual_plot", "title": "Residuales calculados",
+                     "resource_refs": ["evaluation"], "config": {}},
+                    {"id": "uncertainty-view", "type": "uncertainty_summary", "title": "Incertidumbre",
+                     "resource_refs": ["uncertainty"], "config": {"quantities": ["S", "I", "R"]}},
+                ],
+            },
+        ],
+    }
+    manifest_content = _json_bytes(manifest)
+    if not root.exists():
+        root.mkdir(parents=True)
+    if any(root.iterdir()):
+        raise ValueError("output directory must be empty")
+    for _resource_id, _kind, relative_path, content in payloads:
+        target = root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as stream:
+            stream.write(content)
+    with (root / "workspace.json").open("xb") as stream:
+        stream.write(manifest_content)
+
+
+def build_analysis_workspace(
+    source_project_root: str | Path,
+    source_manifest: str,
+    output_dir: str | Path,
+    *,
+    model_resource_id: str = "model",
+    observations_resource_id: str = "observations",
+    config_resource_id: str = "analysis-config",
+) -> dict[str, object]:
+    """Analyze validated SIR resources and write a digest-linked workspace.
+
+    The source manifest loader verifies resource containment and SHA-256 before
+    this function parses model, observations, or bounded analysis settings.
+    """
+    root = Path(source_project_root).resolve(strict=True)
+    output = Path(output_dir).resolve(strict=False)
+    if _is_relative_to(output, root) or _is_relative_to(root, output):
+        raise ValueError("analysis output must be outside the source project")
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise ValueError("output directory must be empty")
+
+    loaded = load_scientific_workspace(root, source_manifest)
+    by_id = {resource.resource_id: resource for resource in loaded.resources}
+    requested = (
+        (model_resource_id, "model_spec", "model"),
+        (observations_resource_id, "observations", "observations"),
+        (config_resource_id, "generic", "analysis configuration"),
+    )
+    selected = {}
+    for resource_id, expected_kind, label in requested:
+        resource = by_id.get(resource_id)
+        if resource is None or resource.kind != expected_kind:
+            raise ValueError(f"input workspace requires {label} resource {resource_id!r} of kind {expected_kind!r}")
+        selected[label] = resource
+
+    model_resource = selected["model"]
+    observations_resource = selected["observations"]
+    config_resource = selected["analysis configuration"]
+    definition = SirModelDefinition.from_json(model_resource.content)
+    observation_payload = _strict_json_resource(observations_resource.content, "observations")
+    if not isinstance(observation_payload, Mapping):
+        raise ValueError("observations JSON must be an object")
+    dataset = ObservationDataset.from_dict(observation_payload)
+    config = _analysis_config(config_resource.content)
+    analysis = analyze_sir_parameters(
+        definition,
+        dataset,
+        initial_parameters=config["initial_parameters"],
+        bounds=config["bounds"],
+        perturbations=config["perturbations"],
+        fit_knots=config["fit_knots"],
+        max_iterations=config["max_iterations"],
+        max_function_evaluations=config["max_function_evaluations"],
+    )
+    _create_analysis_output(
+        output,
+        source_root=root,
+        model_content=model_resource.content,
+        observations_content=observations_resource.content,
+        analysis_config_content=config_resource.content,
+        dataset=dataset,
+        analysis=analysis,
+        source_manifest_sha256=hashlib.sha256(loaded.manifest_bytes).hexdigest(),
+        input_resource_sha256={
+            "model": model_resource.sha256,
+            "observations": observations_resource.sha256,
+            "analysis_config": config_resource.sha256,
+        },
+    )
+    return {
+        "status": "BUILT_ANALYSIS_WORKSPACE",
+        "workspace_path": "workspace.json",
+        "resource_count": 11,
+        "fit_status": analysis.fit.status,
+        "parameters": dict(analysis.fit.parameters),
+        "data_status": dataset.provenance.get("data_status", "NOT_DECLARED"),
+        "analysis_execution": "COMPUTED_FROM_DECLARED_INPUTS",
+        "scientific_validity": "NOT_ASSESSED",
+        "identifiability": "NOT_ASSESSED",
+        "uncertainty": "NOT_CALCULATED",
+    }
 
 
 def _profiled_fixture(beta_middle: float) -> dict[str, object]:
@@ -247,14 +521,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=repository / "examples" / "sir_analysis_workspace_demo",
+        help="output directory; required when --source-root is used",
     )
     parser.add_argument(
         "--scenario", choices=("constant", "profiled"), default="constant",
         help="synthetic scenario to calculate (default: constant)",
     )
+    parser.add_argument("--source-root", type=Path,
+                        help="project directory with a securely loadable workspace")
+    parser.add_argument("--source-manifest",
+                        help="project-relative source manifest path")
+    parser.add_argument("--model-id", default="model",
+                        help="model_spec resource id (default: model)")
+    parser.add_argument("--observations-id", default="observations",
+                        help="observations resource id (default: observations)")
+    parser.add_argument("--analysis-config-id", default="analysis-config",
+                        help="generic analysis settings resource id (default: analysis-config)")
     arguments = parser.parse_args(argv)
-    result = build_demo(arguments.output_dir, scenario=arguments.scenario)
+    if arguments.source_root is not None or arguments.source_manifest is not None:
+        if arguments.source_root is None or arguments.source_manifest is None:
+            parser.error("--source-root and --source-manifest must be supplied together")
+        if arguments.output_dir is None:
+            parser.error("--output-dir is required with --source-root")
+        try:
+            result = build_analysis_workspace(
+                arguments.source_root,
+                arguments.source_manifest,
+                arguments.output_dir,
+                model_resource_id=arguments.model_id,
+                observations_resource_id=arguments.observations_id,
+                config_resource_id=arguments.analysis_config_id,
+            )
+        except (OSError, TypeError, ValueError, RecursionError) as exc:
+            print(json.dumps({"status": "INVALID", "error": str(exc)}), file=sys.stderr)
+            return 2
+    else:
+        if arguments.model_id != "model" or arguments.observations_id != "observations" or arguments.analysis_config_id != "analysis-config":
+            parser.error("resource id options require --source-root")
+        output_dir = arguments.output_dir or (
+            repository / "examples" / "sir_analysis_workspace_demo"
+        )
+        result = build_demo(output_dir, scenario=arguments.scenario)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
