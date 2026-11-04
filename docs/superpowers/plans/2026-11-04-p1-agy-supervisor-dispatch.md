@@ -52,4 +52,4 @@
 - [x] Document the fake-verified runtime code path and the unverified provider-backed audit, sandbox, isolation, and scientific claims.
 - [x] Run `python -m unittest tests.test_configuration tests.test_provider_modes tests.test_provider_runtimes tests.test_runner -q`, `py_compile`, and `git diff --check`; record Windows symlink setup limitations.
 - [x] Complete focused independent review of the cancellation gate fix; fix reproducible important findings. A final minor TOCTOU remains if the marker is created after the final check and before `Popen`; documented because the worker cancels after `launch()` returns and no approval is produced.
-- [ ] Commit/push a separate branch and open a draft PR stacked on #32; record CI, without merge or release.
+- [x] Commit `8466e7b2a3aa7966ce7c339febf2f100387273b0`, push, and open draft PR #33 stacked on #32. Run #148 passed 4/4 Windows/Ubuntu × Python 3.11/3.12 jobs; no merge or release.

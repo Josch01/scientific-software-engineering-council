@@ -14,7 +14,7 @@ No se invocó un modelo/proveedor durante este incremento. No demuestra el recor
 | `python -m unittest tests.test_configuration tests.test_provider_modes tests.test_provider_runtimes tests.test_runner -q` | `BLOCKED` parcialmente por entorno: 86 tests ejecutados; 84 pasaron. Dos fixtures no pudieron crear symlinks (`WinError 1314`) antes de sus aserciones. |
 | `python -m unittest tests.test_runner -q` | `PASS`, 8/8; regresión de compatibilidad del worker existente. |
 | `python -m py_compile` en módulos/tests modificados; `git diff --check` | `PASS`, ambos comandos terminaron sin errores. |
-| Windows/Linux CI para este commit | `NOT_RUN` al redactar este informe; registrar los checks del commit luego del push. |
+| Windows/Linux CI para el commit `8466e7b2a3aa7966ce7c339febf2f100387273b0` | `PASS`, run [#148](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41754856720), 4/4 jobs (Windows/Ubuntu × Python 3.11/3.12). |
 | Despacho supervisor → CLI AGY real | `NOT_RUN`; no repetir la invocación real ya autorizada. |
 
 La prueba de `execute` usa runtimes falsos: verifica el enlace por rol, `runtime_run_id` distinto por especialista y que un grupo de exit 0 no genera aprobación. No prueba el comportamiento del proveedor ni de su sandbox.
@@ -34,4 +34,4 @@ La revisión clasificó como menor una ventana TOCTOU restante: si el archivo ap
 
 ## Estado
 
-Incremento de software local comprobable con runtime fake. Revisión independiente concluida; la TOCTOU menor está documentada. No merge ni release. PR draft apilado sobre #32; completar aquí SHA y CI antes de cerrar el incremento.
+Incremento de software local comprobable con runtime fake. Revisión independiente concluida; la TOCTOU menor está documentada. Commit `8466e7b2a3aa7966ce7c339febf2f100387273b0`; PR draft #33 apilado sobre #32. Run #148 pasó los 4 jobs. No merge ni release.
