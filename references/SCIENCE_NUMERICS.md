@@ -38,7 +38,15 @@ The contract validates nonnegative finite initial populations with positive tota
 
 The dynamic workspace's `equation_view` and `parameter_table` components recognize this validated contract. They render the fixed equations, declared units, initial conditions, integration interval/settings, and constant or piecewise-linear rate profiles as reusable views selected by the manifest. Other model resources remain bounded, inert JSON; no renderer imports project modules. The example manifest at `examples/sir_scientific_workspace.json` combines these views with the existing simulation plot and human-confirmed run action.
 
-Adaptive/stiff solvers, general equation languages, unit conversion, parameter fitting through the workspace, uncertainty, PDEs, and scientific audit automation remain outside this increment.
+## SIR parameter analysis bridge v1 (experimental P3.17)
+
+`SirModelDefinition.to_ode_problem()` exposes the same closed SIR equations to existing fit/sensitivity APIs when both rates are constant. Piecewise-linear schedules remain supported for simulation, but fitting their knots is not supported. `analyze_sir_parameters()` composes the existing bounded least-squares fit, local central-difference sensitivity, fixed-step RK4 solution, and observation residual evaluator; it adds no optimizer, solver, or uncertainty algorithm.
+
+The bridge requires exact `beta`/`gamma` inputs, nonnegative rate bounds and sensitivity endpoints, matching model/observation time units, and population-unit labels matching the SIR contract. Residuals remain raw and unweighted; the wrapper currently requires every measured compartment to use the same declared population unit. A shared scalar-step budget covers fit evaluations and returned analysis trajectories. A checked RHS enforces nonnegative intermediate compartments and population conservation throughout fit and sensitivity solves; the returned fitted trajectory is checked as well.
+
+The fit contract's status is displayed exactly. For the checked-in exact synthetic fixture, it currently reports `STALLED` while recovering rates within 4e-9 of the declared synthetic values. This numerical result does not demonstrate convergence, identifiability, model validity, or agreement with empirical data. The reproducible workspace is `examples/sir_analysis_workspace_demo/`; run `python scripts/build_sir_analysis_demo.py` to regenerate it. Its observations are generated from the same model, uncertainty is `NOT_CALCULATED`, scientific validity and identifiability are `NOT_ASSESSED`, and the user's model/data remain `NOT_RUN`.
+
+Adaptive/stiff solvers, general equation languages, unit conversion, time-varying-rate fit parameterization, uncertainty, PDEs, and scientific audit automation remain outside this increment.
 
 ## Local ODE parameter sensitivities (experimental P2.2)
 

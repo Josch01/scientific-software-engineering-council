@@ -58,9 +58,9 @@ The Qt frontend exposes audit dispatch through **Solicitar auditoría…**. It s
 
 ### Native fit, sensitivity, and residual views (P3.16)
 
-The Qt frontend now projects `LeastSquaresFit`, `OdeSensitivity`, and `ObservationEvaluation` schema v1 into bounded display models while leaving all numerical work in `scientific_core`. Fit results show method, status, cost, work counts, configured parameter order, initial/fitted values, declared bounds, residual values, and source resource digest. The residual table is capped at 200 evenly sampled rows, including both endpoints, while the summary retains the full count. The current fit schema carries no parameter-unit fields, so the view says `unidad no indicada` unless a trusted caller supplies explicit unit context. A fit status or residual magnitude is not an identifiability or uncertainty result.
+The Qt frontend now projects `LeastSquaresFit`, `OdeSensitivity`, and `ObservationEvaluation` schema v1 into bounded display models while leaving all numerical work in `scientific_core`. Fit results show method, status, cost, work counts, configured parameter order, initial/fitted values, declared bounds, residual values, and source resource digest. The residual table is capped at 200 evenly sampled rows, including both endpoints, while the summary retains the full count. The fit schema carries no parameter-unit fields: without a validated linked model context, the view says `unidad no indicada`; P3.17 derives SIR labels only from an explicitly linked, validated model resource. A fit status or residual magnitude is not an identifiability or uncertainty result.
 
-Sensitivity values are selected with the declared `[time][state][parameter]` tensor order and plotted by configured state/parameter axes. The current sensitivity schema has no unit fields; the view labels time and derivative units as not supplied unless explicit unit context is supplied. Sensitivity remains a local derivative result and does not establish practical identifiability.
+Sensitivity values are selected with the declared `[time][state][parameter]` tensor order and plotted by configured state/parameter axes. The sensitivity schema has no unit fields; the view labels time and derivative units as not supplied unless the manifest links a validated SIR context. Sensitivity remains a local derivative result and does not establish practical identifiability.
 
 The `observation_evaluation` resource kind and `residual_plot` component consume the versioned evaluation record. For each observed variable, Qt shows separate observed-versus-simulated and residual plots over the original observation times, along with the declared units, provenance, normalized observation digest, and verified resource ID/path/SHA-256. Sparse rows and `(time, variable)` residual coordinates are preserved. The result verifier checks residual values against supplied simulated-minus-observed values; it does not fit, estimate uncertainty, or infer missing observations.
 
@@ -75,6 +75,20 @@ python scripts/scientific_workspace_qt.py --project-root examples scientific_wor
 ```
 
 `examples/scientific_workspace_science_views_demo/README.md` marks every value as a synthetic UI fixture. This example is not the user's SIR, experimental evidence, identifiability analysis, or a scientifically validated result. The user's SIR remains `NOT_RUN` until its equations and data are supplied.
+
+### Declarative SIR analysis workspace (P3.17)
+
+Open the reproducible SIR analysis workspace from the repository root:
+
+```text
+python scripts/scientific_workspace_qt.py --project-root examples/sir_analysis_workspace_demo workspace.json
+```
+
+Regenerate the model, exact synthetic observations, simulation, fit, local sensitivity, observation evaluation, and resource hashes with `python scripts/build_sir_analysis_demo.py`. The builder calls the existing scientific-core APIs; the agent or project does not supply executable code. The workspace includes equation and parameter views, observations, a simulation plot, fit summary, sensitivity plot, residual plots, an uncertainty summary, and the builder source as inert text.
+
+The `simulation_plot`, `fit_summary`, and `sensitivity_plot` components may declare optional `config.context_refs`. These IDs must resolve to manifest resources distinct from the primary result, and only the kinds allowed by each component are accepted. For a `model_spec`, the UI derives time, population, and rate unit labels only after strict validation as SIR v1. The fit panel may also link one observations resource for provenance. Primary and context paths/digests are shown as byte-integrity evidence; they do not prove which inputs produced the result.
+
+This demo samples observations from the same declared synthetic SIR simulation used by the fit. The optimizer's `STALLED` status is displayed as returned even though its rates are close to the known synthetic rates; it is not relabeled as converged. Residuals are raw simulation-minus-observation values, and local sensitivity does not establish practical identifiability. Uncertainty remains `NOT_ASSESSED / NOT_CALCULATED` with no intervals or bands. The user's SIR and experimental data remain `NOT_RUN`.
 
 The built-in action accepts only the closed, versioned SIR equation set documented in `SCIENCE_NUMERICS.md`; it validates the verified resource bytes and uses SSEC's existing RK4 solver. Each run requires human confirmation. A custom `approved_simulations` map may still be passed by a trusted host and takes precedence for matching components; projects cannot register callbacks. Host callbacks receive immutable bytes captured by the safe loader plus the validated component view, and run on a daemon thread. The returned `OdeSolution` must pass row, value, parameter, schema, and series checks before the app opens an in-memory result tab. Callback errors leave the prior view intact. Closing the workspace does not cancel an already running host callback; only reviewed, bounded callbacks should be supplied. The result is not saved to the project and establishes no model validity. Invalid or ambiguous SIR model specs show a visible error and do not create a runnable action.
 
