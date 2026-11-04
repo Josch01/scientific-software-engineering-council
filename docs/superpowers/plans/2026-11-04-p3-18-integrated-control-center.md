@@ -86,4 +86,4 @@
 - [x] Launch the application with the checked-in synthetic SIR workspace and capture an actual UI screenshot; no agent provider is invoked.
 - [x] Record focused test commands, screenshot/demo command, Linux/provider limitations, defects and architectural decisions.
 - [x] Run `py_compile`, focused regression suites and `git diff --check`.
-- [ ] Create a draft PR stacked on P3.17; do not merge.
+- [x] Create a draft PR stacked on P3.17; do not merge.

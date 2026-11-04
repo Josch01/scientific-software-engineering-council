@@ -17,7 +17,7 @@ Los cambios de proyecto se validan antes de cargar el workspace y se rechazan du
 
 La documentación de entrega y captura visual se añade en un commit separado.
 
-La rama `codex/p3-18-integrated-control-center` se apila sobre `codex/p3-17-sir-analysis-integration` (P3.17, draft PR #41). Sin merge a `main` ni release.
+La rama `codex/p3-18-integrated-control-center` está publicada y se apila sobre `codex/p3-17-sir-analysis-integration` (P3.17, draft PR #41). P3.18 está en draft PR [#42](https://github.com/Josch01/scientific-software-engineering-council/pull/42), `mergeable=true`, sin merge. Al consultar GitHub aún no había estados de CI publicados. No hay release.
 
 ## Verificación
 
@@ -42,6 +42,8 @@ Se abrió la app en modo Windows con `examples/sir_analysis_workspace_demo/works
 2. El botón Cancelar permanecía deshabilitado después de `QProcess.start()`: el estado se actualizaba antes de que llegara la señal `started`. El slot ahora refresca los controles al iniciar.
 3. Un `FailedToStart` seguido de una prueba Qt con `QThread` podía terminar Python con código nativo `-1073740791` y dejar el log abierto en Windows. La causa era destruir el `QProcess` dentro de la secuencia de señal y perder su instancia; el supervisor ahora conserva y reutiliza el proceso detenido. Una regresión cubre fallo→reintento.
 4. La revisión independiente encontró que guardar una política escribía `.ssec/config.json` sin una confirmación que describiera la persistencia. Ahora guardar política solicita aprobación antes de escribir y la confirmación de auditoría avisa que el flujo actualizará el mismo archivo. Pruebas de aceptación/rechazo confirman que el rechazo no escribe; suite combinada: 32 pruebas.
+
+La revisión independiente final confirmó este arreglo sin otros hallazgos reproducibles P0–P2; el revisor no ejecutó las pruebas.
 
 ## Decisiones y límites
 
