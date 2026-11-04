@@ -60,16 +60,18 @@ class LoadedResource:
 
 @dataclass(frozen=True, slots=True, init=False)
 class LoadedWorkspace:
-    """Immutable validated layout and all-or-nothing verified resources."""
+    """Immutable validated layout, manifest bytes, and verified resources."""
 
     summary: manifest_api.WorkspaceSummary
     manifest: Mapping[str, object]
+    manifest_bytes: bytes
     resources: tuple[LoadedResource, ...]
 
     def __init__(
         self,
         summary: manifest_api.WorkspaceSummary,
         manifest: Mapping[str, object],
+        manifest_bytes: bytes,
         resources: tuple[LoadedResource, ...],
         *,
         _loader_token: object | None = None,
@@ -78,6 +80,7 @@ class LoadedWorkspace:
             raise TypeError("verified workspaces can only be created by the loader")
         object.__setattr__(self, "summary", summary)
         object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(self, "manifest_bytes", manifest_bytes)
         object.__setattr__(self, "resources", resources)
 
     def to_dict(self) -> dict[str, object]:
@@ -317,6 +320,7 @@ def load_scientific_workspace(
     return LoadedWorkspace(
         summary,
         frozen_manifest,
+        manifest_bytes,
         tuple(loaded),
         _loader_token=_LOADER_TOKEN,
     )

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "scope": "synthetic_workspace_fixture",
+  "resource_digest_check": "NOT_RUN",
+  "scientific_validity": "NOT_ASSESSED",
+  "user_sir_validation": "NOT_RUN",
+  "note": "This inert example documents status only; it is not a scientific audit."
+}

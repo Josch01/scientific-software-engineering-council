@@ -28,6 +28,10 @@ try:
         build_workspace_view_model,
         sanitize_display_text,
     )
+    from .scientific_workspace_proposals import (
+        approve_workspace_proposal,
+        preview_workspace_proposal,
+    )
 except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from scripts.scientific_workspace_actions import (
@@ -45,6 +49,10 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
         WorkspaceViewModel,
         build_workspace_view_model,
         sanitize_display_text,
+    )
+    from scripts.scientific_workspace_proposals import (
+        approve_workspace_proposal,
+        preview_workspace_proposal,
     )
 
 
@@ -529,6 +537,8 @@ def create_workspace_window(
     ttk.Label(header, textvariable=title_var, style="WorkspaceTitle.TLabel").pack(side="left")
     status_var = tk.StringVar(value="Sin espacio científico abierto")
     ttk.Label(header, textvariable=status_var).pack(side="right", padx=(12, 0))
+    proposal_button = ttk.Button(header, text="Revisar propuesta…", state="disabled")
+    proposal_button.pack(side="right", padx=(0, 8))
     open_button = ttk.Button(header, text="Abrir espacio…")
     open_button.pack(side="right")
     notice_var = tk.StringVar(
@@ -564,6 +574,9 @@ def create_workspace_window(
     notebook.pack(fill="both", expand=True)
 
     def display(model: WorkspaceViewModel | None) -> None:
+        proposal_button.configure(
+            state=("normal" if active_workspace[0] is not None and active_project_root[0] else "disabled")
+        )
         for page in result_tabs.values():
             notebook.forget(page)
             page.destroy()
@@ -676,11 +689,126 @@ def create_workspace_window(
             messagebox.showerror("No se pudo abrir el espacio", str(exc), parent=root)
             return
         active_workspace[0] = workspace
+        active_project_root[0] = root_path
         display(model)
 
+    def review_proposal() -> None:
+        if active_simulation[0] is not None:
+            return
+        current = active_workspace[0]
+        root_path = active_project_root[0]
+        if current is None or root_path is None:
+            messagebox.showinfo(
+                "Abra un workspace primero",
+                "Para comparar una propuesta, abra primero el workspace activo del proyecto.",
+                parent=root,
+            )
+            return
+        selected = filedialog.askopenfilename(
+            parent=root,
+            title="Seleccionar propuesta de workspace",
+            initialdir=str(root_path),
+            filetypes=(("Workspace manifest", "*.json"), ("All files", "*")),
+        )
+        if not selected:
+            return
+        try:
+            selected_path = Path(selected).resolve(strict=True)
+            relative_path = selected_path.relative_to(root_path).as_posix()
+            preview = preview_workspace_proposal(root_path, current, relative_path)
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("Propuesta no válida", str(exc), parent=root)
+            return
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Revisar propuesta de workspace")
+        dialog.minsize(700, 480)
+        dialog.transient(root)
+        summary = ttk.Label(
+            dialog,
+            text=(
+                f"Propuesta: {json.dumps(preview.workspace_title, ensure_ascii=True)}\n"
+                f"SHA-256 semántico: {preview.proposal_manifest_sha256}"
+            ),
+            justify="left",
+            wraplength=1000,
+        )
+        summary.pack(fill="x", padx=12, pady=(12, 6))
+        review_frame = ttk.Frame(dialog)
+        review_frame.pack(fill="both", expand=True, padx=12, pady=6)
+        diff_text = tk.Text(review_frame, wrap="none", height=24, width=100)
+        vertical = ttk.Scrollbar(review_frame, orient="vertical", command=diff_text.yview)
+        horizontal = ttk.Scrollbar(review_frame, orient="horizontal", command=diff_text.xview)
+        diff_text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        diff_text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        review_frame.rowconfigure(0, weight=1)
+        review_frame.columnconfigure(0, weight=1)
+        diff_text.insert(
+            "1.0",
+            sanitize_display_text(preview.diff) if preview.changed
+            else "La propuesta no contiene cambios respecto al workspace activo.",
+        )
+        diff_text.configure(state="disabled")
+        notice_text = (
+            "El diff es completo y se limita a componentes registrados. "
+            "No se ejecutará código de la propuesta. Aprobar guardará una copia nueva; "
+            "el manifiesto fuente no se sobrescribirá."
+        )
+        ttk.Label(dialog, text=notice_text, wraplength=1000, justify="left").pack(
+            fill="x", padx=12, pady=6
+        )
+        actions = ttk.Frame(dialog)
+        actions.pack(fill="x", padx=12, pady=(4, 12))
+
+        def reject() -> None:
+            dialog.destroy()
+
+        def approve() -> None:
+            if not preview.changed:
+                return
+            target_name = f".ssec-workspace-{preview.approved_manifest_sha256}.json"
+            if not messagebox.askyesno(
+                "Aprobar propuesta",
+                f"Guardar la propuesta validada como {target_name} y abrirla como workspace activo?",
+                parent=dialog,
+            ):
+                return
+            approve_button.configure(state="disabled")
+            try:
+                if active_workspace[0] is not current or active_project_root[0] != root_path:
+                    raise ValueError("active workspace changed after preview")
+                approved = approve_workspace_proposal(root_path, active_workspace[0], preview)
+                next_view = build_workspace_view_model(approved.workspace)
+                active_workspace[0] = approved.workspace
+                display(next_view)
+                notice_var.set(
+                    notice_var.get()
+                    + f" Manifiesto aprobado guardado en {approved.manifest_relative_path}."
+                )
+                dialog.destroy()
+            except (OSError, ValueError, TypeError) as exc:
+                approve_button.configure(state="normal")
+                messagebox.showerror("No se pudo aprobar la propuesta", str(exc), parent=dialog)
+
+        ttk.Button(actions, text="Rechazar", command=reject).pack(side="right", padx=(8, 0))
+        approve_button = ttk.Button(
+            actions,
+            text="Aprobar y guardar",
+            command=approve,
+            state="normal" if preview.changed else "disabled",
+        )
+        approve_button.pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", reject)
+        dialog.grab_set()
+        dialog.wait_window()
+
     open_button.configure(command=open_workspace)
+    proposal_button.configure(command=review_proposal)
     root.bind("<Control-o>", lambda _event: open_workspace())
     active_workspace = [loaded_workspace]
+    active_project_root = [project_hint]
     host_approved_simulations = dict(approved_simulations or {})
     active_simulation_actions = [host_approved_simulations]
     simulation_buttons: dict[str, object] = {}
@@ -728,6 +856,7 @@ def create_workspace_window(
             action_button.configure(state="disabled")
         button.configure(text="Ejecutando…")
         open_button.configure(state="disabled")
+        proposal_button.configure(state="disabled")
         status_var.set("Simulación en curso · callback aprobado · SIN VALIDACIÓN CIENTÍFICA")
         root.update_idletasks()
 
@@ -747,6 +876,9 @@ def create_workspace_window(
         except RuntimeError as exc:
             active_simulation[0] = None
             open_button.configure(state="normal")
+            proposal_button.configure(
+                state="normal" if active_workspace[0] is not None and active_project_root[0] else "disabled"
+            )
             for action_button in simulation_buttons.values():
                 action_button.configure(state="normal")
             button.configure(text=f"Ejecutar: {action.label}")
@@ -766,6 +898,9 @@ def create_workspace_window(
         component = active["component"]
         active_simulation[0] = None
         open_button.configure(state="normal")
+        proposal_button.configure(
+            state="normal" if active_workspace[0] is not None and active_project_root[0] else "disabled"
+        )
         for component_id, action_button in simulation_buttons.items():
             action_button.configure(state="normal")
             action = active_simulation_actions[0].get(component_id)

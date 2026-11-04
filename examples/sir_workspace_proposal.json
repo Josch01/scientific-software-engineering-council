@@ -1,0 +1,88 @@
+{
+  "resources": [
+    {
+      "id": "sir-model",
+      "kind": "model_spec",
+      "path": "sir_model_demo.json",
+      "sha256": "a131a2b9e2e06544ef165419be769eb025f74529941171c1711b2f0803a38cef"
+    },
+    {
+      "id": "initial-result",
+      "kind": "simulation_result",
+      "path": "sir_demo_result.json",
+      "sha256": "c5b254e0345ca24e9a91403fbcfbf854193a468acd2ad21a54672d3e614a2302"
+    },
+    {
+      "id": "audit-fixture",
+      "kind": "audit_report",
+      "path": "sir_demo_audit.json",
+      "sha256": "07d5f829ae1b78b5121a6af1327f91cb108fd205847b5e3eab05fc63ceb640d9"
+    }
+  ],
+  "schema_version": 1,
+  "sections": [
+    {
+      "components": [
+        {
+          "config": {},
+          "id": "equations",
+          "resource_refs": [
+            "sir-model"
+          ],
+          "title": "Ecuaciones",
+          "type": "equation_view"
+        },
+        {
+          "config": {},
+          "id": "parameters",
+          "resource_refs": [
+            "sir-model"
+          ],
+          "title": "Parámetros y condiciones iniciales",
+          "type": "parameter_table"
+        }
+      ],
+      "id": "model",
+      "title": "Modelo declarativo"
+    },
+    {
+      "components": [
+        {
+          "config": {
+            "series": [
+              "S",
+              "I",
+              "R"
+            ],
+            "x_axis": "time"
+          },
+          "id": "trajectory",
+          "resource_refs": [
+            "initial-result"
+          ],
+          "title": "Trayectoria SIR",
+          "type": "simulation_plot"
+        }
+      ],
+      "id": "simulation",
+      "title": "Simulación"
+    },
+    {
+      "components": [
+        {
+          "config": {},
+          "id": "audit-status",
+          "resource_refs": [
+            "audit-fixture"
+          ],
+          "title": "Estado científico",
+          "type": "audit_summary"
+        }
+      ],
+      "id": "review",
+      "title": "Revisión y limitaciones"
+    }
+  ],
+  "title": "Propuesta de espacio · SIR sintético",
+  "workspace_id": "sir-demo"
+}
