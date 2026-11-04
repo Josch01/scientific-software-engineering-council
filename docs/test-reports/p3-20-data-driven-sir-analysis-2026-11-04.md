@@ -48,6 +48,6 @@ Entorno local: Windows, Python 3.14.0, PySide6 6.11.1.
 
 La brecha atendida era que el builder solo aceptaba escenarios de demo codificados. P3.20 permite suministrar recursos estructurados y seguros sin crear algoritmos científicos. La entrada de procedencia se conserva como declarada y su autenticidad queda `NOT_ASSESSED`. Los dos defectos importantes encontrados por revisión independiente se corrigieron y tienen pruebas de regresión. No quedan defectos críticos/importantes reproducibles en el alcance verificado.
 
-Rama: `codex/p3-20-sir-analysis-input`, apilada sobre P3.19. No se hizo merge a `main` ni se publicó una release. El estado del PR y CI se añadirá tras publicar el incremento.
+Commit `3df8ec0` — `feat: build SIR analysis from verified workspace`. PR [#51](https://github.com/Josch01/scientific-software-engineering-council/pull/51) abierto en estado draft contra `codex/p3-19-sir-profile-analysis`; no está mergeado. En la consulta inicial de CI, GitHub aún no devolvía checks para el head `3df8ec0`; la verificación CI queda `PENDING` hasta que aparezcan los jobs. No se hizo merge a `main` ni se publicó una release.
 
 **Siguiente objetivo:** avanzar con los siguientes componentes de P3 del Centro de Control, conservando la aplicación Qt como shell común y la lógica científica independiente del frontend. Aplicar a datos del usuario cuando estén disponibles; no afirmar validez científica o identificabilidad desde esta prueba sintética.
