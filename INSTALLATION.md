@@ -1,67 +1,76 @@
-# Instalación y primeros usos (v0.1.0)
+# Instalación y primeros usos
 
-Esta versión es una **skill de instrucciones, plantillas y verificadores deterministas**. No lanza agentes reales por sí sola.
+SSEC ofrece dos modos con contratos y límites compartidos:
 
-## Gemini CLI (instalación desde GitHub)
+- **Modo A — skill portable:** el agente descubre `SKILL.md` y sus referencias. Puede usarse sin la aplicación visual.
+- **Modo B — Centro de Control:** la app PySide6 opcional abre proyectos/workspaces locales y puede iniciar el runner de auditoría solo después de confirmación explícita.
 
-Según la documentación oficial de Gemini CLI, instala el repositorio en tu perfil de usuario:
+La skill y el motor pueden revisarse sin instalar paquetes. Esta guía no instala software, skills ni proveedores.
 
-```bash
-gemini skills install https://github.com/Josch01/scientific-software-engineering-council.git
-gemini skills list
-```
+## Modo A — Codex
 
-Se solicitará confirmación de seguridad. Para un proyecto particular, utiliza `--scope workspace` según la versión de Gemini CLI que tengas instalada. Dentro de Gemini, utiliza `/skills list` y `/skills reload` para verificar el descubrimiento.
+Para un proyecto, copia o clona este repositorio bajo `.agents/skills/scientific-software-engineering-council/`. Para disponibilidad del usuario, usa `~/.agents/skills/scientific-software-engineering-council/`. Codex busca `.agents/skills` en el proyecto y sus directorios superiores; inicia una sesión nueva para que descubra la skill.
 
-Documentación oficial: https://geminicli.com/docs/cli/skills/
+Referencia oficial: [crear y usar skills en Codex](https://learn.chatgpt.com/docs/build-skills?kbid=111697).
 
-## Codex y otros agentes compatibles
+## Modo A — Gemini CLI
 
-La skill sigue la estructura portable `SKILL.md`. En entornos Codex que descubran skills en `.agents/skills/`, puedes clonar este repositorio dentro de esa ruta. Por ejemplo, desde la raíz del proyecto:
+La documentación oficial permite instalar desde Git o enlazar una ruta local. Si decides instalar desde Git, deja activa la confirmación de seguridad:
 
 ```bash
-mkdir -p .agents/skills
-git clone https://github.com/Josch01/scientific-software-engineering-council.git .agents/skills/scientific-software-engineering-council
+gemini skills install https://github.com/Josch01/scientific-software-engineering-council.git --scope user
+gemini skills list --all
 ```
 
-En Windows PowerShell:
+Para un proyecto usa `--scope workspace`; antes de hacerlo, revisa el repositorio y confía el workspace solo si corresponde. En la sesión, verifica con `/skills list` y actualiza el descubrimiento con `/skills reload`. No uses `--consent` para omitir la confirmación salvo aprobación explícita.
 
-```powershell
-New-Item -ItemType Directory -Force -Path .agents/skills | Out-Null
-git clone https://github.com/Josch01/scientific-software-engineering-council.git .agents/skills/scientific-software-engineering-council
+Referencias del proveedor: [gestión de skills](https://geminicli.com/docs/cli/skills/) y [descubrimiento y confianza](https://geminicli.com/docs/cli/tutorials/skills-getting-started/).
+
+## Modo B — runner local
+
+Requiere que el propietario haya instalado y autenticado la CLI de proveedor que elija con el método admitido por ese proveedor. SSEC no instala proveedores ni agrega una API aparte; el proveedor puede requerir su propia autenticación y cuota. SSEC no cambia a otro proveedor ni inicia agentes al abrir la app.
+
+```bash
+python scripts/run_agents.py --help
 ```
 
-Ajusta la ruta si tu cliente/proveedor utiliza otro directorio de skills; revisa sus mecanismos de confianza y activación. La existencia del directorio no garantiza que el runtime habilite ejecución de subagentes.
+`--execute` inicia procesos de CLI en snapshots desechables; requiere además `--accept-unmetered-cost`, porque el costo no se mide de forma fiable. Sin ambos, no se debe declarar una auditoría ejecutada. Los resultados del proveedor tampoco son aprobación independiente ni certificación científica.
 
-Información general: https://agentskills.io/specification
+## Aplicación de escritorio
 
-## Probar localmente sin agentes
+El motor y la skill son utilizables sin PySide6. Si PySide6 ya está instalado y está aprobado para ese entorno:
 
-Requiere Python >= 3.11, sin dependencias adicionales:
+```bash
+python scripts/scientific_control_center_qt.py
+python scripts/scientific_control_center_qt.py --project-root /ruta/al/proyecto --manifest workspace.json
+```
+
+La app inicia sin invocar un modelo. Sus acciones de auditoría muestran una confirmación antes de iniciar el runner. PySide6/Qt WebEngine no están fijados en un lockfile en este estado experimental; no se instalan automáticamente. WebEngine local es opcional y las vistas tienen fallback Qt nativo. El modo Tkinter del workspace permanece disponible si PySide6 no está instalado.
+
+## Validación local sin proveedor
+
+Requiere Python 3.11 o posterior. No llama a modelos ni acredita validez científica:
 
 ```bash
 python scripts/validate_skill.py
+python -m compileall -q scripts tests
 python -m unittest discover -s tests -v
 python scripts/route_task.py examples/seir_desktop_audit.json
-python scripts/release_gate.py --task examples/seir_desktop_audit.json --evidence examples/release_evidence_not_run.json
 ```
 
-El comando de release debe terminar con código 2 (bloqueo intencional por falta de evidencia real).
+Para ver la app sin datos del usuario, abre `examples/sir_analysis_workspace_demo/workspace.json`. La demo usa un fixture sintético; su ajuste indica `STALLED`, y no acredita identificabilidad, incertidumbre o validez científica.
 
-## Primera auditoría sugerida
+## Diagnóstico rápido
 
-> Activa `scientific-software-engineering-council` para auditar este repositorio científico en modo sólo lectura. Comienza con inventario, mapa de dependencias, identificación de errores numéricos/algorítmicos y riesgos GUI, sin modificar código. Entrega un plan con roles y test cases; separa hipótesis científicas de defectos de software. No declares pruebas ejecutadas que no se realizaron.
+| Síntoma | Acción |
+|---|---|
+| La skill no aparece | Confirma el directorio de descubrimiento del proveedor y abre una sesión nueva; en Gemini usa `/skills list` y `/skills reload`. |
+| Falta la CLI o la autenticación | El runner debe quedar `BLOCKED`; no hay fallback silencioso a otro proveedor. |
+| Falta PySide6 | Usa el modo portable o la app Tkinter; no se instala PySide6 automáticamente. |
+| No hay WebEngine | La vista usa el fallback nativo de Qt. |
+| Auditoría termina sin revisión verificable | Conserva `NOT_APPROVED`; exit code 0 no basta para aprobar. |
+| SIR o datos del usuario no disponibles | Marca simulación y análisis de ese caso `NOT_RUN`; no sustituyas los datos por el fixture sintético. |
 
-## Alcance y limitaciones
+## Estado de release
 
-- `route_task.py` propone roles y evidencias; **no los ejecuta**.
-- `release_gate.py` comprueba formato y hashes de logs, **no certifica** verdad científica ni independencia real.
-- Para trabajo con IDL se necesita instalación/licencia adecuada; sin ella se marca `NOT_RUN`.
-- Construcciones de GUI Windows/Linux y agentes reales requieren sus entornos correspondientes.
-
-## Hojas de ruta
-
-- [v0.2 Orquestación multiagente](https://github.com/Josch01/scientific-software-engineering-council/issues/1)
-- [v0.3 Módulos científicos](https://github.com/Josch01/scientific-software-engineering-council/issues/2)
-- [v0.4 GUI e IDL](https://github.com/Josch01/scientific-software-engineering-council/issues/3)
-- [v1.0 Benchmarks, dependencias y releases](https://github.com/Josch01/scientific-software-engineering-council/issues/4)
+P1–P4 continúan experimentales y `v1.0` no está listo. La CI cubre parte de Windows/Linux; GUI Qt Linux, proveedor real desde la app, benchmarks de tres proyectos, sandbox efectivo y decisión de licencia siguen pendientes o `NOT_RUN`. Véase la [matriz de capacidades](docs/roadmap/FEATURE_MATRIX.md) y el [informe P3.18](docs/test-reports/p3-18-integrated-control-center-2026-11-04.md).

@@ -1,13 +1,15 @@
-# Scientific Software Engineering Council — v0.2.0-dev.3
+# Scientific Software Engineering Council — v0.2.0-dev.4
+
+Guías de [instalación y primeros usos](INSTALLATION.md) y [contribución](CONTRIBUTING.md).
 
 Skill portable de ingeniería de software científico orientada a auditorías, desarrollo, GUI de escritorio, IDL y experimentos reproducibles. **Repositorio nuevo y separado** de `Josch01/skill-investigacion-cientifica-rag`.
 
 ## Qué es y qué no es
 
-- Es una skill `SKILL.md` con protocolos, plantillas y herramientas pequeñas verificables con Python estándar.
-- El router prepara un plan mínimo de especialistas y gates; **no inicia agentes** ni descarga skills automáticamente.
-- El gate comprueba estructura e integridad de evidencias aportadas, pero no comprueba la honestidad de un log ni certifica algoritmos.
-- Para contextos realmente separados: configurar en v0.2 un adaptador al runtime de Codex, Gemini CLI o Antigravity con sesiones/worktrees reales, permisos y presupuestos.
+- Es una skill `SKILL.md` portable y una aplicación de escritorio opcional que reutiliza contratos y motor científico.
+- `route_task.py` produce un plan; `run_agents.py` puede lanzar CLIs locales solo con opciones explícitas y aceptación humana del costo no medible.
+- Coordinación por worktree y revisión son experimentales; no equivalen a aislamiento de sistema operativo ni certificación científica.
+- La evidencia se vincula a candidatos y recursos, pero hashes no autentican origen ni demuestran la honestidad de un proceso.
 - IDL significa *Interactive Data Language* de NV5; si se usa otro significado de IDL, cambiar el adaptador.
 
 ## Inicio rápido

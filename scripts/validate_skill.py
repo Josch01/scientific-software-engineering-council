@@ -9,7 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SKILL_NAME = "scientific-software-engineering-council"
 MANDATORY = [
-    "README.md", "SKILL.md", "references/ROUTER.md", "references/MULTI_AGENT.md",
+    "README.md", "INSTALLATION.md", "CONTRIBUTING.md", "SKILL.md",
+    "references/ARCHITECTURE.md", "references/ROUTER.md", "references/MULTI_AGENT.md",
     "references/SCIENTIFIC_BOUNDARY.md", "references/TEST_MATRIX.md",
     "references/GUI_DESKTOP.md", "references/IDL_ADAPTER.md",
     "references/DEPENDENCY_SKILLS.md", "references/RELEASE_POLICY.md",
