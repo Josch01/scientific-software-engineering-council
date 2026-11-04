@@ -160,6 +160,55 @@ class ObservationEvaluationTests(unittest.TestCase):
         self.assertEqual(evaluation.observation_sha256, dataset.content_sha256)
         json.dumps(evaluation.to_dict(), allow_nan=False)
 
+    def test_evaluate_observations_splits_rk4_at_breakpoints(self):
+        dataset = scientific_core.ObservationDataset.from_dict({
+            "schema_version": 1,
+            "time_unit": "day",
+            "variables": [{"name": "x", "unit": "unitless"}],
+            "observations": [
+                {"time": 0.0, "values": {"x": 0.0}},
+                {"time": 1.0, "values": {"x": 0.625}},
+            ],
+            "provenance": {"source": "continuous piecewise-linear derivative fixture"},
+        })
+        problem = scientific_core.OdeProblem(
+            rhs=lambda time, _state, _parameters: (
+                time if time <= 0.5 else 2.0 * time - 0.5,
+            ),
+            t_span=(0.0, 1.0),
+            initial_state=(0.0,),
+            parameters={},
+            state_names=("x",),
+        )
+
+        evaluation = scientific_core.evaluate_observations(
+            problem,
+            dataset,
+            model_time_unit="day",
+            model_variable_units={"x": "unitless"},
+            max_step=1.0,
+            breakpoints=(0.5,),
+        )
+
+        self.assertEqual(evaluation.segment_step_counts, (0, 2))
+        self.assertEqual(evaluation.residuals, (0.0, 0.0))
+        self.assertEqual(evaluation.total_step_count, 2)
+
+    def test_evaluate_observations_rejects_unsorted_duplicate_or_out_of_span_breakpoints(self):
+        dataset = scientific_core.ObservationDataset.from_dict(exponential_dataset())
+        for breakpoints in ((0.75, 0.25), (0.5, 0.5), (-0.1,), (1.1,)):
+            with self.subTest(breakpoints=breakpoints), self.assertRaisesRegex(
+                ValueError, "breakpoints"
+            ):
+                scientific_core.evaluate_observations(
+                    self._decay_problem(),
+                    dataset,
+                    model_time_unit="day",
+                    model_variable_units={"infected": "people"},
+                    max_step=0.1,
+                    breakpoints=breakpoints,
+                )
+
     def test_residual_order_follows_declared_variable_order(self):
         dataset = scientific_core.ObservationDataset.from_dict(
             {

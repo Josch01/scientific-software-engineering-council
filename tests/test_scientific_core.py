@@ -242,6 +242,18 @@ class SIRDeclarativeContractTests(unittest.TestCase):
         self.assertAlmostEqual(contract.parameters["beta"].evaluate(0.5), 0.3)
         self.assertAlmostEqual(contract.parameters["beta"].evaluate(1.5), 0.25)
 
+    def test_piecewise_linear_evaluate_overrides_selected_knots_only(self):
+        payload = sir_contract_payload()
+        payload["parameters"]["beta"] = {
+            "kind": "piecewise_linear",
+            "points": [[0.0, 0.2], [1.0, 0.4], [2.0, 0.1]],
+        }
+        profile = self.core.SirModelDefinition.from_dict(payload).parameters["beta"]
+
+        self.assertAlmostEqual(profile.evaluate(0.5, value_overrides={1: 0.8}), 0.5)
+        self.assertAlmostEqual(profile.evaluate(1.5, value_overrides={1: 0.8}), 0.45)
+        self.assertAlmostEqual(profile.evaluate(0.5), 0.3)
+
     def test_parameterized_ode_problem_reuses_sir_equations_and_honors_rate_overrides(self):
         contract = self.core.SirModelDefinition.from_dict(sir_contract_payload())
         to_problem = getattr(contract, "to_ode_problem", None)
@@ -479,6 +491,94 @@ class SIRParameterAnalysisTests(unittest.TestCase):
             max_iterations=100,
             max_function_evaluations=500,
         )
+
+    def _profiled_fixture(self, *, max_step=0.1):
+        payload = sir_contract_payload()
+        payload["t_span"] = [0.0, 10.0]
+        payload["integrator"] = {
+            "method": "RK4_FIXED_STEP", "max_step": max_step, "max_steps": 100,
+        }
+        payload["parameters"]["beta"] = {
+            "kind": "piecewise_linear",
+            "points": [[0.0, 0.3], [4.0, 0.45], [10.0, 0.25]],
+        }
+        definition = self.core.SirModelDefinition.from_dict(payload)
+        solution = self.core.solve_sir_model(definition)
+        observation_indices = tuple(
+            round(time / max_step) for time in (0.0, 1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 10.0)
+        )
+        dataset = self.core.ObservationDataset.from_dict({
+            "schema_version": 1,
+            "time_unit": "day",
+            "variables": [
+                {"name": name, "unit": "person"} for name in solution.state_names
+            ],
+            "observations": [
+                {
+                    "time": solution.times[index],
+                    "values": dict(zip(solution.state_names, solution.states[index])),
+                }
+                for index in observation_indices
+            ],
+            "provenance": {"source": "synthetic exact profiled SIR fixture"},
+        })
+        return definition, dataset
+
+    def test_analyze_profiled_sir_recovers_selected_beta_knot_and_preserves_unselected_knots(self):
+        definition, dataset = self._profiled_fixture()
+
+        result = self.core.analyze_sir_parameters(
+            definition,
+            dataset,
+            initial_parameters={"beta_knot_1": 0.35, "gamma": 0.08},
+            bounds={"beta_knot_1": (0.2, 0.7), "gamma": (0.02, 0.4)},
+            perturbations={"beta_knot_1": 0.001, "gamma": 0.001},
+            fit_knots={"beta": (1,)},
+            max_step=0.1,
+            max_iterations=100,
+            max_function_evaluations=500,
+        )
+
+        self.assertIn(result.fit.status, {"CONVERGED", "STALLED"})
+        self.assertAlmostEqual(result.fit.parameters["beta_knot_1"], 0.45, delta=1e-5)
+        self.assertAlmostEqual(result.fit.parameters["gamma"], 0.1, delta=1e-5)
+        self.assertEqual(result.sensitivity.parameter_names, ("beta_knot_1", "gamma"))
+        self.assertLess(max(abs(value) for value in result.evaluation.residuals), 1e-8)
+        self.assertEqual(result.solution.parameters, result.fit.parameters)
+
+        expected_payload = definition.to_dict()
+        expected_payload["parameters"]["beta"]["points"][1][1] = result.fit.parameters[
+            "beta_knot_1"
+        ]
+        expected_payload["parameters"]["gamma"]["value"] = result.fit.parameters["gamma"]
+        expected_solution = self.core.solve_sir_model(
+            self.core.SirModelDefinition.from_dict(expected_payload)
+        )
+        for actual, expected in zip(result.solution.states, expected_solution.states):
+            for actual_value, expected_value in zip(actual, expected):
+                self.assertAlmostEqual(actual_value, expected_value, delta=1e-11)
+        self.assertEqual(result.to_dict()["scientific_validity"], "NOT_ASSESSED")
+
+    def test_analyze_profiled_sir_rejects_invalid_knot_selection_and_non_aligned_step(self):
+        definition, dataset = self._profiled_fixture(max_step=0.5)
+        arguments = {
+            "initial_parameters": {"beta_knot_1": 0.35, "gamma": 0.08},
+            "bounds": {"beta_knot_1": (0.2, 0.7), "gamma": (0.02, 0.4)},
+            "perturbations": {"beta_knot_1": 0.001, "gamma": 0.001},
+            "fit_knots": {"beta": (1,)},
+        }
+        for fit_knots in ({"beta": (1, 1)}, {"beta": (4,)}, {"delta": (1,)}):
+            with self.subTest(fit_knots=fit_knots), self.assertRaisesRegex(
+                ValueError, "fit_knots"
+            ):
+                self.core.analyze_sir_parameters(
+                    definition, dataset, **{**arguments, "fit_knots": fit_knots}
+                )
+
+        with self.assertRaisesRegex(ValueError, "align with the analysis RK4 time grid"):
+            self.core.analyze_sir_parameters(
+                definition, dataset, **arguments, max_step=0.3
+            )
 
     def test_sir_analysis_uses_existing_fit_sensitivity_and_residual_contracts(self):
         analyze = getattr(self.core, "analyze_sir_parameters", None)
