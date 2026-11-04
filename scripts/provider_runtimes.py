@@ -136,7 +136,7 @@ class _CliRuntime:
                                                + r"(?![\w-])", help_text)
                                      for flag in self._required_help))
                 if available:
-                    features = self._required_help
+                    features = (*self._required_help, *self._additional_features(help_text))
             except (OSError, subprocess.TimeoutExpired):
                 pass
         return RuntimeCapabilities(
@@ -144,6 +144,9 @@ class _CliRuntime:
             features=features, sandbox_effective=None,
             native_subagents=RuntimeCapabilityStatus.UNKNOWN,
         )
+
+    def _additional_features(self, _help_text: str) -> tuple[str, ...]:
+        return ()
 
     def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
         raise NotImplementedError
@@ -421,6 +424,10 @@ class CodexRuntime(_CliRuntime):
     _required_help = ("--json", "--sandbox", "read-only", "workspace-write")
 
     def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
+        if request.tool_policy_path is not None:
+            raise RuntimeError(
+                "Codex CLI cannot enforce the workspace proposal no-execution tool policy"
+            )
         return ("codex", "exec", "--json", "--sandbox",
                 "workspace-write" if request.writable else "read-only", "--", request.prompt)
 
@@ -432,7 +439,20 @@ class GeminiRuntime(_CliRuntime):
     _help_args = ("--help",)
     _required_help = ("--prompt", "--output-format", "stream-json", "--sandbox", "--approval-mode", "default")
 
+    def _additional_features(self, help_text: str) -> tuple[str, ...]:
+        required = ("--admin-policy", "plan")
+        return (("proposal_read_only_tool_policy",)
+                if all(re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)
+                       for flag in required)
+                else ())
+
     def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
+        if request.tool_policy_path is not None:
+            return (
+                "gemini", "--sandbox", "--approval-mode", "plan",
+                "--admin-policy", str(request.tool_policy_path),
+                "--output-format", "stream-json", "--prompt=" + request.prompt,
+            )
         return ("gemini", "--sandbox", "--approval-mode", "default",
                 "--output-format", "stream-json", "--prompt=" + request.prompt)
 

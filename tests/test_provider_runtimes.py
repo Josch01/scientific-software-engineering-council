@@ -66,7 +66,8 @@ class ProviderRuntimeTests(unittest.TestCase):
 
     def help_text(self, provider):
         return ("--json --sandbox read-only workspace-write" if provider == "codex"
-                else "--prompt --output-format stream-json --sandbox --approval-mode default")
+                else "--prompt --output-format stream-json --sandbox "
+                     "--approval-mode default plan --admin-policy")
 
     def discovery(self, provider, help_text=None):
         def run(argv, **kwargs):
@@ -143,6 +144,26 @@ class ProviderRuntimeTests(unittest.TestCase):
             hostile = self.module.GeminiRuntime().build_argv(replace(self.request, prompt="--yolo"))
             self.assertNotIn("--yolo", hostile)
             self.assertIn("--prompt=--yolo", hostile)
+
+    def test_proposal_runtime_enforces_gemini_plan_policy_and_rejects_codex(self):
+        policy_path = Path(self.temp.name) / "proposal-policy.toml"
+        policy_path.write_text("deny all tools", encoding="utf-8")
+        proposal_request = replace(self.request, tool_policy_path=policy_path)
+
+        argv = self.module.GeminiRuntime().build_argv(proposal_request)
+        self.assertEqual(argv[argv.index("--approval-mode") + 1], "plan")
+        self.assertIn("--sandbox", argv)
+        self.assertEqual(argv[argv.index("--admin-policy") + 1], str(policy_path))
+        self.assertEqual(argv[-1], "--prompt=" + proposal_request.prompt)
+        with self.assertRaisesRegex(RuntimeError, "no-execution"):
+            self.module.CodexRuntime().build_argv(proposal_request)
+
+    def test_gemini_read_only_proposal_capability_requires_plan_and_admin_policy_flags(self):
+        runtime = self.module.GeminiRuntime()
+        self.assertIn("proposal_read_only_tool_policy",
+                      runtime._additional_features(self.help_text("gemini")))
+        self.assertNotIn("proposal_read_only_tool_policy",
+                         runtime._additional_features("--approval-mode default --sandbox"))
 
     def test_cost_acknowledgement_is_required_before_discovery_or_spawn(self):
         for provider in ("codex", "gemini"):
