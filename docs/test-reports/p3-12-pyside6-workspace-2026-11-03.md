@@ -1,6 +1,6 @@
 # P3.12 — frontend científico opcional PySide6
 
-**Estado:** implementación y revisión independiente terminadas; CI del PR pendiente. No se hizo merge ni se publicó una release.
+**Estado:** implementación y revisión independiente terminadas; CI completado. No se hizo merge ni se publicó una release.
 
 ## Capacidad
 
@@ -22,7 +22,7 @@ El botón de simulación solo aparece para una acción SIR confiable registrada 
 - `py_compile` y `git diff --check`: **PASS**.
 - `python scripts/validate_skill.py` se ejecutó, pero esa verificación estructural falla en el worktree local porque exige que el nombre de la carpeta raíz coincida con el nombre frontmatter `scientific-software-engineering-council`; esta rama vive en la carpeta aislada `p3-12-pyside6-workspace`. No reporto el resultado como PASS. El job CI ejecutará el validador en el checkout canónico.
 - Se abrió el ejemplo sintético `examples/sir_scientific_workspace.json` con el plugin Qt nativo y se inspeccionó una captura. Se ajustaron colores para impedir que el tema oscuro del sistema redujera el contraste.
-- El CI de P3.11 base terminó después de su implementación: run [#158](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41766130701), 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 correctos. El CI de P3.12 todavía debe ejecutarse.
+- El CI de P3.11 base terminó con run [#158](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41766130701), 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 correctos. El CI de P3.12 terminó con run [#162](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41771930991), también 4/4.
 
 ## Defectos y correcciones
 
@@ -39,13 +39,13 @@ También se probó que fallar al cargar un digest nuevo no reemplaza el workspac
 - Qt es una alternativa opcional; no se cambia ni se elimina Tk. El módulo comunica PySide6 ausente y no intenta instalarlo.
 - Se usa `QPainter` para gráficas pequeñas; no se requiere Qt WebEngine ni una dependencia de gráficos adicional.
 - El ejemplo ejecutado es sintético y solo verifica integración de software. Ecuaciones, unidades y datos del SIR del usuario siguen `NOT_RUN`; esto no establece validez científica.
-- CI no instala PySide6; por diseño, omitirá los cuatro tests específicos del frontend si la dependencia no está presente. La ejecución de widgets y la inspección visual aquí son solo Windows local; UI Qt en Linux sigue `NOT_RUN`.
+- CI run [#162](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41771930991): **4/4 jobs correctos** en Windows/Ubuntu × Python 3.11/3.12. Como CI no instala PySide6, los seis tests específicos del frontend se omitieron en esos jobs; no constituyen verificación Qt en CI. La ejecución de widgets y la inspección visual aquí son solo Windows local; UI Qt en Linux sigue `NOT_RUN`.
 - Las pantallas Qt aún no exponen el despacho de auditoría P3.10 ni la generación/revisión de propuestas P3.11; esos flujos permanecen en Tk y sus servicios permanecen desacoplados de la UI.
 - Invocaciones reales de Codex/Gemini/AGY, instalación de dependencias, ejecución de código generado y validez matemática/científica no se realizaron.
 
 ## Entrega
 
 - Commit de implementación: `f1e3219` (`feat: add optional PySide6 scientific workspace UI`).
-- Pull request draft [#36](https://github.com/Josch01/scientific-software-engineering-council/pull/36), apilado sobre P3.11; CI del PR pendiente.
+- Pull request draft [#36](https://github.com/Josch01/scientific-software-engineering-council/pull/36), apilado sobre P3.11; CI run #162 completado 4/4.
 - Revisión independiente: completa, solo lectura; sin hallazgos P0–P2 pendientes.
 - Merge a `main` y release: no realizados.
