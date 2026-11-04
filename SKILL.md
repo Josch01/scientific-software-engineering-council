@@ -50,6 +50,7 @@ El arquitecto elige **roles**, no modelos específicos. Los workers no autocerti
 - Manifiestos de espacios científicos, carga acotada con SHA-256 y app Tkinter opcional de secciones/vistas dinámicas: `references/SCIENTIFIC_WORKSPACES.md`, `scripts/scientific_workspace.py`, `scripts/scientific_workspace_loader.py`, `scripts/scientific_workspace_view.py` y `scripts/scientific_workspace_app.py`.
 - Agentes/contextos: `references/MULTI_AGENT.md`.
 - Descarga segura de skills y APIs actuales: `references/DEPENDENCY_SKILLS.md`.
+- Catálogo opt-in de extensiones, metadatos fijados y revisión humana: `references/EXTENSION_CATALOG.md`, `scripts/extension_catalog.py`.
 - Auditoría y release: `references/RELEASE_POLICY.md`.
 - Arquitectura evolutiva: `references/ARCHITECTURE.md`.
 

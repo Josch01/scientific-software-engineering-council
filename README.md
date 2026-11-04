@@ -97,3 +97,13 @@ python scripts/scientific_control_center_qt.py --project-root /ruta/al/proyecto 
 ```
 
 PySide6 sigue siendo opcional. Las vistas científicas usan WebEngine local si está disponible y mantienen su fallback nativo; no necesitan CDN. La demostración reproducible y sus límites están en [el informe P3.18](docs/test-reports/p3-18-integrated-control-center-2026-11-04.md). El SIR y los datos del usuario siguen `NOT_RUN`.
+
+## Catálogo opt-in de extensiones (P4.2)
+
+El catálogo v1 acepta solo metadatos con fuente, commit y digest fijados, permisos declarados, revisión y rollback. El CLI valida un archivo local; no descarga, instala, importa ni ejecuta extensiones. El catálogo de ejemplo está vacío hasta que una extensión haya sido revisada explícitamente.
+
+```bash
+python scripts/extension_catalog.py validate examples/extension_catalog.json
+```
+
+Consulte [el contrato y los límites del catálogo](references/EXTENSION_CATALOG.md).

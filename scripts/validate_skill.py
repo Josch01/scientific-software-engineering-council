@@ -7,13 +7,15 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_SKILL_NAME = "scientific-software-engineering-council"
 MANDATORY = [
     "README.md", "SKILL.md", "references/ROUTER.md", "references/MULTI_AGENT.md",
     "references/SCIENTIFIC_BOUNDARY.md", "references/TEST_MATRIX.md",
     "references/GUI_DESKTOP.md", "references/IDL_ADAPTER.md",
     "references/DEPENDENCY_SKILLS.md", "references/RELEASE_POLICY.md",
     "references/ARCHITECTURE.md", "references/PROVIDER_MODES.md", "references/RUNNER.md",
-    "references/CONFIG_PANEL.md", "scripts/configuration.py",
+    "references/CONFIG_PANEL.md", "references/EXTENSION_CATALOG.md",
+    "scripts/extension_catalog.py", "scripts/configuration.py",
     "scripts/config_panel.py", "scripts/prepare_agents.py", "scripts/run_agents.py", "scripts/route_task.py", "scripts/release_gate.py",
     "templates/TASK_PACKET.json", ".github/workflows/validate.yml",
 ]
@@ -34,8 +36,8 @@ def validate(root: Path = ROOT) -> list[str]:
     header = body.split("\n---\n", 1)[0].removeprefix("---\n")
     name = re.search(r"(?m)^name:\s*([a-z0-9-]+)\s*$", header)
     description = re.search(r"(?m)^description:\s*(.+)$", header)
-    if name is None or name.group(1) != root.name or "--" in root.name:
-        errors.append("frontmatter name must match root directory name")
+    if name is None or name.group(1) != EXPECTED_SKILL_NAME:
+        errors.append("frontmatter name must match the canonical SSEC skill name")
     if description is None or not 1 <= len(description.group(1).strip('"\'')) <= 1024:
         errors.append("description missing or too long")
     for path in re.findall(r"`((?:references|scripts|templates)/[A-Za-z0-9_.-]+)`", body):
