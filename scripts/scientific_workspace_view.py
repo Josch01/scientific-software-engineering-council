@@ -356,13 +356,19 @@ def _simulation_base_content(payload: object) -> Mapping[str, object]:
             "times": numeric_times,
             "state_names": tuple(names),
             "values": tuple(numeric_rows),
+            "parameters": MappingProxyType(dict(parameters)),
+            "requested_max_step": requested_step,
+            "actual_step_size": actual_step,
+            "step_count": result["step_count"],
             "row_count": len(numeric_times),
         }
     )
 
 
 def _simulation_content(
-    base: Mapping[str, object], config: Mapping[str, object]
+    base: Mapping[str, object],
+    config: Mapping[str, object],
+    unit_context: Mapping[str, object] | None = None,
 ) -> Mapping[str, object]:
     configured_names = config["series"]
     if not isinstance(configured_names, (list, tuple)):
@@ -372,16 +378,32 @@ def _simulation_content(
         raise ValueError("configured simulation series are absent from state_names")
     series_names = tuple(configured_names)
     series_indices = tuple(by_name[name] for name in series_names)
-    return MappingProxyType(
-        {
-            "method": base["method"],
-            "times": base["times"],
-            "values": base["values"],
-            "series_names": series_names,
-            "series_indices": series_indices,
-            "row_count": base["row_count"],
-        }
+    context = unit_context or {}
+    raw_parameter_units = context.get("parameter_units", {})
+    parameter_units = (
+        MappingProxyType(dict(raw_parameter_units))
+        if isinstance(raw_parameter_units, Mapping) else MappingProxyType({})
     )
+    state_units = context.get("state_units", {})
+    population_unit = (
+        state_units.get(series_names[0]) if isinstance(state_units, Mapping) else None
+    )
+    time_unit = context.get("time_unit")
+    return MappingProxyType({
+        "method": base["method"],
+        "times": base["times"],
+        "values": base["values"],
+        "series_names": series_names,
+        "series_indices": series_indices,
+        "row_count": base["row_count"],
+        "parameters": base["parameters"],
+        "parameter_units": parameter_units,
+        "time_unit": time_unit if isinstance(time_unit, str) else None,
+        "population_unit": population_unit if isinstance(population_unit, str) else None,
+        "requested_max_step": base["requested_max_step"],
+        "actual_step_size": base["actual_step_size"],
+        "step_count": base["step_count"],
+    })
 
 
 def build_simulation_result_view(
@@ -433,7 +455,15 @@ def build_simulation_result_view(
            for row in solution.states):
         raise ValueError("simulation states must match state_names before serialization")
     base = _simulation_base_content(solution.to_dict())
-    content = _simulation_content(base, {"series": series})
+    existing_content = component.content if isinstance(component.content, Mapping) else {}
+    unit_context = {
+        "time_unit": existing_content.get("time_unit"),
+        "state_units": {
+            name: existing_content.get("population_unit") for name in solution.state_names
+        },
+        "parameter_units": existing_content.get("parameter_units", {}),
+    }
+    content = _simulation_content(base, {"series": series}, unit_context)
     safe_label = sanitize_display_text(action_label)
     message = (
         f"Salida en memoria de la acción aprobada «{safe_label}». "
@@ -994,6 +1024,44 @@ def _sir_parameter_view(definition: SirModelDefinition) -> SirParameterView:
     )
 
 
+def _sir_analysis_unit_context(
+    component_type: str,
+    context_resources: tuple[LoadedResource, ...],
+    json_cache: dict[str, object | _CachedFailure],
+    json_byte_count: list[int],
+) -> Mapping[str, object] | None:
+    model_resources = tuple(
+        resource for resource in context_resources if resource.kind == "model_spec"
+    )
+    if len(model_resources) != 1:
+        return None
+    try:
+        payload = _cached_json_payload(model_resources[0], json_cache, json_byte_count)
+        if not isinstance(payload, Mapping) or payload.get("model_type") != "sir":
+            return None
+        definition = SirModelDefinition.from_dict(payload)
+    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
+        return None
+    parameter_units = {name: definition.rate_unit for name in ("beta", "gamma")}
+    if component_type == "fit_summary":
+        return {"parameter_units": parameter_units}
+    if component_type == "simulation_plot":
+        return {
+            "time_unit": definition.time_unit,
+            "state_units": {
+                name: definition.population_unit for name in definition.state_names
+            },
+            "parameter_units": parameter_units,
+        }
+    return {
+        "time_unit": definition.time_unit,
+        "state_units": {
+            name: definition.population_unit for name in definition.state_names
+        },
+        "parameter_units": parameter_units,
+    }
+
+
 def _render_component(
     component: Mapping[str, object],
     resource_by_id: Mapping[str, LoadedResource],
@@ -1010,8 +1078,12 @@ def _render_component(
     config = _object(component["config"], f"component {component_id} config")
     if component_type not in SUPPORTED_COMPONENT_TYPES:
         return ComponentView(component_id, component_type, title, "error", "Unregistered renderer")
+    context_refs = config.get("context_refs", ())
+    context_resources = tuple(
+        resource_by_id[str(resource_id)] for resource_id in context_refs
+    )
     source_resources = tuple(
-        _resource_view(resource_by_id[str(resource_id)]) for resource_id in refs
+        _resource_view(resource_by_id[str(resource_id)]) for resource_id in (*refs, *context_refs)
     )
 
     try:
@@ -1085,11 +1157,29 @@ def _render_component(
             simulation_base = simulation_cache[resource.resource_id]
             if isinstance(simulation_base, _CachedFailure):
                 raise ValueError(simulation_base.message)
-            content = _simulation_content(simulation_base, config)
+            content = _simulation_content(
+                simulation_base,
+                config,
+                unit_context=_sir_analysis_unit_context(
+                    component_type, context_resources, json_cache, json_byte_count
+                ),
+            )
         elif component_type == "fit_summary":
-            content = build_fit_summary_view(payload, config)
+            content = build_fit_summary_view(
+                payload,
+                config,
+                unit_context=_sir_analysis_unit_context(
+                    component_type, context_resources, json_cache, json_byte_count
+                ),
+            )
         elif component_type == "sensitivity_plot":
-            content = build_sensitivity_plot_view(payload, config)
+            content = build_sensitivity_plot_view(
+                payload,
+                config,
+                unit_context=_sir_analysis_unit_context(
+                    component_type, context_resources, json_cache, json_byte_count
+                ),
+            )
         elif component_type == "residual_plot":
             content = build_observation_evaluation_view(payload)
         else:

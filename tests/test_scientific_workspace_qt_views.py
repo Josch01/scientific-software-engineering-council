@@ -239,3 +239,81 @@ class ScientificWorkspaceQtResultViewsTests(unittest.TestCase):
         self.assertIsNotNone(window.findChild(QtWidgets.QTableWidget, "fit-parameters-table"))
         self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0"))
         self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-residual-view-observed-0"))
+
+    def test_computed_sir_demo_renders_actual_fit_units_status_and_sensitivity(self):
+        from scripts.build_sir_analysis_demo import build_demo
+        from scripts.scientific_workspace_qt import ScientificWorkspaceWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_demo(root)
+            fit_record = json.loads((root / "results" / "fit.json").read_text(encoding="utf-8"))
+            sensitivity_record = json.loads(
+                (root / "results" / "sensitivity.json").read_text(encoding="utf-8")
+            )
+            simulation_record = json.loads(
+                (root / "results" / "simulation.json").read_text(encoding="utf-8")
+            )
+            window = ScientificWorkspaceWindow()
+            self.addCleanup(window.close)
+            with patch("scripts.scientific_workspace_qt_charts.WEBENGINE_AVAILABLE", False):
+                model = window.load_workspace(root, "workspace.json")
+            window.show()
+            self.app.processEvents()
+
+            components = {item.component_id: item for section in model.sections
+                          for item in section.components}
+            fit_summary = window.findChild(QtWidgets.QLabel, "fit-summary-fit-view")
+            fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+            provenance = window.findChildren(QtWidgets.QLabel, "source-provenance-fit-view")
+            sensitivity_chart = window.findChild(
+                QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0"
+            )
+            simulation_chart = window.findChild(QtWidgets.QWidget, "plot-trajectory")
+            simulation_summary = window.findChild(
+                QtWidgets.QLabel, "simulation-summary-trajectory"
+            )
+            self.assertIsNotNone(fit_summary)
+            self.assertIsNotNone(fit_table)
+            self.assertGreaterEqual(len(provenance), 3)
+            self.assertIsNotNone(sensitivity_chart)
+            self.assertIsNotNone(simulation_chart)
+            self.assertIsNotNone(simulation_summary)
+            chart_fallback = sensitivity_chart.findChild(QtWidgets.QFrame, "scientificChartFallback")
+            chart_table = chart_fallback.findChild(
+                QtWidgets.QTableWidget, "scientificChartDataTable"
+            )
+
+            self.assertEqual(components["fit-view"].content.status, fit_record["status"])
+            self.assertIn(f"estado {fit_record['status']}", fit_summary.text())
+            self.assertEqual(fit_table.item(0, 0).text(), "beta")
+            self.assertEqual(fit_table.item(0, 2).text(), f"{fit_record['parameters']['beta']:.8g}")
+            self.assertEqual(fit_table.item(0, 5).text(), "1/day")
+            self.assertEqual(fit_table.item(1, 5).text(), "1/day")
+            provenance_text = " ".join(label.text() for label in provenance)
+            self.assertIn("model/model.json", provenance_text)
+            self.assertIn("data/observations.json", provenance_text)
+            self.assertIn("SHA-256", provenance_text)
+            self.assertIn("Eje x: Tiempo · day", sensitivity_chart.accessibleDescription())
+            self.assertIn("Derivada local · person / 1/day", sensitivity_chart.accessibleDescription())
+            self.assertEqual(chart_table.horizontalHeaderItem(1).text(), "S ∂/∂beta")
+            self.assertEqual(
+                float(chart_table.item(0, 1).text()),
+                sensitivity_record["values"][0][0][0],
+            )
+            self.assertEqual(components["sensitivity-view"].status, "ok")
+            self.assertEqual(
+                dict(components["trajectory"].content["parameters"]),
+                simulation_record["parameters"],
+            )
+            self.assertIn("Eje x: Tiempo · day", simulation_chart.accessibleDescription())
+            self.assertIn("Eje y: Población · person", simulation_chart.accessibleDescription())
+            self.assertIn("100 pasos", simulation_summary.text())
+            self.assertIn(
+                f"beta={simulation_record['parameters']['beta']:.8g} 1/day",
+                simulation_summary.text(),
+            )
+            simulation_sources = window.findChildren(
+                QtWidgets.QLabel, "source-provenance-trajectory"
+            )
+            self.assertGreaterEqual(len(simulation_sources), 2)
