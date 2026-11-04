@@ -75,12 +75,23 @@ def copy_snapshot(files: list[tuple[Path, Path]], destination: Path) -> None:
             raise ValueError("source became a symlink")
         shutil.copyfile(src, dest)
 
+def selected_gemini_cli() -> str:
+    """Select the Gemini-compatible local CLI without fallback on invalid config."""
+    value = os.environ.get("SSEC_GEMINI_CLI", "gemini")
+    if value not in {"gemini", "agy"}:
+        raise ValueError("SSEC_GEMINI_CLI must be 'gemini' or 'agy'")
+    return value
+
+
 def command_for(provider: str, prompt: str, cwd: Path) -> list[str]:
     if provider == "codex":
         return ["codex", "exec", "--sandbox", "read-only", "--json",
                 "--skip-git-repo-check",
                 "--cd", str(cwd), prompt]
     if provider == "gemini":
+        if selected_gemini_cli() == "agy":
+            return ["agy", "--sandbox", "--settings", '{"agentMode":""}',
+                    "--output-format", "json", "--prompt", prompt]
         return ["gemini", "--sandbox", "--approval-mode", "default",
                 "--output-format", "json", "-p", prompt]
     raise ValueError("unsupported provider")
@@ -131,7 +142,8 @@ def run_one(agent: dict[str, Any], task_id: str,
     logs.mkdir(exist_ok=True, parents=True)
     logpath = logs / f"{name}.stdout"
     errpath = logs / f"{name}.stderr"
-    result = {"agent": name, "provider": agent["provider"], "role": agent["role"],
+    result = {"agent": name, "provider": agent["provider"], "cli_binary": None,
+              "role": agent["role"],
               "status": "LAUNCH_FAILED", "exit_code": None,
               "stdout_log": str(logpath.relative_to(run_dir)),
               "stderr_log": str(errpath.relative_to(run_dir)),
@@ -145,11 +157,13 @@ def run_one(agent: dict[str, Any], task_id: str,
                 target = workspace / rel
                 target.parent.mkdir(exist_ok=True, parents=True)
                 target.write_text(profiles[rel], encoding="utf-8")
-            executable = shutil.which(agent["provider"])
-            if not executable:
-                result["error"] = f"{agent['provider']} CLI not found in PATH"
-                return result
             cmd = command_for(agent["provider"], make_prompt(agent, task_id), workspace)
+            executable_name = cmd[0]
+            result["cli_binary"] = executable_name
+            executable = shutil.which(executable_name)
+            if not executable:
+                result["error"] = f"{executable_name} CLI not found in PATH"
+                return result
             cmd[0] = executable
             flags = 0
             if os.name == "nt":

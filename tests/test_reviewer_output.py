@@ -36,6 +36,20 @@ class ReviewerOutputTests(unittest.TestCase):
         self.assertEqual(extract_final_response("gemini", self.path),
                          '{"verdict":"CLEAR"}')
 
+    def test_agy_extracts_response_bound_to_successful_conversation(self):
+        self.write_events([
+            {"event": "init", "conversation_id": "conv-1", "init": {"cwd": "/tmp"}},
+            {"event": "step_update", "step_update": {"conversation_id": "conv-1"}},
+            {"event": "result", "result": {
+                "conversation_id": "conv-1", "status": "SUCCESS",
+                "response": '{"verdict":"PASS"}', "usage": {}}},
+        ])
+
+        self.assertEqual(extract_final_response(
+            "gemini", self.path,
+            runtime_adapter_type="scripts.provider_runtimes.AgyGeminiRuntime"),
+            '{"verdict":"PASS"}')
+
     def test_missing_or_failed_terminal_event_is_rejected(self):
         cases = (
             ([{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}],

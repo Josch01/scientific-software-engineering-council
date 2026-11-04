@@ -43,6 +43,9 @@ class OfflineContainment:
 
 class ProviderRuntimeTests(unittest.TestCase):
     def setUp(self):
+        gemini_cli = patch.dict(os.environ, {"SSEC_GEMINI_CLI": "gemini"})
+        gemini_cli.start()
+        self.addCleanup(gemini_cli.stop)
         # Missing implementation is an explicit RED assertion, not an import error.
         self.assertIsNotNone(importlib.util.find_spec("scripts.provider_runtimes"),
                              "provider runtime adapters are not implemented")
@@ -144,6 +147,117 @@ class ProviderRuntimeTests(unittest.TestCase):
             hostile = self.module.GeminiRuntime().build_argv(replace(self.request, prompt="--yolo"))
             self.assertNotIn("--yolo", hostile)
             self.assertIn("--prompt=--yolo", hostile)
+
+    def test_explicit_agy_override_uses_scoped_modes_and_stream_protocol(self):
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            runtime = self.module.create_runtime("gemini")
+            self.assertEqual(type(runtime).__name__, "AgyGeminiRuntime")
+            readonly = runtime.build_argv(self.request)
+            writable = runtime.build_argv(replace(self.request, writable=True))
+        self.assertEqual(readonly, ("agy", "--sandbox", "--settings", '{"agentMode":""}',
+                                   "--output-format", "stream-json", "--prompt",
+                                   self.request.prompt))
+        self.assertEqual(writable[2:4], ("--mode", "accept-edits"))
+        self.assertNotIn("--dangerously-skip-permissions", writable)
+
+    def test_agy_discovery_accepts_installed_help_without_default_mode(self):
+        help_text = ("--prompt --output-format stream-json --sandbox --settings "
+                     "--mode accept-edits auto plan")
+
+        def run(argv, **kwargs):
+            self.assertEqual(argv[0], "/selected/agy")
+            self.assertIn(tuple(argv[1:]), (("--version",), ("--help",)))
+            return subprocess.CompletedProcess(argv, 0, "1.4.12" if argv[-1] == "--version"
+                                               else help_text, "")
+
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}), \
+                patch.object(self.module.shutil, "which", return_value="/selected/agy"), \
+                patch.object(self.module.subprocess, "run", side_effect=run):
+            capabilities = self.module.create_runtime("gemini").discover_capabilities()
+
+        self.assertTrue(capabilities.available)
+        self.assertEqual(capabilities.version, "1.4.12")
+
+    def test_agy_discovery_reads_help_written_to_stderr(self):
+        help_text = ("--prompt --output-format stream-json --sandbox --settings "
+                     "--mode accept-edits auto plan")
+
+        def run(argv, **kwargs):
+            output = "1.4.12" if argv[-1] == "--version" else ""
+            error = "" if argv[-1] == "--version" else help_text
+            return subprocess.CompletedProcess(argv, 0, output, error)
+
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}), \
+                patch.object(self.module.shutil, "which", return_value="/selected/agy"), \
+                patch.object(self.module.subprocess, "run", side_effect=run):
+            capabilities = self.module.create_runtime("gemini").discover_capabilities()
+
+        self.assertTrue(capabilities.available)
+
+    def test_agy_discovery_is_explicit_and_does_not_fallback(self):
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}), \
+                patch.object(self.module.shutil, "which", return_value=None) as which:
+            runtime = self.module.create_runtime("gemini")
+            capabilities = runtime.discover_capabilities()
+        self.assertFalse(capabilities.available)
+        which.assert_called_once_with("agy")
+
+    def test_agy_ndjson_parser_binds_conversation_and_subagents(self):
+        path = Path(self.temp.name) / "agy.jsonl"
+        path.write_text("\n".join((
+            json.dumps({"event": "init", "conversation_id": "conv-1", "init": {"cwd": "/tmp"}}),
+            json.dumps({"event": "step_update", "step_update": {
+                "conversation_id": "conv-1", "subagent_info": {"subagents": [
+                    {"conversation_id": "child-1"}]}}}),
+            json.dumps({"event": "result", "result": {
+                "conversation_id": "conv-1", "status": "SUCCESS", "response": "Review complete",
+                "usage": {"input_tokens": 10, "output_tokens": 3}}}),
+        )), encoding="utf-8")
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            runtime = self.module.create_runtime("gemini")
+            self.assertEqual(runtime._parse(path), ("conv-1", ("child-1",), None))
+
+    def test_agy_requires_valid_init_and_matching_terminal_conversation(self):
+        result = {"event": "result", "result": {
+            "conversation_id": "conv-1", "status": "SUCCESS", "response": "ok",
+            "usage": {}}}
+        cases = (
+            ([result], "missing init"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": False}, result],
+             "invalid init payload"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": {}},
+              {"event": "result", "result": {key: value for key, value in result["result"].items()
+                                               if key != "conversation_id"}}],
+             "missing terminal conversation ID"),
+            ([{"event": "init", "conversation_id": "conv-1", "init": {}},
+              {"event": "result", "result": dict(result["result"], conversation_id="conv-2")}],
+             "conflicting terminal conversation ID"),
+        )
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            runtime = self.module.create_runtime("gemini")
+            for events, label in cases:
+                with self.subTest(case=label):
+                    path = Path(self.temp.name) / "invalid-agy.jsonl"
+                    path.write_text("\n".join(json.dumps(event) for event in events),
+                                    encoding="utf-8")
+                    self.assertIsNotNone(runtime._parse(path)[2])
+
+    def test_agy_rejects_non_success_and_unsupported_per_run_policy(self):
+        path = Path(self.temp.name) / "agy-error.jsonl"
+        path.write_text("\n".join((
+            json.dumps({"event": "init", "conversation_id": "conv-1", "init": {}}),
+            json.dumps({"event": "result", "result": {
+                "conversation_id": "conv-1", "status": "ERROR", "response": "",
+                "error": "authentication required", "usage": {}}}),
+        )), encoding="utf-8")
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            runtime = self.module.create_runtime("gemini")
+            session, _, error = runtime._parse(path)
+            policy_request = replace(self.request, tool_policy_path=Path(self.temp.name) / "policy.toml")
+            with self.assertRaisesRegex(RuntimeError, "per-run tool policy"):
+                runtime.build_argv(policy_request)
+        self.assertEqual(session, "conv-1")
+        self.assertIn("not successful", error)
 
     def test_proposal_runtime_enforces_gemini_plan_policy_and_rejects_codex(self):
         policy_path = Path(self.temp.name) / "proposal-policy.toml"

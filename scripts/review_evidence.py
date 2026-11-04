@@ -57,8 +57,9 @@ _REVIEW_MANIFEST_FIELDS = frozenset({
 _REVIEW_MANIFEST_FIELDS_V2 = _REVIEW_MANIFEST_FIELDS | {"snapshot_logical_modes"}
 _MAX_EVIDENCE_FILE_BYTES = 32 * 1024 * 1024
 _PROVIDER_ADAPTER_TYPES = {
-    "codex": "scripts.provider_runtimes.CodexRuntime",
-    "gemini": "scripts.provider_runtimes.GeminiRuntime",
+    "codex": ("scripts.provider_runtimes.CodexRuntime",),
+    "gemini": ("scripts.provider_runtimes.GeminiRuntime",
+               "scripts.provider_runtimes.AgyGeminiRuntime"),
 }
 _REVIEW_INDEPENDENCE_LIMITATION = "UNVERIFIED_WITHOUT_PROVIDER_E2E"
 _REVIEW_ATTEMPT_FIELDS = frozenset({
@@ -621,7 +622,7 @@ def validate_review_manifest(data: Mapping[str, Any], metadata_root: Path) -> di
         if (data["runtime_run_id"] is None or data["observed_provider"] != reviewer_provider or
                 data["provider_session_id"] is None):
             raise ValueError(f"review status {status} requires observed provider/session identity")
-        if data["runtime_adapter_type"] != _PROVIDER_ADAPTER_TYPES[reviewer_provider]:
+        if data["runtime_adapter_type"] not in _PROVIDER_ADAPTER_TYPES[reviewer_provider]:
             raise ValueError(f"review status {status} requires the concrete provider runtime adapter")
         if exit_code != 0 or error is not None:
             raise ValueError(f"review status {status} requires successful exit without an error")
@@ -678,7 +679,9 @@ def validate_review_manifest(data: Mapping[str, Any], metadata_root: Path) -> di
         if stdout_path is None:
             raise ValueError("review report is not linked to a persisted provider output")
         try:
-            response = extract_final_response(str(data["observed_provider"]), stdout_path)
+            response = extract_final_response(
+                str(data["observed_provider"]), stdout_path,
+                runtime_adapter_type=data["runtime_adapter_type"])
             if _hash_evidence_file(stdout_path) != data["stdout_sha256"]:
                 raise ValueError("reviewer stdout changed while it was being validated")
             normalized_report = parse_review_report(response, expected_identity)

@@ -36,6 +36,8 @@ python scripts/run_agents.py --help
 
 `--execute` inicia procesos de CLI en snapshots desechables; requiere además `--accept-unmetered-cost`, porque el costo no se mide de forma fiable. Sin ambos, no se debe declarar una auditoría ejecutada. Los resultados del proveedor tampoco son aprobación independiente ni certificación científica.
 
+Para seleccionar AGY como reemplazo explícito del comando Gemini, establece `SSEC_GEMINI_CLI=agy` antes de iniciar el runner o la aplicación. En PowerShell: `$env:SSEC_GEMINI_CLI = "agy"`. Sin esa variable se conserva `gemini`; un AGY ausente bloquea la ejecución sin fallback. La revisión fija el modo predeterminado de sesión con `--settings '{"agentMode":""}'`; únicamente un worker en worktree temporal usa `--mode accept-edits`. La adaptación usa el protocolo headless documentado por el proveedor y requiere una prueba E2E autorizada para validar autenticación y sesión real.
+
 ## Aplicación de escritorio
 
 El motor y la skill son utilizables sin PySide6. Si PySide6 ya está instalado y está aprobado para ese entorno:

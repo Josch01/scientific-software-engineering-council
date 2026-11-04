@@ -23,7 +23,7 @@ from scripts.agent_runtime import (
     AgentRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeHandle,
     RuntimeLaunchControl, RuntimeRequest, RuntimeResult, RuntimeStatus,
 )
-from scripts.run_agents import _terminate_tree
+from scripts.run_agents import _terminate_tree, selected_gemini_cli
 from scripts.process_containment import new_containment as _new_containment
 
 
@@ -130,7 +130,7 @@ class _CliRuntime:
                 )
                 if version_result.returncode == 0:
                     version = version_result.stdout.strip() or None
-                help_text = help_result.stdout
+                help_text = help_result.stdout + "\n" + help_result.stderr
                 available = (version_result.returncode == help_result.returncode == 0
                              and all(re.search(r"(?<![\w-])" + re.escape(flag)
                                                + r"(?![\w-])", help_text)
@@ -457,10 +457,114 @@ class GeminiRuntime(_CliRuntime):
                 "--output-format", "stream-json", "--prompt=" + request.prompt)
 
 
+class AgyGeminiRuntime(GeminiRuntime):
+    """AGY headless adapter selected explicitly through SSEC_GEMINI_CLI=agy."""
+
+    _required_help = ("--prompt", "--output-format", "stream-json", "--sandbox",
+                      "--settings", "--mode", "accept-edits")
+
+    def _resolve_command(self) -> tuple[str, ...] | None:
+        if selected_gemini_cli() != "agy":
+            return None
+        executable = shutil.which("agy")
+        if not executable:
+            return None
+        if Path(executable).suffix.lower() in (".cmd", ".bat", ".ps1"):
+            return None
+        return (executable,)
+
+    def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
+        if request.tool_policy_path is not None:
+            raise RuntimeError("AGY does not support Gemini per-run tool policy files")
+        mode_args = ("--mode", "accept-edits") if request.writable else (
+            "--settings", '{"agentMode":""}')
+        return ("agy", "--sandbox", *mode_args, "--output-format", "stream-json",
+                "--prompt", request.prompt)
+
+    def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
+        conversation_id = None
+        children: list[str] = []
+        initialized = False
+        terminal = False
+        error = None
+
+        def bind_conversation(value: object) -> None:
+            nonlocal conversation_id
+            if not isinstance(value, str) or not value:
+                raise ValueError("Invalid AGY conversation ID")
+            if conversation_id is not None and conversation_id != value:
+                raise ValueError("Conflicting AGY conversation IDs")
+            conversation_id = value
+
+        try:
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    if not line.strip():
+                        continue
+                    event = json.loads(line, object_pairs_hook=_json_object,
+                                       parse_constant=_invalid_constant)
+                    if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                        raise ValueError("AGY NDJSON event must have a string event field")
+                    kind = event["event"]
+                    if terminal:
+                        raise ValueError("AGY emitted data after terminal result")
+                    if kind == "init":
+                        if initialized:
+                            raise ValueError("Duplicate AGY init event")
+                        if not isinstance(event.get("init"), dict):
+                            raise ValueError("Malformed AGY init event")
+                        bind_conversation(event.get("conversation_id"))
+                        initialized = True
+                    elif kind == "step_update":
+                        update = event.get("step_update")
+                        if not initialized or not isinstance(update, dict):
+                            raise ValueError("Malformed or out-of-order AGY step_update event")
+                        value = update.get("conversation_id")
+                        if value is not None:
+                            bind_conversation(value)
+                        info = update.get("subagent_info")
+                        if info is not None:
+                            if not isinstance(info, dict) or not isinstance(info.get("subagents"), list):
+                                raise ValueError("Malformed AGY subagent_info")
+                            for child in info["subagents"]:
+                                if not isinstance(child, dict):
+                                    raise ValueError("Malformed AGY subagent entry")
+                                child_id = child.get("conversation_id")
+                                if not isinstance(child_id, str) or not child_id:
+                                    raise ValueError("Invalid AGY subagent conversation ID")
+                                if child_id not in children:
+                                    children.append(child_id)
+                    elif kind == "result":
+                        result = event.get("result")
+                        if not initialized or not isinstance(result, dict):
+                            raise ValueError("Malformed or out-of-order AGY result event")
+                        event_id = event.get("conversation_id")
+                        result_id = result.get("conversation_id")
+                        if event_id is None and result_id is None:
+                            raise ValueError("AGY terminal event is missing its conversation ID")
+                        if event_id is not None:
+                            bind_conversation(event_id)
+                        if result_id is not None:
+                            bind_conversation(result_id)
+                        if not isinstance(result.get("status"), str):
+                            raise ValueError("Malformed AGY result status")
+                        if result.get("status") != "SUCCESS" or result.get("error"):
+                            error = "AGY result was not successful"
+                        elif (not isinstance(result.get("response"), str)
+                              or not isinstance(result.get("usage"), dict)):
+                            raise ValueError("Malformed successful AGY result")
+                        terminal = True
+        except (OSError, UnicodeError, ValueError) as exc:
+            error = f"Invalid AGY NDJSON output: {exc}"
+        if not terminal and error is None:
+            error = "Missing successful AGY terminal event"
+        return conversation_id, tuple(child for child in children if child != conversation_id), error
+
+
 def create_runtime(provider: str) -> AgentRuntime:
     """Provider selection is explicit and never substitutes another runtime."""
     if provider == "codex":
         return CodexRuntime()
     if provider == "gemini":
-        return GeminiRuntime()
+        return AgyGeminiRuntime() if selected_gemini_cli() == "agy" else GeminiRuntime()
     raise ValueError(f"Unsupported runtime provider: {provider!r}")

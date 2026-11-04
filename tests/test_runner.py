@@ -17,6 +17,11 @@ ROOT=Path(__file__).resolve().parents[1]
 TASK=json.loads((ROOT/'examples/seir_desktop_audit.json').read_text(encoding='utf-8'))
 
 class RunnerTests(unittest.TestCase):
+    def setUp(self):
+        gemini_cli = patch.dict(os.environ, {"SSEC_GEMINI_CLI": "gemini"})
+        gemini_cli.start()
+        self.addCleanup(gemini_cli.stop)
+
     def test_preview_has_no_side_effects(self):
         with tempfile.TemporaryDirectory() as tmp:
             project=Path(tmp)
@@ -25,6 +30,18 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(result['execution'],'PREVIEW_ONLY')
             self.assertFalse((project/'.ssec').exists())
             self.assertGreater(result['agent_count'],1)
+
+    def test_agy_override_uses_review_mode_without_permission_bypass(self):
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "agy"}):
+            command = command_for("gemini", "audit request", Path("/tmp/project"))
+        self.assertEqual(command, ["agy", "--sandbox", "--settings", '{"agentMode":""}',
+                                   "--output-format", "json", "--prompt", "audit request"])
+        self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_invalid_gemini_cli_override_fails_closed(self):
+        with patch.dict(os.environ, {"SSEC_GEMINI_CLI": "unknown"}):
+            with self.assertRaisesRegex(ValueError, "SSEC_GEMINI_CLI"):
+                command_for("gemini", "audit request", Path("/tmp/project"))
 
     def test_audit_only(self):
         task=dict(TASK,kind='build')
