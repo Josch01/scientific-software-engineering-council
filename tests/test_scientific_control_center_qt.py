@@ -316,28 +316,70 @@ class AgentSupervisorPageTests(unittest.TestCase):
             root = Path(temporary)
             page = self._page(
                 root,
-                confirmation_handler=lambda *_args: confirmations.append(True) or False,
+                confirmation_handler=lambda *args: confirmations.append(args) or False,
             )
 
             started = page.start_audit()
 
             self.assertFalse(started)
-            self.assertEqual(confirmations, [True])
+            self.assertEqual(len(confirmations), 1)
+            self.assertIn(".ssec", confirmations[0][1])
+            self.assertIn("config.json", confirmations[0][1])
             self.assertFalse(page.process_running)
             self.assertFalse((root / ".ssec").exists())
             self.assertIn("NO APROBADA", page.status_label.text())
 
+    def test_declined_policy_save_writes_no_configuration(self):
+        confirmations = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            page = self._page(
+                root,
+                confirmation_handler=lambda *args: confirmations.append(args) or False,
+            )
+
+            saved = page.save_policy()
+
+            self.assertIsNone(saved)
+            self.assertEqual(len(confirmations), 1)
+            self.assertFalse((root / ".ssec").exists())
+            self.assertIn("NO APROBADA", page.status_label.text())
+
+    def test_confirmed_policy_save_persists_only_after_dialog(self):
+        confirmations = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            page = self._page(
+                root,
+                confirmation_handler=lambda *args: confirmations.append(args) or True,
+            )
+
+            saved = page.save_policy()
+
+            self.assertEqual(saved, root / ".ssec" / "config.json")
+            self.assertTrue(saved.is_file())
+            self.assertEqual(len(confirmations), 1)
+            self.assertIn(".ssec", confirmations[0][1])
+            self.assertIn("config.json", confirmations[0][1])
+
     def test_exit_zero_with_local_fake_runner_remains_unapproved(self):
+        confirmations = []
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._write_runner(root, wait_for_cancel=False)
             PageType = self._local_supervisor_page_type
-            page = PageType(confirmation_handler=lambda *_args: True)
+            page = PageType(
+                confirmation_handler=lambda *args: confirmations.append(args) or True
+            )
             self.addCleanup(page.close)
             page.set_project_root(root)
             page.task_path_edit.setText(str(self.task))
 
             self.assertTrue(page.start_audit())
+            self.assertEqual(len(confirmations), 1)
+            self.assertIn(".ssec", confirmations[0][1])
+            self.assertIn("config.json", confirmations[0][1])
+            self.assertIn("consumir cuota", confirmations[0][1])
             self._wait_for_process(page)
 
             self.assertIn("NO APROBADA", page.status_label.text())

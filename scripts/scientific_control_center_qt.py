@@ -221,7 +221,7 @@ else:
             self.preview_button = QtWidgets.QPushButton("Previsualizar plan")
             self.preview_button.setObjectName("previewAgentPlanButton")
             self.preview_button.clicked.connect(self.preview_plan)
-            self.save_policy_button = QtWidgets.QPushButton("Guardar política")
+            self.save_policy_button = QtWidgets.QPushButton("Guardar política…")
             self.save_policy_button.setObjectName("saveAgentPolicyButton")
             self.save_policy_button.clicked.connect(self.save_policy)
             self.prepare_button = QtWidgets.QPushButton("Preparar perfiles…")
@@ -340,8 +340,19 @@ else:
             if self.project_root is None:
                 self._show_error("No se pudo guardar", "abre un proyecto primero")
                 return None
+            policy = self._policy_from_controls()
+            target = config_path(self.project_root)
+            if not self._confirm(
+                "Guardar política de especialistas",
+                f"Se creará o actualizará la política local en {target}. "
+                "La operación escribe esta configuración y no inicia modelos. ¿Continuar?",
+            ):
+                self.status_label.setText(
+                    self._unapproved("Guardado de política cancelado · NOT_APPROVED")
+                )
+                return None
             try:
-                saved = save_config(self.project_root, self._policy_from_controls())
+                saved = save_config(self.project_root, policy)
             except (OSError, ValueError, TypeError) as exc:
                 self._show_error("No se pudo guardar", exc)
                 return None
@@ -421,7 +432,8 @@ else:
                 return False
             if not self._confirm(
                 "Ejecución real con costo no medido",
-                "Se iniciarán CLIs locales en copias temporales del proyecto. Esta acción puede "
+                f"Antes de iniciar se guardará la política local en {config_path(project)}. "
+                "Después se iniciarán CLIs locales en copias temporales del proyecto. Esta acción puede "
                 "consumir cuota y el costo en USD NO puede limitarse automáticamente. Los resultados "
                 "no se integrarán ni aprobarán automáticamente. ¿Confirmas la ejecución?",
             ):
