@@ -20,8 +20,8 @@
 - Probe local `create_runtime("gemini").discover_capabilities()` con `SSEC_GEMINI_CLI=agy`: `available=True`, `version=1.4.12`; `sandbox_effective=None`, `native_subagents=UNKNOWN`. Solo ejecutó `--version`/`--help`; no envió prompt.
 - `python scripts/validate_skill.py`: PASS; `python -m compileall -q scripts tests`: exit 0; `git diff --check`: PASS.
 - La revisión independiente halló y motivó dos correcciones: admitir solo la clase concreta `AgyGeminiRuntime` en el flujo P1.4, extractor y manifiesto; y rechazar streams sin `init` válido o un ID terminal vinculado. La prueba de proceso local recorre runner, parser, reporte, persistencia y revalidación; no establece validez ni independencia real.
-- CI Linux y Windows queda pendiente de los checks remotos para esta rama. E2E autenticado AGY/P1.4 sigue `NOT_RUN`; la autorización de invocación única ya se consumió en el intento Gemini anterior, que terminó con código 41 y sin respuesta. No se hicieron nuevas invocaciones de modelos.
-- No se envió prompt a AGY ni a Gemini. La autenticación y el comportamiento real del protocolo en la instalación del usuario siguen `NOT_RUN`.
+- Ya existe un smoke real previo de `AgyRuntime`/AGY 1.4.12: una solicitud en un proyecto temporal vacío terminó con exit 0 y respuesta/sesión observadas ([PR #32](https://github.com/Josch01/scientific-software-engineering-council/pull/32)). Ese smoke no cubrió este `AgyGeminiRuntime`, `stream-json`, el modo session-only ni el flujo integrado de P1.4. El intento `GeminiRuntime`/`gemini` anterior falló con código 41 y sin respuesta.
+- CI Linux y Windows queda pendiente de los checks remotos para esta rama. Revisión integrada P1.4 por AGY permanece `NOT_RUN`; no se hicieron nuevas invocaciones de modelos.
 
 ## Límites
 
@@ -31,6 +31,6 @@ El modo de revisión por sesión, `accept-edits` y `--sandbox` son controles del
 
 - `run_agents.py` y `AgyGeminiRuntime` no comparten una política de resolución de shims `.cmd`/`.bat`; la instalación observada es un `.exe`. Los fallos de lanzamiento continúan como no aprobados, sin fallback.
 - Falta una regresión dedicada para probes de versión/ayuda que terminen con código distinto de cero; una comprobación de revisión verificó el comportamiento actual como no disponible.
-- No se verificaron autenticación live, contenido de eventos del AGY real, significado efectivo de `--settings`, permisos, sandbox ni independencia del revisor. Permanecen `NOT_RUN`/`UNKNOWN` hasta una autorización y evidencia reales.
+- No se verificaron los eventos `stream-json` de este runtime, el significado efectivo de `--settings`, los permisos, el sandbox ni la independencia del revisor. Permanecen `NOT_RUN`/`UNKNOWN`; el smoke real previo no cubre esos puntos.
 
 Fuentes de protocolo y permisos: [AGY headless mode](https://antigravity.google/docs/cli/headless/) y [AGY execution modes](https://antigravity.google/docs/cli/modes/).
