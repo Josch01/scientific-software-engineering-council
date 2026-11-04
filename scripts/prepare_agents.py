@@ -21,6 +21,7 @@ REVIEWERS = {"software_auditor", "security_reviewer", "independent_reviewer", "r
 ROLE_TASKS = {
     "software_architect": "Analizar diseño modular, contratos y dependencias; proponer ADR.",
     "implementation_engineer": "Implementar solo cambios autorizados, registrar patch y pruebas.",
+    "ode_model_specialist": "Formular estados, parámetros, escalas y supuestos de sistemas ODE; distinguir el modelo implementado de sus claims científicos.",
     "numerical_analyst": "Auditar escalas, estabilidad, error, tolerancias y convergencia.",
     "mathematical_model_specialist": "Comprobar traducción de ecuaciones a código y supuestos.",
     "optimization_ml_engineer": "Verificar validación, sesgos, optimizadores, seeds y baselines.",
