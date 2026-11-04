@@ -10,6 +10,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 
 try:
     from PySide6 import QtCore, QtWidgets
@@ -157,6 +158,73 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertEqual(
             window.workspace_value.text().split(" · ")[-1], model.verification_status
         )
+
+    def test_profiled_sir_results_can_request_workspace_audit_in_same_center(self):
+        root = self.profiled_examples
+        window = self._window()
+        model = window.load_project(root, "workspace.json")
+        window.navigate("results")
+        window.show()
+        self.app.processEvents()
+        fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+        self.assertIsNotNone(fit_table)
+        self.assertEqual(window.workspace_window.workspace_view_model, model)
+
+        observed = {}
+
+        def fake_audit(project_root, workspace, selected_ids, _config, **kwargs):
+            observed["root"] = Path(project_root).resolve()
+            observed["workspace_id"] = workspace.summary.workspace_id
+            observed["selected_ids"] = tuple(selected_ids)
+            observed["cancel_file"] = Path(kwargs["cancel_file"])
+            return {
+                "execution": "PROCESSES_COMPLETED_NOT_AUDITED",
+                "release_status": "NOT_APPROVED",
+                "scientific_validity": "NOT_CERTIFIED",
+                "workspace_audit": {"execution": "PROCESSES_COMPLETED_NOT_AUDITED"},
+                "results": [{"agent": "local-test-reviewer", "status": "completed"}],
+            }
+
+        with patch(
+            "scripts.scientific_workspace_qt.run_workspace_audit", side_effect=fake_audit
+        ) as audit_service, patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ) as confirmations:
+            window.navigate("audits")
+            window.workspace_audit_button.click()
+            self.app.processEvents()
+            dialog = window.workspace_window.findChild(
+                QtWidgets.QDialog, "workspaceAuditRequestDialog"
+            )
+            self.assertIsNotNone(dialog)
+            table = dialog.findChild(QtWidgets.QTableWidget, "workspaceAuditResourceTable")
+            self.assertIsNotNone(table)
+            model_row = next(
+                row for row in range(table.rowCount()) if table.item(row, 0).text() == "model"
+            )
+            table.selectRow(model_row)
+            dispatch = dialog.findChild(QtWidgets.QPushButton, "dispatchWorkspaceAuditButton")
+            self.assertIsNotNone(dispatch)
+            dispatch.click()
+
+            deadline = time.monotonic() + 8.0
+            while "NOT_APPROVED" not in window.audit_result_text.toPlainText() and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.005)
+
+        audit_service.assert_called_once()
+        confirmations.assert_called_once()
+        self.assertIn("puede consumir cuota", confirmations.call_args.args[2])
+        self.assertIn("no aprobará cambios", confirmations.call_args.args[2])
+        self.assertEqual(observed["root"], root.resolve())
+        self.assertEqual(observed["workspace_id"], model.workspace_id)
+        self.assertEqual(observed["selected_ids"], ("model",))
+        self.assertFalse(observed["cancel_file"].parent.exists())
+        self.assertIn("PROCESSES_COMPLETED_NOT_AUDITED", window.audit_result_text.toPlainText())
+        self.assertIn("NOT_APPROVED", window.audit_result_text.toPlainText())
+        self.assertIn("NOT_CERTIFIED", window.audit_result_text.toPlainText())
 
     def test_failed_load_preserves_the_current_project_and_workspace(self):
         window = self._window()

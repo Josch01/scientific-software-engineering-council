@@ -36,11 +36,13 @@ Rama: `codex/p3-19-sir-profile-analysis`, apilada sobre `codex/p4-release-govern
 Entorno local: Windows 11, Python 3.14.0, PySide6 6.11.1.
 
 - Regresión dirigida: `python -m unittest -q tests.test_scientific_core tests.test_scientific_observations tests.test_scientific_sir_analysis_demo tests.test_scientific_workspace_science_views tests.test_scientific_workspace_qt_views tests.test_scientific_control_center_qt` — **94 pruebas OK**.
+- Prueba adicional del puente integrado: `python -m unittest -q tests.test_scientific_control_center_qt tests.test_scientific_workspace_qt_e2e` — **20/20 OK**. La nueva regresión carga el SIR perfilado, abre Resultados, navega a Auditorías, selecciona el recurso verificado `model`, confirma el envío y comprueba que el servicio local de fixture recibe el mismo root/workspace/recurso y que el shell presenta `PROCESSES_COMPLETED_NOT_AUDITED`, `NOT_APPROVED` y `NOT_CERTIFIED`.
 - `python scripts/validate_skill.py` — `VALID STRUCTURE`; el validador declara que esto no garantiza corrección de software ni científica.
 - `python -m compileall -q scripts tests` — exit 0.
 - `git diff --check` — exit 0; Git emitió únicamente una advertencia de conversión CRLF para este plan Markdown.
 - Los escenarios `constant` y `profiled` se generaron mediante el CLI. Las pruebas comparan dos generaciones perfiladas byte a byte y cargan el demo versionado con el loader que comprueba digests.
 - Pruebas Qt: fallback nativo verificado para `fit_summary`, `sensitivity_plot` y el Centro de Control integrado. No se invocó una CLI de proveedor, no se ejecutó una auditoría de agentes y no se llamó a un modelo.
+- El test de handoff usa un servicio de auditoría de fixture para verificar la conexión UI→workspace; no cuenta como ejecución de especialistas ni proveedor real. Los otros 94 tests no se repitieron en esa última corrida.
 - Revisión independiente de código: no encontró defectos críticos ni importantes reproducibles. Recomendó hacer explícito el perfil que genera los datos sintéticos; la procedencia del fixture ahora lo declara.
 
 ## Decisiones y limitaciones
@@ -56,6 +58,6 @@ Entorno local: Windows 11, Python 3.14.0, PySide6 6.11.1.
 ## Defectos encontrados y requisitos pendientes
 
 - No se encontró un defecto crítico o importante reproducible en las vistas existentes. La brecha de este incremento era que el puente de ajuste rechazaba los perfiles variables y las vistas no asignaban unidades a parámetros de nudo; ambas capacidades quedaron implementadas y probadas.
-- `NOT_RUN`: ecuaciones/datos reales del usuario, Qt visual en Linux, proveedor real desde la aplicación, render WebEngine del workspace perfilado y ejecución CI de esta rama antes de publicar el PR.
+- `NOT_RUN`: ecuaciones/datos reales del usuario, Qt visual en Linux, proveedor real desde la aplicación, render WebEngine del workspace perfilado y CI del nuevo test de handoff hasta terminar la corrida en la rama publicada.
 - `NOT_CALCULATED`: incertidumbre estadística. `NOT_ASSESSED`: validez científica e identificabilidad. No se fabricaron bandas ni intervalos.
 - Próximo trabajo del roadmap: aplicar el flujo integrado al proyecto SIR del usuario cuando comparta sus ecuaciones/datos; mantener P3 dinámico y la skill portable utilizables sin exigir GUI. P4/v1.0 continúa pendiente de sus gates.
