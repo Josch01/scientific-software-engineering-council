@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 
 from scripts.agent_runtime import (
@@ -31,6 +32,7 @@ from scripts.process_containment import new_containment as _new_containment
 # deletion of its logs. Completed evidence must never be relabelled by another run.
 _OWNED_OUTPUT_PATHS: set[Path] = set()
 _OUTPUT_LOCK = threading.Lock()
+_MAX_AGY_JSON_BYTES = 16 * 1024 * 1024
 
 
 def _utc_now() -> str:
@@ -130,7 +132,11 @@ class _CliRuntime:
                 )
                 if version_result.returncode == 0:
                     version = version_result.stdout.strip() or None
-                help_text = help_result.stdout
+                # AGY 1.4.x writes its help table to stderr, unlike the other
+                # adapters. Treat both streams as probe text, never as runtime
+                # provider output.
+                help_text = (help_result.stdout + "\n" + help_result.stderr
+                             if self.provider == "agy" else help_result.stdout)
                 available = (version_result.returncode == help_result.returncode == 0
                              and all(re.search(r"(?<![\w-])" + re.escape(flag)
                                                + r"(?![\w-])", help_text)
@@ -296,6 +302,37 @@ class _CliRuntime:
                 run.cleanup_error = None
 
     def _parse(self, path: Path) -> tuple[str | None, tuple[str, ...], str | None]:
+        if self.provider == "agy":
+            session_id = None
+            try:
+                with path.open("rb") as stream:
+                    raw = stream.read(_MAX_AGY_JSON_BYTES + 1)
+                if len(raw) > _MAX_AGY_JSON_BYTES:
+                    raise ValueError("AGY JSON result exceeds the read limit")
+                payload = json.loads(
+                    raw.decode("utf-8"), object_pairs_hook=_json_object,
+                    parse_constant=_invalid_constant,
+                )
+                if type(payload) is not dict:
+                    raise ValueError("AGY result must be a JSON object")
+                candidate_session_id = payload.get("conversation_id")
+                if (not isinstance(candidate_session_id, str)
+                        or not candidate_session_id.strip()
+                        or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                               for character in candidate_session_id)):
+                    raise ValueError("AGY result has no valid conversation_id")
+                session_id = candidate_session_id
+                if payload.get("status") != "SUCCESS":
+                    return session_id, (), "AGY result was not successful"
+                if "error" in payload:
+                    raise ValueError("successful AGY result must not include an error field")
+                response = payload.get("response")
+                if not isinstance(response, str) or not response.strip():
+                    raise ValueError("AGY result has no non-empty textual response")
+                return session_id, (), None
+            except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+                return session_id, (), f"Invalid AGY JSON output: {exc}"
+
         session_id = None
         children: list[str] = []
         terminal = False
@@ -437,10 +474,31 @@ class GeminiRuntime(_CliRuntime):
                 "--output-format", "stream-json", "--prompt=" + request.prompt)
 
 
+class AgyRuntime(_CliRuntime):
+    """AGY CLI adapter; plan/sandbox flags are requests, not enforced read-only proof.
+
+    Configured AGY permission rules can still permit writes. Callers that require
+    read-only access must enforce it outside this adapter; sandbox_effective stays
+    UNKNOWN because --sandbox does not certify filesystem write isolation.
+    """
+
+    provider = "agy"
+    _help_args = ("--help",)
+    _required_help = ("--prompt", "--output-format", "json", "--sandbox",
+                      "--mode", "plan", "accept-edits")
+
+    def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
+        mode = "accept-edits" if request.writable else "plan"
+        return ("agy", "--sandbox", "--mode=" + mode,
+                "--output-format", "json", "--prompt=" + request.prompt)
+
+
 def create_runtime(provider: str) -> AgentRuntime:
     """Provider selection is explicit and never substitutes another runtime."""
     if provider == "codex":
         return CodexRuntime()
     if provider == "gemini":
         return GeminiRuntime()
+    if provider == "agy":
+        return AgyRuntime()
     raise ValueError(f"Unsupported runtime provider: {provider!r}")

@@ -65,8 +65,11 @@ class ProviderRuntimeTests(unittest.TestCase):
         )
 
     def help_text(self, provider):
-        return ("--json --sandbox read-only workspace-write" if provider == "codex"
-                else "--prompt --output-format stream-json --sandbox --approval-mode default")
+        if provider == "codex":
+            return "--json --sandbox read-only workspace-write"
+        if provider == "gemini":
+            return "--prompt --output-format stream-json --sandbox --approval-mode default"
+        return "--prompt --output-format json --sandbox --settings --mode plan accept-edits"
 
     def discovery(self, provider, help_text=None):
         def run(argv, **kwargs):
@@ -75,9 +78,12 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertLessEqual(kwargs["timeout"], 5)
             self.assertEqual(argv[0], f"/selected/{provider}")
             self.assertIn(tuple(argv[1:]), (("--version",), ("--help",), ("exec", "--help")))
-            return subprocess.CompletedProcess(argv, 0, "1.2.3" if argv[-1] == "--version"
-                                               else (help_text if help_text is not None
-                                                     else self.help_text(provider)), "")
+            if argv[-1] == "--version":
+                return subprocess.CompletedProcess(argv, 0, "1.2.3", "")
+            output = help_text if help_text is not None else self.help_text(provider)
+            if provider == "agy":
+                return subprocess.CompletedProcess(argv, 0, "", output)
+            return subprocess.CompletedProcess(argv, 0, output, "")
         return patch.object(self.module.subprocess, "run", side_effect=run)
 
     def launch_fixture(self, provider, events, exit_code=0, wait_error=None, process_setup=None):
@@ -117,9 +123,94 @@ class ProviderRuntimeTests(unittest.TestCase):
     def test_explicit_provider_factory_rejects_unknown_instead_of_falling_back(self):
         self.assertIsInstance(self.module.create_runtime("codex"), self.module.CodexRuntime)
         self.assertIsInstance(self.module.create_runtime("gemini"), self.module.GeminiRuntime)
+        self.assertIsInstance(self.module.create_runtime("agy"), self.module.AgyRuntime)
         for value in ("", "auto", "CODEX", "fake", None):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.module.create_runtime(value)
+
+    def test_agy_runtime_uses_sandbox_and_respects_read_write_intent(self):
+        runtime = self.module.AgyRuntime()
+
+        readonly = runtime.build_argv(self.request)
+        writable = runtime.build_argv(replace(self.request, writable=True))
+
+        self.assertEqual(readonly, (
+            "agy", "--sandbox", "--mode=plan", "--output-format", "json",
+            "--prompt=" + self.request.prompt,
+        ))
+        self.assertEqual(writable, (
+            "agy", "--sandbox", "--mode=accept-edits", "--output-format", "json",
+            "--prompt=" + self.request.prompt,
+        ))
+
+    def test_agy_capability_probe_requires_json_prompt_sandbox_and_modes(self):
+        runtime = self.module.AgyRuntime()
+        with patch.object(self.module.shutil, "which", return_value="/selected/agy"), \
+                self.discovery("agy"):
+            capabilities = runtime.discover_capabilities()
+
+        self.assertTrue(capabilities.available)
+        self.assertEqual(capabilities.provider, "agy")
+        self.assertEqual(capabilities.version, "1.2.3")
+        self.assertIsNone(capabilities.sandbox_effective)
+        self.assertEqual(capabilities.native_subagents, RuntimeCapabilityStatus.UNKNOWN)
+
+    def test_agy_json_envelope_records_conversation_and_requires_success(self):
+        envelope = {
+            "conversation_id": "agy-conversation-1",
+            "status": "SUCCESS",
+            "response": "SSEC-AGY-OK",
+            "duration_seconds": 1.0,
+        }
+        runtime, _, result, _ = self.collect_fixture(
+            "agy", json.dumps(envelope, separators=(",", ":")).encode()
+        )
+
+        self.assertEqual(result.status, RuntimeStatus.SUCCEEDED)
+        self.assertEqual(result.provider_session_id, "agy-conversation-1")
+        self.assertIsNone(result.error)
+        self.assertIn("SSEC-AGY-OK", result.stdout_path.read_text(encoding="utf-8"))
+
+        failed_envelope = dict(envelope, status="ERROR", error={"message": "auth required"})
+        _, _, failed, _ = self.collect_fixture(
+            "agy", json.dumps(failed_envelope, separators=(",", ":")).encode()
+        )
+        self.assertEqual(failed.status, RuntimeStatus.FAILED)
+        self.assertIn("not successful", failed.error)
+
+        malformed_success = dict(envelope, error=False)
+        _, _, malformed, _ = self.collect_fixture(
+            "agy", json.dumps(malformed_success, separators=(",", ":")).encode()
+        )
+        self.assertEqual(malformed.status, RuntimeStatus.FAILED)
+
+    def test_agy_json_envelope_rejects_missing_session_or_response(self):
+        cases = (
+            {"status": "SUCCESS", "response": "text"},
+            {"conversation_id": "c1", "status": "SUCCESS"},
+            {"conversation_id": "", "status": "SUCCESS", "response": "text"},
+            {"conversation_id": "   ", "status": "SUCCESS", "response": "text"},
+            {"conversation_id": 4, "status": "SUCCESS", "response": "text"},
+            {"conversation_id": chr(0xD800), "status": "SUCCESS", "response": "text"},
+        )
+        for index, envelope in enumerate(cases):
+            with self.subTest(index=index):
+                _, _, result, _ = self.collect_fixture(
+                    "agy", json.dumps(envelope, separators=(",", ":")).encode()
+                )
+                self.assertEqual(result.status, RuntimeStatus.FAILED)
+                self.assertTrue(result.error)
+                if envelope.get("conversation_id") == 4 or envelope.get("conversation_id") == chr(0xD800):
+                    self.assertIsNone(result.provider_session_id)
+
+    def test_agy_json_envelope_catches_recursion_error(self):
+        output = b'{"conversation_id":"c1","status":"SUCCESS","response":"text"}'
+        with patch.object(self.module.json, "loads",
+                          side_effect=RecursionError("maximum recursion depth exceeded")):
+            _, _, result, _ = self.collect_fixture("agy", output)
+
+        self.assertEqual(result.status, RuntimeStatus.FAILED)
+        self.assertIn("recursion", result.error.casefold())
 
     def test_build_argv_is_pure_and_keeps_prompt_one_argument(self):
         with patch.object(self.module.subprocess, "run", side_effect=AssertionError("impure")), \
@@ -145,7 +236,7 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertIn("--prompt=--yolo", hostile)
 
     def test_cost_acknowledgement_is_required_before_discovery_or_spawn(self):
-        for provider in ("codex", "gemini"):
+        for provider in ("codex", "gemini", "agy"):
             with self.subTest(provider=provider), \
                     patch.object(self.module.subprocess, "Popen") as spawn, \
                     patch.object(self.module.subprocess, "run") as discover:
@@ -157,7 +248,7 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertFalse(self.request.stdout_path.exists())
 
     def test_discovery_is_bounded_and_does_not_prove_sandbox_or_subagents(self):
-        for provider in ("codex", "gemini"):
+        for provider in ("codex", "gemini", "agy"):
             with self.subTest(provider=provider), \
                     patch.object(self.module.shutil, "which", return_value=f"/selected/{provider}"), \
                     self.discovery(provider) as probe, patch.object(self.module.subprocess, "Popen") as spawn:
