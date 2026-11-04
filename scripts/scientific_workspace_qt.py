@@ -308,6 +308,8 @@ if QtWidgets is not None:
     class ScientificWorkspaceWindow(QtWidgets.QMainWindow):
         """Optional view over loader-verified project resources and host actions."""
 
+        auditResultChanged = QtCore.Signal(object)
+
         def __init__(self, parent=None, *, confirmation_handler=None):
             super().__init__(parent)
             self.setWindowTitle("SSEC · Centro de Control Científico")
@@ -746,6 +748,7 @@ if QtWidgets is not None:
             report["scientific_validity"] = "NOT_CERTIFIED"
             report["human_review"] = "NOT_PERFORMED"
             self.audit_result = report
+            self.auditResultChanged.emit(dict(report))
             execution = report["execution"]
             if execution == "FAILED":
                 message = "Auditoría fallida · sin aprobación"
