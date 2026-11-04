@@ -36,4 +36,4 @@
 - [x] Add that exact command to the existing CI validation job before unit tests.
 - [x] Verify the workflow diff and rerun the command locally.
 - [x] Record results and remaining P4 tools as `NOT_RUN`.
-- [ ] Commit the increment and open a draft PR targeting P3.18.
+- [x] Commit the increment and open draft PR [#43](https://github.com/Josch01/scientific-software-engineering-council/pull/43) targeting P3.18; no merge.
