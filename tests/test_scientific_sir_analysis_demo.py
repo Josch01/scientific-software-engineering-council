@@ -7,6 +7,15 @@ from scripts.scientific_workspace_loader import load_scientific_workspace
 
 
 class SirAnalysisDemoTests(unittest.TestCase):
+    def test_checked_in_demo_loads_with_manifest_resource_digests(self):
+        repository = Path(__file__).resolve().parents[1]
+        demo = repository / "examples" / "sir_analysis_workspace_demo"
+
+        workspace = load_scientific_workspace(demo, "workspace.json")
+
+        self.assertEqual(workspace.summary.to_dict()["status"], "VALID")
+        self.assertGreater(len(workspace.resources), 0)
+
     def test_builder_creates_byte_stable_workspace_with_computed_results(self):
         repository = Path(__file__).resolve().parents[1]
         builder = repository / "scripts" / "build_sir_analysis_demo.py"

@@ -32,6 +32,7 @@ Rama: `codex/p3-17-sir-analysis-integration`. Draft PR [#41](https://github.com/
 - `WEBENGINE_AVAILABLE`: `True`. Las pruebas verificaron render WebEngine local y fallback Qt nativo.
 - `python -m py_compile` para módulos y pruebas modificados: OK.
 - `git diff --check`: OK.
+- Fresh worktree de Windows: el test `test_checked_in_demo_loads_with_manifest_resource_digests` carga los recursos de la demo y confirma el manifiesto; se añadió una regla `-text` para conservar bytes hash-verificados en checkouts.
 - Estado de checks remotos consultado después de publicar PR #41: no hay estados reportados aún.
 
 ## Resultado científico de la fixture y límites
@@ -48,6 +49,7 @@ Rama: `codex/p3-17-sir-analysis-integration`. Draft PR [#41](https://github.com/
 - Un render de workspace SIR falló porque el dispatcher Qt enviaba `action_error` al renderer de tabla JSON, cuya firma no lo aceptaba. Se corrigió y se cubrió con render de la tabla de observaciones.
 - La demo P3.16 existente contenía cuatro digests que no coincidían con sus recursos; se actualizaron para restaurar su prueba de carga Qt.
 - La revisión independiente halló que `sensitivity_plot` aceptaba dos recursos `model_spec`, aunque la vista deriva unidades solo de un modelo. Se reprodujo y corrigió el validador para rechazar esa configuración; la regresión focalizada pasó y el revisor confirmó el arreglo sin otros hallazgos P0–P2.
+- Un checkout limpio de Windows convirtió los recursos JSON/Python de la demo a CRLF y el loader rechazó sus digests, aunque el worktree anterior retenía LF. Se fijó el atributo Git para esa carpeta y se agregó una prueba de carga del demo versionado; la verificación con checkout limpio está en curso.
 
 ## Pendiente
 
