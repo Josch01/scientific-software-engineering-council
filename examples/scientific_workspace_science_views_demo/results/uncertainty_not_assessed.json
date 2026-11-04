@@ -1,0 +1,5 @@
+{
+  "status": "NOT_CALCULATED",
+  "assessment": "NOT_ASSESSED",
+  "reason": "No validated uncertainty estimator or assumptions are supplied."
+}

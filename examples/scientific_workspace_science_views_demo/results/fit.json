@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "method": "BOUNDED_LEVENBERG_MARQUARDT",
+  "parameter_names": ["beta", "gamma"],
+  "initial_parameters": {"beta": 0.38, "gamma": 0.16},
+  "parameters": {"beta": 0.4, "gamma": 0.18},
+  "bounds": {
+    "beta": {"lower": 0.01, "upper": 1.0},
+    "gamma": {"lower": 0.01, "upper": 1.0}
+  },
+  "residuals": [-0.5, 0.5, 0.0, -1.0, 1.0, 0.0],
+  "cost": 1.25,
+  "cost_underflowed": false,
+  "status": "CONVERGED_SYNTHETIC_FIXTURE",
+  "iterations": 4,
+  "accepted_steps": 3,
+  "function_evaluations": 11,
+  "max_iterations": 20,
+  "max_function_evaluations": 80,
+  "finite_difference_fraction": 0.00001,
+  "final_damping": 0.0001
+}
