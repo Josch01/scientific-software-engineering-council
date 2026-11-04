@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+import hashlib
 import json
 import math
 from pathlib import Path
 import queue
 import sys
+import tempfile
 import threading
 from typing import Callable
 
 try:
+    from .configuration import DEFAULT_CONFIG, config_path, load_config
     from .scientific_workspace_actions import (
         ApprovedSimulationAction,
         request_approved_simulation,
@@ -20,6 +23,7 @@ try:
     )
     from .scientific_workspace_loader import load_scientific_workspace
     from .scientific_workspace_loader import LoadedWorkspace
+    from .scientific_workspace_audit import run_workspace_audit
     from .scientific_workspace_view import (
         ComponentView,
         SirEquationView,
@@ -34,6 +38,7 @@ try:
     )
 except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.configuration import DEFAULT_CONFIG, config_path, load_config
     from scripts.scientific_workspace_actions import (
         ApprovedSimulationAction,
         request_approved_simulation,
@@ -42,6 +47,7 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     )
     from scripts.scientific_workspace_loader import load_scientific_workspace
     from scripts.scientific_workspace_loader import LoadedWorkspace
+    from scripts.scientific_workspace_audit import run_workspace_audit
     from scripts.scientific_workspace_view import (
         ComponentView,
         SirEquationView,
@@ -539,6 +545,10 @@ def create_workspace_window(
     ttk.Label(header, textvariable=status_var).pack(side="right", padx=(12, 0))
     proposal_button = ttk.Button(header, text="Revisar propuesta…", state="disabled")
     proposal_button.pack(side="right", padx=(0, 8))
+    audit_button = ttk.Button(header, text="Solicitar auditoría…", state="disabled")
+    audit_button.pack(side="right", padx=(0, 8))
+    cancel_audit_button = ttk.Button(header, text="Cancelar auditoría", state="disabled")
+    cancel_audit_button.pack(side="right", padx=(0, 8))
     open_button = ttk.Button(header, text="Abrir espacio…")
     open_button.pack(side="right")
     notice_var = tk.StringVar(
@@ -574,9 +584,12 @@ def create_workspace_window(
     notebook.pack(fill="both", expand=True)
 
     def display(model: WorkspaceViewModel | None) -> None:
+        ready = active_workspace[0] is not None and active_project_root[0] is not None
+        busy = active_simulation[0] is not None or active_audit[0] is not None
         proposal_button.configure(
-            state=("normal" if active_workspace[0] is not None and active_project_root[0] else "disabled")
+            state=("normal" if ready and not busy else "disabled")
         )
+        audit_button.configure(state=("normal" if ready and not busy else "disabled"))
         for page in result_tabs.values():
             notebook.forget(page)
             page.destroy()
@@ -664,7 +677,7 @@ def create_workspace_window(
             notebook.add(page, text=section.title)
 
     def open_workspace() -> None:
-        if active_simulation[0] is not None:
+        if active_simulation[0] is not None or active_audit[0] is not None:
             return
         selected_root = project_hint
         if selected_root is None:
@@ -693,7 +706,7 @@ def create_workspace_window(
         display(model)
 
     def review_proposal() -> None:
-        if active_simulation[0] is not None:
+        if active_simulation[0] is not None or active_audit[0] is not None:
             return
         current = active_workspace[0]
         root_path = active_project_root[0]
@@ -804,8 +817,117 @@ def create_workspace_window(
         dialog.grab_set()
         dialog.wait_window()
 
+    def audit_workspace() -> None:
+        if active_simulation[0] is not None or active_audit[0] is not None:
+            return
+        workspace = active_workspace[0]
+        root_path = active_project_root[0]
+        if workspace is None or root_path is None:
+            messagebox.showinfo(
+                "Abra un workspace primero",
+                "La auditoría requiere un workspace cargado y verificado.",
+                parent=root,
+            )
+            return
+        try:
+            policy_path = config_path(root_path)
+            policy_folder = policy_path.parent
+            if policy_folder.is_symlink() or policy_path.is_symlink():
+                raise ValueError("la configuración SSEC no puede atravesar symlinks")
+            if policy_folder.exists() and not policy_folder.is_dir():
+                raise ValueError(".ssec existe, pero no es un directorio")
+            policy = load_config(policy_path) if policy_path.exists() else dict(DEFAULT_CONFIG)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Configuración SSEC no válida", str(exc), parent=root)
+            return
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Solicitar auditoría del workspace")
+        dialog.minsize(760, 440)
+        dialog.transient(root)
+        ttk.Label(
+            dialog,
+            text=(
+                f"Workspace: {sanitize_display_text(workspace.summary.title)} · "
+                f"SHA-256 del manifiesto: {hashlib.sha256(workspace.manifest_bytes).hexdigest()}\n"
+                "Seleccione los recursos verificados que se compartirán con especialistas. "
+                "No se incluirán otros archivos del proyecto."
+            ),
+            wraplength=1050,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+        table_frame = ttk.Frame(dialog)
+        table_frame.pack(fill="both", expand=True, padx=12, pady=6)
+        columns = ("kind", "path", "bytes", "sha256")
+        resource_table = ttk.Treeview(
+            table_frame, columns=columns, show="tree headings", selectmode="extended", height=12
+        )
+        resource_table.heading("#0", text="Resource ID")
+        resource_table.column("#0", width=130, stretch=False)
+        for column, width in (("kind", 120), ("path", 240), ("bytes", 75), ("sha256", 190)):
+            resource_table.heading(column, text=column)
+            resource_table.column(column, width=width, stretch=(column == "path"))
+        for resource in workspace.resources:
+            resource_table.insert(
+                "", "end", iid=resource.resource_id, text=resource.resource_id,
+                values=(resource.kind, resource.path, len(resource.content), resource.sha256),
+            )
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=resource_table.yview)
+        resource_table.configure(yscrollcommand=vertical.set)
+        resource_table.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        resource_table.selection_set(tuple(resource.resource_id for resource in workspace.resources))
+        ttk.Label(
+            dialog,
+            text=(
+                f"Proveedor configurado: {policy['provider_mode']}. La facturación no se mide "
+                "ni limita automáticamente. Los agentes reciben datos seleccionados; no se "
+                "ejecuta código del proyecto y su salida no valida ciencia ni aprueba cambios."
+            ),
+            wraplength=1050,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=6)
+        actions = ttk.Frame(dialog)
+        actions.pack(fill="x", padx=12, pady=(4, 12))
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def dispatch() -> None:
+            selected_ids = tuple(resource_table.selection())
+            if not selected_ids:
+                messagebox.showinfo(
+                    "Seleccione recursos",
+                    "Debe seleccionar al menos un recurso verificado.",
+                    parent=dialog,
+                )
+                return
+            if not messagebox.askyesno(
+                "Confirmar envío a especialistas",
+                (
+                    f"Enviar {len(selected_ids)} recurso(s) seleccionado(s) de "
+                    f"{workspace.summary.workspace_id!r} al proveedor {policy['provider_mode']!r}?\n\n"
+                    "La cuenta o CLI puede incurrir en coste; SSEC no dispone de medidor. "
+                    "Solo se enviarán los bytes verificados seleccionados y contexto derivado. "
+                    "No se ejecutará código del proyecto ni se aprobarán resultados."
+                ),
+                parent=dialog,
+            ):
+                return
+            dialog.destroy()
+            start_workspace_audit(workspace, root_path, selected_ids, policy)
+
+        ttk.Button(actions, text="Cancelar", command=cancel).pack(side="right", padx=(8, 0))
+        ttk.Button(actions, text="Enviar a especialistas…", command=dispatch).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.grab_set()
+        dialog.wait_window()
+
     open_button.configure(command=open_workspace)
     proposal_button.configure(command=review_proposal)
+    audit_button.configure(command=audit_workspace)
     root.bind("<Control-o>", lambda _event: open_workspace())
     active_workspace = [loaded_workspace]
     active_project_root = [project_hint]
@@ -814,6 +936,8 @@ def create_workspace_window(
     simulation_buttons: dict[str, object] = {}
     result_tabs: dict[str, object] = {}
     active_simulation = [None]
+    active_audit = [None]
+    close_after_audit = [False]
 
     def show_simulation_result(component: ComponentView, result: ComponentView) -> None:
         previous = result_tabs.pop(component.component_id, None)
@@ -826,9 +950,164 @@ def create_workspace_window(
         result_tabs[component.component_id] = page
         notebook.select(page)
 
+    def show_audit_result(result: Mapping[str, object]) -> None:
+        previous = result_tabs.pop("workspace-audit", None)
+        if previous is not None:
+            notebook.forget(previous)
+            previous.destroy()
+        page = ttk.Frame(notebook)
+        _readonly_text(page, _format_json(result), tk, ttk, height=24)
+        notebook.add(page, text="Resultado · Auditoría")
+        result_tabs["workspace-audit"] = page
+        notebook.select(page)
+
+    def restore_idle_controls() -> None:
+        open_button.configure(state="normal")
+        cancel_audit_button.configure(state="disabled")
+        has_workspace = active_workspace[0] is not None and active_project_root[0] is not None
+        proposal_button.configure(state="normal" if has_workspace else "disabled")
+        audit_button.configure(state="normal" if has_workspace else "disabled")
+        for component_id, action_button in simulation_buttons.items():
+            action_button.configure(state="normal")
+            action = active_simulation_actions[0].get(component_id)
+            if action is not None:
+                action_button.configure(text=f"Ejecutar: {action.label}")
+
+    def start_workspace_audit(workspace, root_path, selected_ids, policy) -> None:
+        result_queue = queue.Queue()
+        cancel_temp = tempfile.TemporaryDirectory(prefix="ssec-audit-cancel-")
+        cancel_file = Path(cancel_temp.name) / "cancel.requested"
+        active_audit[0] = {
+            "queue": result_queue,
+            "cancel_file": cancel_file,
+            "cancel_temp": cancel_temp,
+            "cancel_requested": False,
+        }
+        open_button.configure(state="disabled")
+        proposal_button.configure(state="disabled")
+        audit_button.configure(state="disabled", text="Auditoría en curso…")
+        cancel_audit_button.configure(state="normal")
+        for action_button in simulation_buttons.values():
+            action_button.configure(state="disabled")
+        status_var.set("Auditoría en curso · salida no aprobada")
+        root.update_idletasks()
+
+        def worker() -> None:
+            try:
+                result = run_workspace_audit(
+                    root_path,
+                    workspace,
+                    selected_ids,
+                    policy,
+                    accept_unmetered_cost=True,
+                    cancel_file=cancel_file,
+                    progress_callback=lambda event: result_queue.put(("progress", event)),
+                )
+                result_queue.put(("result", result))
+            except BaseException as exc:
+                result_queue.put(("error", f"{type(exc).__name__}: {exc}"[:2000]))
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"ssec-workspace-audit-{workspace.summary.workspace_id}",
+            daemon=True,
+        )
+        active_audit[0]["thread"] = thread
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            active_audit[0] = None
+            cancel_temp.cleanup()
+            restore_idle_controls()
+            audit_button.configure(text="Solicitar auditoría…")
+            messagebox.showerror("No se pudo iniciar la auditoría", str(exc), parent=root)
+            return
+        root.after(100, poll_workspace_audit)
+
+    def request_workspace_audit_cancel() -> None:
+        active = active_audit[0]
+        if active is None or active["cancel_requested"]:
+            return
+        try:
+            active["cancel_file"].write_text("cancel requested\n", encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("No se pudo solicitar cancelación", str(exc), parent=root)
+            return
+        active["cancel_requested"] = True
+        cancel_audit_button.configure(state="disabled")
+        status_var.set("Cancelación solicitada · esperando el cierre de los procesos")
+
+    cancel_audit_button.configure(command=request_workspace_audit_cancel)
+
+    def close_workspace_window() -> None:
+        if active_audit[0] is not None:
+            close_after_audit[0] = True
+            request_workspace_audit_cancel()
+            return
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", close_workspace_window)
+
+    def poll_workspace_audit() -> None:
+        active = active_audit[0]
+        if active is None:
+            return
+        if "terminal" in active:
+            if active["thread"].is_alive():
+                root.after(25, poll_workspace_audit)
+                return
+            outcome, payload = active.pop("terminal")
+        else:
+            try:
+                outcome, payload = active["queue"].get_nowait()
+            except queue.Empty:
+                root.after(100, poll_workspace_audit)
+                return
+            if outcome in {"result", "error"} and active["thread"].is_alive():
+                active["terminal"] = (outcome, payload)
+                cancel_audit_button.configure(state="disabled")
+                root.after(25, poll_workspace_audit)
+                return
+        if outcome == "progress":
+            if not active["cancel_requested"]:
+                status_var.set(
+                    f"Especialistas: {payload.get('completed', 0)}/{payload.get('total', 0)} "
+                    "· procesos, no aprobación"
+                )
+            root.after(100, poll_workspace_audit)
+            return
+        cancel_temp = active.get("cancel_temp")
+        active_audit[0] = None
+        if cancel_temp is not None:
+            cancel_temp.cleanup()
+        restore_idle_controls()
+        audit_button.configure(text="Solicitar auditoría…")
+        if outcome == "error":
+            result = {
+                "execution": "FAILED",
+                "release_status": "NOT_APPROVED",
+                "error": payload,
+                "scientific_validity": "NOT_CERTIFIED",
+            }
+            status_var.set("Auditoría fallida · sin aprobación")
+        else:
+            result = payload
+            execution = result.get("execution")
+            if execution == "PROCESSES_COMPLETED_NOT_AUDITED":
+                status_var.set(
+                    "Cancelación solicitada · procesos completados, sin aprobación"
+                    if result.get("workspace_audit", {}).get("cancellation_requested")
+                    else "Procesos completados · sin revisión/aprobación SSEC"
+                )
+            else:
+                status_var.set(f"Auditoría {execution} · sin aprobación")
+        show_audit_result(result)
+        if close_after_audit[0]:
+            root.destroy()
+
     def run_simulation(component: ComponentView, action: ApprovedSimulationAction,
                        button) -> None:
-        if active_simulation[0] is not None:
+        if active_simulation[0] is not None or active_audit[0] is not None:
             return
         workspace = active_workspace[0]
         if workspace is None:
@@ -857,6 +1136,7 @@ def create_workspace_window(
         button.configure(text="Ejecutando…")
         open_button.configure(state="disabled")
         proposal_button.configure(state="disabled")
+        audit_button.configure(state="disabled")
         status_var.set("Simulación en curso · callback aprobado · SIN VALIDACIÓN CIENTÍFICA")
         root.update_idletasks()
 
@@ -875,12 +1155,7 @@ def create_workspace_window(
             thread.start()
         except RuntimeError as exc:
             active_simulation[0] = None
-            open_button.configure(state="normal")
-            proposal_button.configure(
-                state="normal" if active_workspace[0] is not None and active_project_root[0] else "disabled"
-            )
-            for action_button in simulation_buttons.values():
-                action_button.configure(state="normal")
+            restore_idle_controls()
             button.configure(text=f"Ejecutar: {action.label}")
             messagebox.showerror("No se pudo iniciar la simulación", str(exc), parent=root)
             return
@@ -897,15 +1172,7 @@ def create_workspace_window(
             return
         component = active["component"]
         active_simulation[0] = None
-        open_button.configure(state="normal")
-        proposal_button.configure(
-            state="normal" if active_workspace[0] is not None and active_project_root[0] else "disabled"
-        )
-        for component_id, action_button in simulation_buttons.items():
-            action_button.configure(state="normal")
-            action = active_simulation_actions[0].get(component_id)
-            if action is not None:
-                action_button.configure(text=f"Ejecutar: {action.label}")
+        restore_idle_controls()
         if outcome == "error":
             status_var.set("Simulación fallida · resultado no publicado")
             messagebox.showerror(
