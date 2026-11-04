@@ -18,10 +18,11 @@ La generación de propuesta, la respuesta de auditoría y los cuadros de confirm
 - CLI real, compatibilidad de cuenta y revisión por especialistas reales: `NOT_RUN`.
 - Ecuaciones/datos del SIR real del usuario y validez científica: `NOT_RUN`.
 - Linux con PySide6 y prueba visual Qt allí: `NOT_RUN`.
-- CI de esta rama y PR draft: pendientes.
+- CI del commit `406f271`: run [#174](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41776412231), en curso en Windows/Ubuntu × Python 3.11/3.12; esos jobs no instalan PySide6.
 
 ## Entrega
 
-- Commit: `bdb88d7` (`test: cover integrated Qt workspace cycle`).
+- Commit: `406f271` (`test: cover integrated Qt workspace cycle`).
 - El incremento solo agrega cobertura de integración y documentación; no requiere cambios al código de producción.
+- PR draft [#39](https://github.com/Josch01/scientific-software-engineering-council/pull/39), apilado sobre P3.14; abierto y sin merge.
 - No se invocaron proveedores, no se instalaron dependencias y no se hizo merge.
