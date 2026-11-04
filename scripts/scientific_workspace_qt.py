@@ -13,7 +13,7 @@ import math
 import os
 from pathlib import Path
 import sys
-from typing import Any
+import threading
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -21,13 +21,22 @@ except ImportError:  # Keep this optional frontend importable without Qt install
     QtCore = QtGui = QtWidgets = None
 
 try:
+    from .configuration import DEFAULT_CONFIG, config_path, load_config
     from .scientific_workspace_actions import (
         ApprovedSimulationRun,
         request_approved_simulation,
         run_approved_simulation,
         sir_simulation_actions_for_workspace,
     )
+    from .scientific_workspace_generation import (
+        configured_proposal_providers,
+        generate_workspace_proposal,
+    )
     from .scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
+    from .scientific_workspace_proposals import (
+        approve_workspace_proposal,
+        preview_workspace_proposal,
+    )
     from .scientific_workspace_view import (
         ComponentView,
         ResourceView,
@@ -38,13 +47,22 @@ try:
         sanitize_display_text,
     )
 except ImportError:  # Direct execution from the scripts directory.
+    from configuration import DEFAULT_CONFIG, config_path, load_config
     from scientific_workspace_actions import (
         ApprovedSimulationRun,
         request_approved_simulation,
         run_approved_simulation,
         sir_simulation_actions_for_workspace,
     )
+    from scientific_workspace_generation import (
+        configured_proposal_providers,
+        generate_workspace_proposal,
+    )
     from scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
+    from scientific_workspace_proposals import (
+        approve_workspace_proposal,
+        preview_workspace_proposal,
+    )
     from scientific_workspace_view import (
         ComponentView,
         ResourceView,
@@ -109,6 +127,47 @@ if QtWidgets is not None:
                 )
             else:
                 self.completed.emit(self._component_id, self._generation, result)
+
+
+    class _ProposalThread(QtCore.QThread):
+        progress = QtCore.Signal(object)
+        completed = QtCore.Signal(object)
+        failed = QtCore.Signal(str)
+
+        def __init__(
+            self,
+            project_root,
+            workspace,
+            resource_ids,
+            objective,
+            config,
+            cancel_event,
+            parent=None,
+        ):
+            super().__init__(parent)
+            self._project_root = project_root
+            self._workspace = workspace
+            self._resource_ids = tuple(resource_ids)
+            self._objective = objective
+            self._config = config
+            self._cancel_event = cancel_event
+
+        def run(self) -> None:
+            try:
+                summary = generate_workspace_proposal(
+                    self._project_root,
+                    self._workspace,
+                    self._resource_ids,
+                    self._objective,
+                    self._config,
+                    accept_unmetered_cost=True,
+                    cancel_event=self._cancel_event,
+                    progress_callback=self.progress.emit,
+                )
+            except BaseException as exc:
+                self.failed.emit(f"{type(exc).__name__}: {exc}"[:2000])
+            else:
+                self.completed.emit(summary)
 
 
     class _TrajectoryPlot(QtWidgets.QFrame):
@@ -203,6 +262,12 @@ if QtWidgets is not None:
             self._simulation_actions: Mapping[str, object] = {}
             self.simulation_results: dict[str, ComponentView] = {}
             self._workers: dict[str, _SimulationThread] = {}
+            self._proposal_worker: _ProposalThread | None = None
+            self._proposal_cancel_event: threading.Event | None = None
+            self._proposal_terminal: tuple[str, object] | None = None
+            self._proposal_progress_dialog = None
+            self._proposal_workspace: LoadedWorkspace | None = None
+            self._proposal_project_root: Path | None = None
             self._generation = 0
             self._project_root: Path | None = None
             self._manifest_relative_path: str | None = None
@@ -210,6 +275,7 @@ if QtWidgets is not None:
             self.setStyleSheet(
                 "QMainWindow { background: #f2f5f7; color: #1d2d39; }"
                 "QLabel { color: #243746; }"
+                "QDialog, QProgressDialog { background: #f2f5f7; color: #243746; }"
                 "QToolBar { background: #16384a; border: 0; spacing: 8px; padding: 8px; }"
                 "QToolBar QLabel { color: #ffffff; font-size: 16px; font-weight: 600; }"
                 "QPushButton { background: #176b87; color: white; border: 1px solid #10546b;"
@@ -246,6 +312,17 @@ if QtWidgets is not None:
         def project_root(self) -> Path | None:
             return self._project_root
 
+        @property
+        def proposal_running(self) -> bool:
+            return self._proposal_worker is not None
+
+        def _update_action_controls(self) -> None:
+            has_workspace = self._loaded_workspace is not None and self._project_root is not None
+            self.open_button.setEnabled(not self.proposal_running)
+            workflow_busy = self.simulation_running or self.proposal_running
+            self.propose_button.setEnabled(has_workspace and not workflow_busy)
+            self.import_proposal_button.setEnabled(has_workspace and not workflow_busy)
+
         def _build_shell(self) -> None:
             toolbar = self.addToolBar("Proyecto")
             toolbar.setMovable(False)
@@ -259,6 +336,18 @@ if QtWidgets is not None:
             open_button.clicked.connect(self.open_workspace_dialog)
             toolbar.addWidget(open_button)
             self.open_button = open_button
+            propose_button = QtWidgets.QPushButton("Proponer cambios con IA")
+            propose_button.setObjectName("proposeWorkspaceButton")
+            propose_button.setAccessibleName("Proponer cambios en el workspace con un CLI local")
+            propose_button.clicked.connect(self._open_workspace_proposal_dialog)
+            toolbar.addWidget(propose_button)
+            self.propose_button = propose_button
+            import_button = QtWidgets.QPushButton("Importar/revisar propuesta…")
+            import_button.setObjectName("importWorkspaceProposalButton")
+            import_button.setAccessibleName("Importar y revisar un manifiesto JSON de propuesta")
+            import_button.clicked.connect(self._import_workspace_proposal)
+            toolbar.addWidget(import_button)
+            self.import_proposal_button = import_button
 
             shell = QtWidgets.QWidget(self)
             layout = QtWidgets.QVBoxLayout(shell)
@@ -285,6 +374,7 @@ if QtWidgets is not None:
             layout.addWidget(self.tabs, 1)
             self.setCentralWidget(shell)
             self.statusBar().showMessage("Listo")
+            self._update_action_controls()
             self._show_empty_state()
 
         def _show_empty_state(self) -> None:
@@ -321,6 +411,422 @@ if QtWidgets is not None:
                     sanitize_display_text(str(exc))[:1000],
                 )
 
+        def _proposal_config(self, project_root: Path) -> tuple[dict[str, object], tuple[str, ...]]:
+            policy_path = config_path(project_root)
+            policy_folder = policy_path.parent
+            if policy_folder.is_symlink() or policy_path.is_symlink():
+                raise ValueError("la configuración SSEC no puede atravesar symlinks")
+            if policy_folder.exists() and not policy_folder.is_dir():
+                raise ValueError(".ssec existe, pero no es un directorio")
+            policy = load_config(policy_path) if policy_path.exists() else dict(DEFAULT_CONFIG)
+            return policy, configured_proposal_providers(policy)
+
+        def _open_workspace_proposal_dialog(self):
+            workspace = self._loaded_workspace
+            project_root = self._project_root
+            if workspace is None or project_root is None:
+                QtWidgets.QMessageBox.information(
+                    self, "Abre un workspace primero", "La propuesta requiere un workspace verificado."
+                )
+                return None
+            try:
+                policy, providers = self._proposal_config(project_root)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                QtWidgets.QMessageBox.critical(
+                    self, "Configuración SSEC no válida", sanitize_display_text(str(exc))[:1000]
+                )
+                return None
+            if not providers:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Generación local no disponible",
+                    "Codex CLI no ofrece aquí una política que impida ejecutar comandos. "
+                    "Configure Gemini plan mode o use Importar/revisar propuesta… para cargar JSON.",
+                )
+                return None
+
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("workspaceProposalRequestDialog")
+            dialog.setWindowTitle("Proponer cambios con IA")
+            dialog.resize(900, 650)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            intro = QtWidgets.QLabel(
+                f"Workspace: {workspace.summary.title} · {workspace.summary.workspace_id}\n"
+                f"CLI local disponible para esta acción: {' → '.join(providers)}. "
+                "Seleccione exactamente qué recursos verificados podrá leer el agente."
+            )
+            intro.setWordWrap(True)
+            intro.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(intro)
+
+            table = QtWidgets.QTableWidget(len(workspace.resources), 5)
+            table.setObjectName("workspaceProposalResourceTable")
+            table.setHorizontalHeaderLabels(("ID", "Tipo", "Ruta", "Bytes", "SHA-256"))
+            table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+            table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setAlternatingRowColors(True)
+            for row, resource in enumerate(workspace.resources):
+                values = (resource.resource_id, resource.kind, resource.path,
+                          str(len(resource.content)), resource.sha256)
+                for column, value in enumerate(values):
+                    item = QtWidgets.QTableWidgetItem(sanitize_display_text(value))
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+                    table.setItem(row, column, item)
+            table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            layout.addWidget(table, 1)
+
+            layout.addWidget(QtWidgets.QLabel("Describa qué quiere agregar o modificar:"))
+            objective = QtWidgets.QPlainTextEdit()
+            objective.setObjectName("workspaceProposalObjective")
+            objective.setPlaceholderText(
+                "Ejemplo: agregue vistas de parámetros y compare las observaciones seleccionadas."
+            )
+            objective.setMaximumHeight(130)
+            layout.addWidget(objective)
+            note = QtWidgets.QLabel(
+                "La CLI puede consumir cuota y SSEC no mide ni limita el coste. Solo se enviarán "
+                "los bytes seleccionados y el contexto derivado. La salida debe ser JSON validado; "
+                "se mostrará un diff completo. No se ejecutará código generado ni se sobrescribirá "
+                "el manifiesto original. La aprobación será una acción separada."
+            )
+            note.setObjectName("workspaceProposalSafetyNotice")
+            note.setWordWrap(True)
+            note.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(note)
+
+            buttons = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            )
+            dispatch_button = buttons.addButton(
+                "Solicitar propuesta…", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            )
+            dispatch_button.setObjectName("dispatchWorkspaceProposalButton")
+            buttons.rejected.connect(dialog.reject)
+            dispatch_button.clicked.connect(
+                lambda: self._dispatch_workspace_proposal(
+                    dialog, table, objective, workspace, project_root, policy, providers
+                )
+            )
+            layout.addWidget(buttons)
+            dialog.setModal(True)
+            dialog.show()
+            self._proposal_request_dialog = dialog
+            return dialog
+
+        def _dispatch_workspace_proposal(
+            self, dialog, table, objective, workspace, project_root, policy, providers
+        ) -> None:
+            selected_rows = sorted(
+                index.row() for index in table.selectionModel().selectedRows()
+            )
+            selected_ids = tuple(table.item(row, 0).text() for row in selected_rows)
+            objective_text = objective.toPlainText().strip()
+            if not selected_ids:
+                QtWidgets.QMessageBox.information(
+                    dialog, "Selecciona recursos", "Selecciona al menos un recurso verificado."
+                )
+                return
+            if not objective_text:
+                QtWidgets.QMessageBox.information(
+                    dialog, "Describe los cambios", "Escribe qué quieres cambiar en el workspace."
+                )
+                return
+            if self._loaded_workspace is not workspace or self._project_root != project_root:
+                QtWidgets.QMessageBox.warning(
+                    dialog, "Workspace cambió", "Vuelve a abrir la solicitud con el workspace activo."
+                )
+                return
+            answer = QtWidgets.QMessageBox.question(
+                dialog,
+                "Confirmar propuesta con IA",
+                f"Enviar {len(selected_ids)} recurso(s) de {workspace.summary.workspace_id!r} "
+                f"al CLI local {' / '.join(providers)}? La llamada puede consumir cuota. "
+                "SSEC no mide el coste. Solo se enviarán los bytes seleccionados. ¿Continuar?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            dialog.accept()
+            self._start_workspace_proposal(
+                workspace, project_root, selected_ids, objective_text, policy
+            )
+
+        def _start_workspace_proposal(
+            self, workspace, project_root, selected_ids, objective, policy
+        ) -> None:
+            if self.proposal_running or self.simulation_running:
+                return
+            cancel_event = threading.Event()
+            progress = QtWidgets.QProgressDialog(
+                "Preparando snapshot verificado…", "Cancelar", 0, 0, self
+            )
+            progress.setObjectName("workspaceProposalProgressDialog")
+            progress.setWindowTitle("Proponer cambios con IA")
+            progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            progress.canceled.connect(self._cancel_workspace_proposal)
+            self._proposal_cancel_event = cancel_event
+            self._proposal_terminal = None
+            self._proposal_progress_dialog = progress
+            self._proposal_workspace = workspace
+            self._proposal_project_root = project_root
+            worker = _ProposalThread(
+                project_root, workspace, selected_ids, objective, policy, cancel_event, self
+            )
+            worker.progress.connect(self._on_workspace_proposal_progress)
+            worker.completed.connect(self._on_workspace_proposal_completed)
+            worker.failed.connect(self._on_workspace_proposal_failed)
+            worker.finished.connect(self._on_workspace_proposal_finished)
+            self._proposal_worker = worker
+            self._update_action_controls()
+            self.statusBar().showMessage("Propuesta en curso · todavía no aprobada")
+            progress.show()
+            try:
+                worker.start()
+            except RuntimeError as exc:
+                if worker.isRunning():
+                    progress.setLabelText("La propuesta inició; espera el resultado terminal.")
+                    return
+                self._proposal_worker = None
+                self._proposal_cancel_event = None
+                self._proposal_progress_dialog = None
+                self._proposal_workspace = None
+                self._proposal_project_root = None
+                progress.reset()
+                progress.hide()
+                progress.deleteLater()
+                worker.deleteLater()
+                self._update_action_controls()
+                self.statusBar().showMessage(
+                    f"No se pudo iniciar la propuesta; no se aprobó: {sanitize_display_text(str(exc))[:300]}",
+                    10_000,
+                )
+
+        def _cancel_workspace_proposal(self) -> None:
+            cancel_event = self._proposal_cancel_event
+            if cancel_event is None or cancel_event.is_set():
+                return
+            cancel_event.set()
+            progress = self._proposal_progress_dialog
+            if progress is not None:
+                progress.setLabelText("Cancelación solicitada · esperando el CLI local")
+                cancel_button = progress.findChild(QtWidgets.QPushButton)
+                if cancel_button is not None:
+                    cancel_button.setEnabled(False)
+                progress.show()
+            self.statusBar().showMessage("Cancelación solicitada · esperando el CLI local")
+
+        @QtCore.Slot(object)
+        def _on_workspace_proposal_progress(self, event: object) -> None:
+            if self._proposal_worker is None or not isinstance(event, Mapping):
+                return
+            label = sanitize_display_text(str(event.get("status", "Agente trabajando")))[:300]
+            if self._proposal_progress_dialog is not None:
+                self._proposal_progress_dialog.setLabelText(label)
+            if self._proposal_cancel_event is None or not self._proposal_cancel_event.is_set():
+                self.statusBar().showMessage(f"Propuesta en curso · {label} · sin aprobación")
+
+        @QtCore.Slot(object)
+        def _on_workspace_proposal_completed(self, result: object) -> None:
+            self._proposal_terminal = ("result", result)
+
+        @QtCore.Slot(str)
+        def _on_workspace_proposal_failed(self, message: str) -> None:
+            self._proposal_terminal = ("error", sanitize_display_text(message)[:2000])
+
+        @QtCore.Slot()
+        def _on_workspace_proposal_finished(self) -> None:
+            worker = self.sender()
+            if worker is not self._proposal_worker:
+                return
+            terminal = self._proposal_terminal
+            cancel_event = self._proposal_cancel_event
+            cancel_requested = cancel_event is not None and cancel_event.is_set()
+            active_workspace = self._proposal_workspace
+            project_root = self._proposal_project_root
+            progress = self._proposal_progress_dialog
+            self._proposal_worker = None
+            self._proposal_cancel_event = None
+            self._proposal_terminal = None
+            self._proposal_progress_dialog = None
+            self._proposal_workspace = None
+            self._proposal_project_root = None
+            if progress is not None:
+                progress.reset()
+                progress.hide()
+                progress.deleteLater()
+            self._update_action_controls()
+            worker.deleteLater()
+            if terminal is None:
+                self.statusBar().showMessage("La propuesta terminó sin resultado verificable", 10_000)
+                return
+            outcome, payload = terminal
+            if outcome == "error":
+                self.statusBar().showMessage("Propuesta fallida · sin aprobación", 10_000)
+                QtWidgets.QMessageBox.critical(self, "No se pudo generar la propuesta", str(payload))
+                return
+            if not isinstance(payload, Mapping):
+                self.statusBar().showMessage("Respuesta de propuesta inválida · sin aprobación", 10_000)
+                return
+            status = payload.get("status")
+            if cancel_requested or status == "CANCELLED":
+                self.statusBar().showMessage("Propuesta cancelada · sin aprobación", 10_000)
+                return
+            if status == "PROVIDER_UNAVAILABLE":
+                self.statusBar().showMessage("CLI local no disponible · importación manual disponible", 10_000)
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Proveedor local no disponible",
+                    "No se aprobó ninguna propuesta. Usa Importar/revisar propuesta… para cargar JSON.",
+                )
+                return
+            if status != "PROPOSAL_READY_NOT_APPROVED":
+                self.statusBar().showMessage("Propuesta fallida · sin aprobación", 10_000)
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Propuesta no disponible",
+                    sanitize_display_text(str(payload.get("error") or status or "Error desconocido"))[:1000],
+                )
+                return
+            if (not isinstance(active_workspace, LoadedWorkspace)
+                    or active_workspace is not self._loaded_workspace
+                    or project_root != self._project_root):
+                self.statusBar().showMessage(
+                    "Workspace cambió durante la generación; propuesta conservada sin aprobar.", 10_000
+                )
+                return
+            relative_path = payload.get("proposal_relative_path")
+            if not isinstance(relative_path, str) or not relative_path:
+                self.statusBar().showMessage("Propuesta sin ruta válida · sin aprobación", 10_000)
+                return
+            self.statusBar().showMessage("Propuesta recibida · revisar el diff antes de aprobar", 10_000)
+            self._review_workspace_proposal(relative_path)
+
+        def _import_workspace_proposal(self) -> None:
+            workspace = self._loaded_workspace
+            root = self._project_root
+            if workspace is None or root is None:
+                return
+            selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Seleccionar propuesta JSON",
+                str(root),
+                "Workspace manifests (*.json);;Todos los archivos (*)",
+            )
+            if not selected:
+                return
+            try:
+                resolved_root = root.resolve(strict=True)
+                resolved_path = Path(selected).resolve(strict=True)
+                relative_path = resolved_path.relative_to(resolved_root).as_posix()
+            except (OSError, ValueError, RuntimeError) as exc:
+                QtWidgets.QMessageBox.critical(
+                    self, "Propuesta fuera del proyecto", sanitize_display_text(str(exc))[:1000]
+                )
+                return
+            self._review_workspace_proposal(relative_path)
+
+        def _review_workspace_proposal(self, relative_path: str):
+            workspace = self._loaded_workspace
+            root = self._project_root
+            if workspace is None or root is None:
+                return None
+            try:
+                preview = preview_workspace_proposal(root, workspace, relative_path)
+            except (OSError, TypeError, ValueError) as exc:
+                QtWidgets.QMessageBox.critical(
+                    self, "Propuesta no válida", sanitize_display_text(str(exc))[:1000]
+                )
+                return None
+
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("workspaceProposalReviewDialog")
+            dialog.setWindowTitle("Revisar propuesta de workspace")
+            dialog.resize(900, 650)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            summary = QtWidgets.QLabel(
+                f"Propuesta: {json.dumps(preview.workspace_title, ensure_ascii=True)}\n"
+                f"SHA-256 semántico: {preview.proposal_manifest_sha256}"
+            )
+            summary.setWordWrap(True)
+            summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(summary)
+            diff = QtWidgets.QPlainTextEdit()
+            diff.setObjectName("workspaceProposalDiff")
+            diff.setReadOnly(True)
+            diff.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+            diff.setPlainText(
+                sanitize_display_text(preview.diff)
+                if preview.changed
+                else "La propuesta no contiene cambios respecto al workspace activo."
+            )
+            layout.addWidget(diff, 1)
+            notice = QtWidgets.QLabel(
+                "Este diff completo está acotado y corresponde al manifiesto validado. "
+                "La propuesta no ejecuta código. Aprobar guarda una copia con nombre "
+                "basado en su digest; el manifiesto activo no se sobrescribe."
+            )
+            notice.setWordWrap(True)
+            notice.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(notice)
+            buttons = QtWidgets.QDialogButtonBox()
+            reject_button = buttons.addButton(
+                "Rechazar", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole
+            )
+            approve_button = buttons.addButton(
+                "Aprobar y guardar", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            )
+            reject_button.setObjectName("rejectWorkspaceProposalButton")
+            approve_button.setObjectName("approveWorkspaceProposalButton")
+            approve_button.setEnabled(preview.changed)
+            buttons.rejected.connect(dialog.reject)
+
+            def approve() -> None:
+                if not preview.changed:
+                    return
+                target_name = f".ssec-workspace-{preview.approved_manifest_sha256}.json"
+                answer = QtWidgets.QMessageBox.question(
+                    dialog,
+                    "Aprobar propuesta",
+                    f"Guardar como {target_name} y abrirlo como workspace activo? "
+                    "El archivo fuente no se reemplazará.",
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                    return
+                if self._loaded_workspace is not workspace or self._project_root != root:
+                    QtWidgets.QMessageBox.warning(
+                        dialog, "Workspace cambió", "Revisa de nuevo la propuesta activa."
+                    )
+                    return
+                approve_button.setEnabled(False)
+                try:
+                    approved = approve_workspace_proposal(root, workspace, preview)
+                    self.load_workspace(root, approved.manifest_relative_path)
+                except (OSError, TypeError, ValueError) as exc:
+                    approve_button.setEnabled(True)
+                    QtWidgets.QMessageBox.critical(
+                        dialog, "No se pudo aprobar la propuesta", sanitize_display_text(str(exc))[:1000]
+                    )
+                    return
+                self.statusBar().showMessage(
+                    f"Workspace aprobado guardado en {approved.manifest_relative_path}", 10_000
+                )
+                dialog.accept()
+
+            buttons.accepted.connect(approve)
+            layout.addWidget(buttons)
+            dialog.setModal(True)
+            dialog.show()
+            self._proposal_review_dialog = dialog
+            return dialog
+
         def load_workspace(
             self, project_root: str | os.PathLike[str], manifest_relative_path: str
         ) -> WorkspaceViewModel:
@@ -342,6 +848,7 @@ if QtWidgets is not None:
             self._project_root = Path(project_root)
             self._manifest_relative_path = manifest_relative_path
             self._render_workspace(action_error=action_error)
+            self._update_action_controls()
             self.statusBar().showMessage("Workspace cargado; solo se muestran bytes verificados", 8000)
             return model
 
@@ -484,7 +991,7 @@ if QtWidgets is not None:
                 button.setObjectName(f"run-simulation-{component.component_id}")
                 button.setAccessibleName(f"Solicitar confirmación y ejecutar {action.label}")
                 button.setToolTip("Requiere confirmación humana antes de iniciar la acción confiable de SSEC")
-                button.setEnabled(not self.simulation_running)
+                button.setEnabled(not self.simulation_running and not self.proposal_running)
                 button.clicked.connect(
                     lambda _checked=False, selected=component, approved=action:
                     self._request_and_run_simulation(selected, approved)
@@ -567,7 +1074,7 @@ if QtWidgets is not None:
 
         def _request_and_run_simulation(self, component: ComponentView, action) -> None:
             workspace = self._loaded_workspace
-            if workspace is None or self.simulation_running:
+            if workspace is None or self.simulation_running or self.proposal_running:
                 return
             try:
                 ticket = request_approved_simulation(
@@ -589,6 +1096,7 @@ if QtWidgets is not None:
             thread.failed.connect(self._on_simulation_failed)
             thread.finished.connect(self._on_simulation_thread_finished)
             self._workers[component.component_id] = thread
+            self._update_action_controls()
             self.statusBar().showMessage("Simulación aprobada en ejecución local…")
             self._render_workspace()
             try:
@@ -602,6 +1110,7 @@ if QtWidgets is not None:
                     return
                 self._workers.pop(component.component_id, None)
                 thread.deleteLater()
+                self._update_action_controls()
                 self._render_workspace()
                 self.statusBar().showMessage(
                     f"No se pudo iniciar la simulación; no se ejecutó: {sanitize_display_text(str(exc))[:300]}",
@@ -631,11 +1140,21 @@ if QtWidgets is not None:
             if not isinstance(thread, _SimulationThread):
                 return
             self._workers.pop(thread.component_id, None)
+            self._update_action_controls()
             if self.workspace_view_model is not None:
                 self._render_workspace()
             thread.deleteLater()
 
         def closeEvent(self, event) -> None:
+            if self.proposal_running:
+                self._cancel_workspace_proposal()
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Propuesta en curso",
+                    "Se solicitó cancelación. Espera a que termine el CLI local antes de cerrar esta ventana.",
+                )
+                event.ignore()
+                return
             if any(thread.isRunning() for thread in self._workers.values()):
                 QtWidgets.QMessageBox.information(
                     self,
