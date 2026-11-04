@@ -277,13 +277,16 @@ class ProviderRuntimeTests(unittest.TestCase):
         control_type = getattr(agent_runtime, "RuntimeLaunchControl", None)
         self.assertIsNotNone(control_type, "Shared runtime launch control is missing")
         for reason, expected in (("stop", RuntimeStatus.CANCELLED),
-                                 ("deadline", RuntimeStatus.TIMED_OUT)):
+                                 ("deadline", RuntimeStatus.TIMED_OUT),
+                                 ("cancel_file", RuntimeStatus.CANCELLED)):
             with self.subTest(reason=reason):
                 root = Path(tempfile.mkdtemp(dir=self.temp.name))
                 clock = [0]
                 entered = threading.Event()
                 release = threading.Event()
-                control = control_type(threading.Event(), 10)
+                cancel_file = root / "cancel"
+                control = control_type(threading.Event(), 10,
+                                       cancel_file=(cancel_file if reason == "cancel_file" else None))
                 request = replace(self.request, launch_control=control,
                                   stdout_path=root / "out", stderr_path=root / "err")
                 runtime = self.module.CodexRuntime()
@@ -309,8 +312,10 @@ class ProviderRuntimeTests(unittest.TestCase):
                         self.assertTrue(entered.wait(5))
                         if reason == "stop":
                             control.set()
-                        else:
+                        elif reason == "deadline":
                             clock[0] = 11
+                        else:
+                            cancel_file.write_text("cancel", encoding="utf-8")
                     finally:
                         release.set()
                         thread.join(5)

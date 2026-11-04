@@ -20,14 +20,16 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__:
-    from .configuration import DEFAULT_CONFIG, config_path, load_config, validate_config
+    from .agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeStatus
+    from .configuration import DEFAULT_CONFIG, PROVIDERS, config_path, load_config, validate_config
     from .prepare_agents import make_files, prepare
     from .route_task import validate_task
 else:
-    from configuration import DEFAULT_CONFIG, config_path, load_config, validate_config
+    from agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeStatus
+    from configuration import DEFAULT_CONFIG, PROVIDERS, config_path, load_config, validate_config
     from prepare_agents import make_files, prepare
     from route_task import validate_task
 
@@ -83,6 +85,8 @@ def command_for(provider: str, prompt: str, cwd: Path) -> list[str]:
     if provider == "gemini":
         return ["gemini", "--sandbox", "--approval-mode", "default",
                 "--output-format", "json", "-p", prompt]
+    if provider == "agy":
+        raise ValueError("AGY must be dispatched through AgentRuntime")
     raise ValueError("unsupported provider")
 
 def make_prompt(agent: dict, task_id: str) -> str:
@@ -123,8 +127,17 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
 def run_one(agent: dict[str, Any], task_id: str,
             source_files: list[tuple[Path, Path]], profiles: dict[str, str],
             run_dir: Path, deadline: float, stop: threading.Event,
-            cancel_file: Path | None = None) -> dict[str, Any]:
+            cancel_file: Path | None = None, *, run_id: str | None = None,
+            runtime_factory: Callable[[str], Any] | None = None,
+            cost_acknowledged: bool = False,
+            launch_control: RuntimeLaunchControl | None = None) -> dict[str, Any]:
     started = time.time()
+    if launch_control is None:
+        launch_control = RuntimeLaunchControl(stop, deadline, cancel_file=cancel_file)
+    elif launch_control.stop_event is not stop:
+        raise ValueError("launch_control must share the worker stop event")
+    elif cancel_file is not None and launch_control.cancel_file != cancel_file:
+        raise ValueError("launch_control must observe the worker cancel file")
     name = agent["agent"]
     logs = run_dir / "logs"
     logs.mkdir(exist_ok=True, parents=True)
@@ -140,10 +153,19 @@ def run_one(agent: dict[str, Any], task_id: str,
             workspace = Path(temp)
             copy_snapshot(source_files, workspace)
             # Always regenerate profiles from trusted SSEC, NOT from source project.
-            for rel in (agent["profile"], agent["packet"]):
+            for rel in (agent.get("profile"), agent["packet"]):
+                if rel is None:
+                    continue
                 target = workspace / rel
                 target.parent.mkdir(exist_ok=True, parents=True)
                 target.write_text(profiles[rel], encoding="utf-8")
+            if agent["provider"] == "agy":
+                return _run_agy_worker(
+                    agent, task_id, workspace, make_prompt(agent, task_id), logpath, errpath,
+                    deadline, stop, cancel_file, launch_control=launch_control, run_id=run_id,
+                    runtime_factory=runtime_factory, cost_acknowledged=cost_acknowledged,
+                    result=result,
+                )
             executable = shutil.which(agent["provider"])
             if not executable:
                 result["error"] = f"{agent['provider']} CLI not found in PATH"
@@ -160,12 +182,12 @@ def run_one(agent: dict[str, Any], task_id: str,
                                         start_new_session=(os.name != "nt"))
                 while proc.poll() is None:
                     if stop.is_set() or (cancel_file is not None and cancel_file.exists()):
-                        stop.set()
+                        launch_control.set()
                         _terminate_tree(proc)
                         result["status"] = "CANCELLED"
                         break
                     if time.monotonic() >= deadline:
-                        stop.set()
+                        launch_control.set()
                         _terminate_tree(proc)
                         result["status"] = "TIMED_OUT"
                         break
@@ -183,6 +205,106 @@ def run_one(agent: dict[str, Any], task_id: str,
         result["error"] = str(exc)
     finally:
         result["duration_seconds"] = round(time.time() - started, 2)
+    return result
+
+
+def _run_agy_worker(agent: dict[str, Any], task_id: str, workspace: Path, prompt: str,
+                    logpath: Path, errpath: Path, deadline: float,
+                    stop: threading.Event, cancel_file: Path | None, *,
+                    launch_control: RuntimeLaunchControl,
+                    run_id: str | None, runtime_factory: Callable[[str], Any] | None,
+                    cost_acknowledged: bool, result: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch AGY through the shared AgentRuntime contract, never raw argv here."""
+    runtime = None
+    handle = None
+    try:
+        if not cost_acknowledged:
+            raise ValueError("billing is NOT metered: explicit acknowledgement is required")
+        if cancel_file is not None and cancel_file.exists():
+            launch_control.set()
+            result["status"] = "CANCELLED"
+            return result
+        blocked = launch_control.blocked_status()
+        if blocked is not None:
+            if blocked is RuntimeStatus.TIMED_OUT:
+                launch_control.set()
+            result["status"] = ("TIMED_OUT" if blocked is RuntimeStatus.TIMED_OUT
+                                 else "CANCELLED")
+            return result
+        if runtime_factory is None:
+            if __package__:
+                from .provider_runtimes import create_runtime as runtime_factory
+            else:
+                from provider_runtimes import create_runtime as runtime_factory
+        runtime = runtime_factory("agy")
+        blocked = launch_control.blocked_status()
+        if blocked is not None:
+            if blocked is RuntimeStatus.TIMED_OUT:
+                launch_control.set()
+            result["status"] = ("TIMED_OUT" if blocked is RuntimeStatus.TIMED_OUT
+                                 else "CANCELLED")
+            return result
+        effective_run_id = run_id or f"{task_id}-{uuid.uuid4().hex[:12]}"
+        request = RuntimeRequest(
+            run_id=effective_run_id,
+            task_id=task_id,
+            role=agent["role"],
+            prompt=prompt,
+            cwd=workspace,
+            stdout_path=logpath,
+            stderr_path=errpath,
+            timeout_seconds=max(0.001, deadline - time.monotonic()),
+            writable=False,
+            cost_acknowledged=True,
+            launch_control=launch_control,
+        )
+        result["runtime_run_id"] = effective_run_id
+        handle = runtime.launch(request)
+        while True:
+            if stop.is_set() or (cancel_file is not None and cancel_file.exists()):
+                launch_control.set()
+                outcome = runtime.cancel(handle)
+                break
+            if time.monotonic() >= deadline:
+                launch_control.set()
+                outcome = runtime.timeout(handle)
+                break
+            status = runtime.status(handle)
+            if status is not RuntimeStatus.RUNNING:
+                outcome = runtime.stream_or_collect(handle)
+                break
+            time.sleep(0.15)
+
+        result["runtime_status"] = outcome.status.value
+        result["exit_code"] = outcome.exit_code
+        result["provider_session_id"] = outcome.provider_session_id
+        result["stdout_sha256"] = outcome.stdout_sha256
+        result["stderr_sha256"] = outcome.stderr_sha256
+        result["sandbox_effective"] = None
+        if outcome.error:
+            result["error"] = outcome.error
+        if outcome.status is RuntimeStatus.SUCCEEDED and outcome.exit_code == 0:
+            result["status"] = "EXIT_ZERO_UNREVIEWED"
+        elif outcome.status is RuntimeStatus.CANCELLED:
+            result["status"] = "CANCELLED"
+        elif outcome.status is RuntimeStatus.TIMED_OUT:
+            result["status"] = "TIMED_OUT"
+        elif outcome.status is RuntimeStatus.UNAVAILABLE:
+            result["status"] = "LAUNCH_FAILED"
+        else:
+            result["status"] = "CLI_FAILED"
+    except Exception as exc:
+        result["status"] = "LAUNCH_FAILED"
+        result["error"] = str(exc)
+    finally:
+        if runtime is not None and handle is not None:
+            try:
+                runtime.cleanup(handle)
+            except Exception as exc:
+                result["error"] = result.get("error") or f"runtime cleanup failed: {exc}"
+                if result["status"] == "EXIT_ZERO_UNREVIEWED":
+                    result["status"] = "LAUNCH_FAILED"
+    result["duration_seconds"] = round(time.time() - result["started_at_unix"], 2)
     return result
 
 def plan(task: dict, config: dict) -> dict:
@@ -203,7 +325,8 @@ def _safe_reports_dir(project: Path) -> Path:
 def execute(task: dict, config: dict, project: Path,
             *, execute_clis: bool = False,
             accept_unmetered_cost: bool = False,
-            cancel_file: Path | None = None) -> dict:
+            cancel_file: Path | None = None,
+            runtime_factory: Callable[[str], Any] | None = None) -> dict:
     """Synchronous runner: shared deadline; skip further waves after any failures.
 
     Dry-run does not create files or invoke CLIs. Billing USD is never enforced.
@@ -233,6 +356,7 @@ def execute(task: dict, config: dict, project: Path,
     run_dir.mkdir()
     stop = threading.Event()
     deadline = time.monotonic() + config["budget"]["max_runtime_minutes"] * 60
+    launch_control = RuntimeLaunchControl(stop, deadline, cancel_file=cancel_file)
     assignment_by_role = {a["role"]: a for a in manifest["assignments"]}
     summary["execution"] = "STARTED"
     summary["run_id"] = run_id
@@ -241,7 +365,7 @@ def execute(task: dict, config: dict, project: Path,
     try:
         for wave in manifest["waves"]:
             if cancel_file is not None and cancel_file.exists():
-                stop.set()
+                launch_control.set()
             if stop.is_set():
                 break
             with concurrent.futures.ThreadPoolExecutor(
@@ -249,7 +373,10 @@ def execute(task: dict, config: dict, project: Path,
             ) as pool:
                 futures = [pool.submit(
                     run_one, assignment_by_role[role], task["task_id"],
-                    files, p["profiles"], run_dir, deadline, stop, cancel_file
+                    files, p["profiles"], run_dir, deadline, stop, cancel_file,
+                    run_id=f"{run_id}-{role}", runtime_factory=runtime_factory,
+                    cost_acknowledged=accept_unmetered_cost,
+                    launch_control=launch_control,
                 ) for role in wave["roles"]]
                 for future in concurrent.futures.as_completed(futures):
                     entry = future.result()
@@ -262,11 +389,11 @@ def execute(task: dict, config: dict, project: Path,
                                                "status": entry["status"]}},
                                    ensure_ascii=False, indent=2), encoding="utf-8")
                     if entry["status"] != "EXIT_ZERO_UNREVIEWED":
-                        stop.set()
+                        launch_control.set()
             if stop.is_set():
                 break
     except KeyboardInterrupt:
-        stop.set()
+        launch_control.set()
         summary["execution"] = "INTERRUPTED"
     else:
         complete = len(summary["results"]) == len(manifest["assignments"])
@@ -284,7 +411,7 @@ def main() -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--config", type=Path,
                         help="defaults to project/.ssec/config.json when it exists")
-    parser.add_argument("--mode", choices=("gemini", "codex", "both"))
+    parser.add_argument("--mode", choices=PROVIDERS)
     parser.add_argument("--execute", action="store_true",
                         help="launch real CLIs in ephemeral snapshots; otherwise dry-run")
     parser.add_argument("--cancel-file", type=Path,
