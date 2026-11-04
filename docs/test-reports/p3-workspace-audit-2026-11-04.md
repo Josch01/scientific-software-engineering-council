@@ -1,6 +1,6 @@
 # P3.10 — solicitud de auditoría desde un workspace verificado
 
-**Estado:** implementado y enviado para revisión; CI del incremento en cola. No se hizo merge ni se publicó una release.
+**Estado:** implementado y enviado para revisión; CI final (run #152) completada con 4/4 jobs exitosos en Windows/Ubuntu × Python 3.11/3.12. No se hizo merge ni se publicó una release.
 
 ## Resultado
 
@@ -19,7 +19,7 @@ Exit 0 se mantiene como `PROCESSES_COMPLETED_NOT_AUDITED`; fallo o cancelación 
 - Las pruebas GUI condujeron widgets Tk en ventanas retiradas; una interacción visual manual sigue `NOT_RUN`.
 - `python -m py_compile scripts/scientific_workspace_audit.py scripts/scientific_workspace_app.py tests/test_scientific_workspace_audit.py tests/test_scientific_workspace_app.py`: **PASS**.
 - `git diff --check`: **PASS**.
-- CI Windows/Linux del nuevo commit: **PENDING**.
+- CI Windows/Linux del commit `c329a9a`: **PASS**; run [#152](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41759925946), 4/4 jobs exitosos (Windows/Ubuntu × Python 3.11/3.12).
 
 Los procesos CLI de las pruebas fueron falsos. No se invocó Codex, Gemini ni AGY, no hubo coste, y la integración real con proveedores queda `NOT_RUN` conforme a la instrucción del propietario de no realizar llamadas adicionales. No se dispone aún de las ecuaciones ni de los datos del SIR del usuario; ese caso científico integral sigue `NOT_RUN`.
 
