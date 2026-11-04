@@ -26,6 +26,9 @@ MAX_SIMULATION_ROWS = 100_000
 MAX_SIMULATION_VIEW_VALUES = 1_000_000
 MAX_SIMULATION_VIEW_PARAMETERS = 100
 MAX_SIMULATION_VIEW_STATES = 100
+MAX_SCIENTIFIC_VIEW_SERIES = 100
+MAX_SCIENTIFIC_VIEW_POINTS = 100_000
+_SHA256 = frozenset("0123456789abcdef")
 
 SUPPORTED_COMPONENT_TYPES = frozenset(
     {
@@ -35,6 +38,7 @@ SUPPORTED_COMPONENT_TYPES = frozenset(
         "simulation_plot",
         "fit_summary",
         "sensitivity_plot",
+        "residual_plot",
         "uncertainty_summary",
         "audit_summary",
         "artifact_browser",
@@ -53,6 +57,69 @@ class ComponentView:
     content: object = None
     truncated: bool = False
     preview_text: str = ""
+    source_resources: tuple["ResourceView", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FitParameterView:
+    name: str
+    initial_value: float
+    fitted_value: float
+    lower_bound: float
+    upper_bound: float
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class FitSummaryView:
+    method: str
+    status: str
+    cost: float
+    cost_underflowed: bool
+    iterations: int
+    accepted_steps: int
+    function_evaluations: int
+    max_iterations: int
+    max_function_evaluations: int
+    parameters: tuple[FitParameterView, ...]
+    residuals: tuple[float, ...]
+    finite_difference_fraction: float
+    final_damping: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScientificSeriesView:
+    label: str
+    values: tuple[float, ...]
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class SensitivityPlotView:
+    method: str
+    solver_method: str
+    times: tuple[float, ...]
+    time_unit: str
+    series: tuple[ScientificSeriesView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualSeriesView:
+    variable: str
+    unit: str
+    times: tuple[float, ...]
+    observed: tuple[float, ...]
+    simulated: tuple[float, ...]
+    residuals: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationEvaluationView:
+    observation_sha256: str
+    provenance: Mapping[str, str]
+    time_unit: str
+    series: tuple[ResidualSeriesView, ...]
+    residual_order: tuple[tuple[float, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +446,453 @@ def build_simulation_result_view(
         status="ok",
         message=message,
         content=content,
+        source_resources=component.source_resources,
+    )
+
+
+def _result_object(value: object, label: str, required: set[str]) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be an object")
+    if set(value) != required:
+        raise ValueError(f"{label} must match the versioned scientific_core schema")
+    return value
+
+
+def _result_sequence(value: object, label: str, *, minimum: int = 1,
+                     maximum: int = MAX_SCIENTIFIC_VIEW_POINTS) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple)) or not minimum <= len(value) <= maximum:
+        raise ValueError(f"{label} must contain between {minimum} and {maximum} entries")
+    return tuple(value)
+
+
+def _result_name(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ValueError(f"{label} must be a non-empty string of at most 128 characters")
+    safe_value = sanitize_display_text(value)
+    if safe_value != value:
+        raise ValueError(f"{label} contains unsupported display characters")
+    return value
+
+
+def _result_names(value: object, label: str, *, maximum: int = MAX_SIMULATION_VIEW_STATES
+                  ) -> tuple[str, ...]:
+    names = tuple(_result_name(item, label) for item in _result_sequence(
+        value, label, maximum=maximum
+    ))
+    if len(set(names)) != len(names):
+        raise ValueError(f"{label} must contain unique names")
+    return names
+
+
+def _result_number(value: object, label: str) -> float:
+    return _number(value, label)
+
+
+def _unit_map(context: Mapping[str, object] | None, field: str) -> Mapping[str, str]:
+    if context is None:
+        return MappingProxyType({})
+    if not isinstance(context, Mapping):
+        raise ValueError("unit_context must be an object")
+    values = context.get(field, {})
+    if not isinstance(values, Mapping) or any(not isinstance(name, str) for name in values):
+        raise ValueError(f"unit_context.{field} must be an object")
+    units: dict[str, str] = {}
+    for name, unit in values.items():
+        if not isinstance(unit, str) or not unit or len(unit) > 256:
+            raise ValueError(f"unit_context.{field}[{name!r}] must be a non-empty unit string")
+        units[name] = sanitize_display_text(unit)
+    return MappingProxyType(units)
+
+
+def build_fit_summary_view(
+    payload: object,
+    config: Mapping[str, object],
+    unit_context: Mapping[str, object] | None = None,
+) -> FitSummaryView:
+    """Validate and select existing LeastSquaresFit schema v1 values for display."""
+    required = {
+        "schema_version", "method", "parameter_names", "initial_parameters", "parameters",
+        "bounds", "residuals", "cost", "cost_underflowed", "status", "iterations",
+        "accepted_steps", "function_evaluations", "max_iterations",
+        "max_function_evaluations", "finite_difference_fraction", "final_damping",
+    }
+    result = _result_object(payload, "fit result", required)
+    if type(result["schema_version"]) is not int or result["schema_version"] != 1:
+        raise ValueError("unsupported fit schema_version; expected 1")
+    if result["method"] != "BOUNDED_LEVENBERG_MARQUARDT":
+        raise ValueError("fit method does not match scientific_core schema v1")
+    names = _result_names(result["parameter_names"], "fit parameter_names",
+                          maximum=MAX_SIMULATION_VIEW_PARAMETERS)
+    configured = _result_names(config.get("parameter_names"), "configured parameter_names",
+                               maximum=MAX_SIMULATION_VIEW_PARAMETERS)
+    if any(name not in names for name in configured):
+        raise ValueError("configured parameters are absent from fit parameter_names")
+    initial = result["initial_parameters"]
+    fitted = result["parameters"]
+    raw_bounds = result["bounds"]
+    for label, mapping in (("initial_parameters", initial), ("parameters", fitted),
+                           ("bounds", raw_bounds)):
+        if not isinstance(mapping, Mapping) or set(mapping) != set(names):
+            raise ValueError(f"fit {label} must match parameter_names")
+    unit_context = unit_context or {}
+    parameter_units = _unit_map(unit_context, "parameter_units")
+    parameter_views: list[FitParameterView] = []
+    for name in configured:
+        initial_value = _result_number(initial[name], f"initial_parameters[{name!r}]")
+        fitted_value = _result_number(fitted[name], f"parameters[{name!r}]")
+        bound = _result_object(raw_bounds[name], f"bounds[{name!r}]", {"lower", "upper"})
+        lower = _result_number(bound["lower"], f"bounds[{name!r}].lower")
+        upper = _result_number(bound["upper"], f"bounds[{name!r}].upper")
+        if lower > upper or not lower <= fitted_value <= upper:
+            raise ValueError(f"fit parameter {name!r} is outside its declared bounds")
+        parameter_views.append(FitParameterView(
+            name=name, initial_value=initial_value, fitted_value=fitted_value,
+            lower_bound=lower, upper_bound=upper,
+            unit=parameter_units.get(name, "unidad no indicada"),
+        ))
+    if type(result["cost_underflowed"]) is not bool:
+        raise ValueError("fit cost_underflowed must be a boolean")
+    cost = _result_number(result["cost"], "fit cost")
+    if cost < 0.0:
+        raise ValueError("fit cost must be non-negative")
+    status = result["status"]
+    if not isinstance(status, str) or not status or len(status) > 128:
+        raise ValueError("fit status must be a non-empty string of at most 128 characters")
+    counts: dict[str, int] = {}
+    for name in ("iterations", "accepted_steps", "function_evaluations",
+                 "max_iterations", "max_function_evaluations"):
+        value = result[name]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"fit {name} must be a non-negative integer")
+        counts[name] = value
+    if (counts["iterations"] > counts["max_iterations"]
+            or counts["function_evaluations"] > counts["max_function_evaluations"]
+            or counts["accepted_steps"] > counts["iterations"]):
+        raise ValueError("fit work counts exceed their declared bounds")
+    residual_values = _result_sequence(
+        result["residuals"], "fit residuals", minimum=0, maximum=MAX_SIMULATION_VIEW_VALUES
+    )
+    residuals = tuple(_result_number(value, "fit residual") for value in residual_values)
+    fraction = _result_number(result["finite_difference_fraction"],
+                              "finite_difference_fraction")
+    damping = _result_number(result["final_damping"], "final_damping")
+    if not 0.0 < fraction < 1.0 or damping < 0.0:
+        raise ValueError("fit finite-difference fraction or final damping is outside its domain")
+    return FitSummaryView(
+        method=str(result["method"]), status=sanitize_display_text(status),
+        cost=cost,
+        cost_underflowed=result["cost_underflowed"], iterations=counts["iterations"],
+        accepted_steps=counts["accepted_steps"],
+        function_evaluations=counts["function_evaluations"],
+        max_iterations=counts["max_iterations"],
+        max_function_evaluations=counts["max_function_evaluations"],
+        parameters=tuple(parameter_views), residuals=residuals,
+        finite_difference_fraction=fraction, final_damping=damping,
+    )
+
+
+def build_sensitivity_plot_view(
+    payload: object,
+    config: Mapping[str, object],
+    unit_context: Mapping[str, object] | None = None,
+) -> SensitivityPlotView:
+    """Validate the [time][state][parameter] OdeSensitivity schema v1 tensor."""
+    required = {
+        "schema_version", "method", "solver_method", "times", "state_names",
+        "parameter_names", "base_parameters", "base_values", "perturbations",
+        "parameter_bounds", "values", "requested_max_step", "actual_step_size",
+        "step_count_per_trajectory", "trajectory_count", "total_step_count",
+        "rhs_evaluation_count",
+    }
+    result = _result_object(payload, "sensitivity result", required)
+    if type(result["schema_version"]) is not int or result["schema_version"] != 1:
+        raise ValueError("unsupported sensitivity schema_version; expected 1")
+    if result["method"] != "CENTRAL_FINITE_DIFFERENCE":
+        raise ValueError("sensitivity method does not match scientific_core schema v1")
+    state_names = _result_names(result["state_names"], "sensitivity state_names")
+    parameter_names = _result_names(result["parameter_names"], "sensitivity parameter_names",
+                                    maximum=MAX_SIMULATION_VIEW_PARAMETERS)
+    configured_states = _result_names(config.get("state_names"), "configured state_names")
+    configured_parameters = _result_names(config.get("parameter_names"),
+                                          "configured parameter_names",
+                                          maximum=MAX_SIMULATION_VIEW_PARAMETERS)
+    if any(name not in state_names for name in configured_states):
+        raise ValueError("configured states are absent from sensitivity state_names")
+    if any(name not in parameter_names for name in configured_parameters):
+        raise ValueError("configured parameters are absent from sensitivity parameter_names")
+    times = tuple(_result_number(value, "sensitivity time") for value in _result_sequence(
+        result["times"], "sensitivity times"
+    ))
+    if any(right <= left for left, right in zip(times, times[1:])):
+        raise ValueError("sensitivity times must be strictly increasing")
+    maps: dict[str, Mapping[str, object]] = {}
+    for field in ("base_parameters", "perturbations", "parameter_bounds"):
+        value = result[field]
+        if not isinstance(value, Mapping) or set(value) != set(parameter_names):
+            raise ValueError(f"sensitivity {field} must match parameter_names")
+        maps[field] = value
+    for name in parameter_names:
+        base_parameter = _result_number(maps["base_parameters"][name],
+                                         f"base_parameters[{name!r}]")
+        perturbation = _result_number(maps["perturbations"][name],
+                                       f"perturbations[{name!r}]")
+        bounds = _result_object(maps["parameter_bounds"][name],
+                                f"parameter_bounds[{name!r}]", {"lower", "upper"})
+        lower = _result_number(bounds["lower"], f"parameter_bounds[{name!r}].lower")
+        upper = _result_number(bounds["upper"], f"parameter_bounds[{name!r}].upper")
+        if perturbation <= 0.0 or lower > upper or not lower <= base_parameter <= upper:
+            raise ValueError(f"sensitivity parameter {name!r} has invalid perturbation or bounds")
+    base_rows = _result_sequence(result["base_values"], "sensitivity base_values")
+    tensor = _result_sequence(result["values"], "sensitivity values")
+    if len(base_rows) != len(times) or len(tensor) != len(times):
+        raise ValueError("sensitivity tensor time dimension does not match times")
+    parameter_indices = {name: index for index, name in enumerate(parameter_names)}
+    selected_values: dict[tuple[str, str], list[float]] = {
+        (state, parameter): []
+        for state in configured_states for parameter in configured_parameters
+    }
+    for time_index, (base_row, time_row) in enumerate(zip(base_rows, tensor)):
+        base_values = _result_sequence(base_row, f"sensitivity base_values[{time_index}]",
+                                       maximum=MAX_SIMULATION_VIEW_STATES)
+        sensitivities_by_state = _result_sequence(
+            time_row, f"sensitivity values[{time_index}]", maximum=MAX_SIMULATION_VIEW_STATES
+        )
+        if len(base_values) != len(state_names) or len(sensitivities_by_state) != len(state_names):
+            raise ValueError("sensitivity tensor state dimension does not match state_names")
+        for state_index, sensitivities in enumerate(sensitivities_by_state):
+            parameter_values = _result_sequence(
+                sensitivities, f"sensitivity tensor[{time_index}][{state_index}]",
+                maximum=MAX_SIMULATION_VIEW_PARAMETERS,
+            )
+            if len(parameter_values) != len(parameter_names):
+                raise ValueError("sensitivity tensor parameter dimension does not match parameter_names")
+            _result_number(base_values[state_index], "sensitivity base value")
+            state = state_names[state_index]
+            if state in configured_states:
+                for parameter in configured_parameters:
+                    selected_values[(state, parameter)].append(
+                        _result_number(parameter_values[parameter_indices[parameter]],
+                                       "sensitivity value")
+                    )
+    if len(times) * (len(state_names) * len(parameter_names) + len(state_names)) > MAX_SIMULATION_VIEW_VALUES:
+        raise ValueError("sensitivity result exceeds the bounded chart value limit")
+    counts: dict[str, int] = {}
+    for name in ("step_count_per_trajectory", "trajectory_count", "total_step_count",
+                 "rhs_evaluation_count"):
+        value = result[name]
+        if type(value) is not int or value < 0:
+            raise ValueError(f"sensitivity {name} must be a non-negative integer")
+        counts[name] = value
+    if (counts["trajectory_count"] != 1 + 2 * len(parameter_names)
+            or counts["total_step_count"] != counts["step_count_per_trajectory"] * counts["trajectory_count"]
+            or counts["rhs_evaluation_count"] != 4 * counts["total_step_count"]):
+        raise ValueError("sensitivity work counts do not match the declared trajectories")
+    step_requested = _result_number(result["requested_max_step"], "requested_max_step")
+    step_actual = _result_number(result["actual_step_size"], "actual_step_size")
+    if step_requested <= 0.0 or step_actual <= 0.0 or step_actual > step_requested + max(
+        math.ulp(step_requested), abs(step_requested) * 1e-12
+    ):
+        raise ValueError("sensitivity solver step sizes are invalid")
+    solver_method = _result_name(result["solver_method"], "sensitivity solver_method")
+    unit_context = unit_context or {}
+    state_units = _unit_map(unit_context, "state_units")
+    parameter_units = _unit_map(unit_context, "parameter_units")
+    time_unit = unit_context.get("time_unit", "unidad no indicada") if isinstance(unit_context, Mapping) else "unidad no indicada"
+    if not isinstance(time_unit, str) or not time_unit or len(time_unit) > 256:
+        raise ValueError("unit_context.time_unit must be a non-empty unit string")
+    series: list[ScientificSeriesView] = []
+    for state in configured_states:
+        for parameter in configured_parameters:
+            state_unit = state_units.get(state)
+            parameter_unit = parameter_units.get(parameter)
+            unit = (f"{state_unit} / {parameter_unit}"
+                    if state_unit is not None and parameter_unit is not None
+                    else "unidad no indicada")
+            series.append(ScientificSeriesView(
+                label=f"{state} ∂/∂{parameter}",
+                values=tuple(selected_values[(state, parameter)]), unit=unit,
+            ))
+    return SensitivityPlotView(
+        method="CENTRAL_FINITE_DIFFERENCE", solver_method=solver_method,
+        times=times, time_unit=sanitize_display_text(time_unit), series=tuple(series),
+    )
+
+
+def build_observation_evaluation_view(payload: object) -> ObservationEvaluationView:
+    """Validate ObservationEvaluation schema v1 and retain sparse residual coordinates."""
+    required = {
+        "schema_version", "method", "observation_sha256", "provenance", "time_unit",
+        "variable_units", "times", "observed_values", "simulated_values", "residual_order",
+        "residuals", "model", "solver",
+    }
+    result = _result_object(payload, "observation evaluation", required)
+    if type(result["schema_version"]) is not int or result["schema_version"] != 1:
+        raise ValueError("unsupported observation evaluation schema_version; expected 1")
+    if result["method"] != "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES":
+        raise ValueError("observation evaluation method does not match scientific_core schema v1")
+    digest = result["observation_sha256"]
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(character not in _SHA256 for character in digest)):
+        raise ValueError("observation_sha256 must be a lowercase SHA-256 digest")
+    raw_provenance = result["provenance"]
+    if (not isinstance(raw_provenance, Mapping) or not raw_provenance
+            or len(raw_provenance) > 32):
+        raise ValueError("observation evaluation provenance must be a bounded object")
+    provenance: dict[str, str] = {}
+    for key, value in raw_provenance.items():
+        if not isinstance(key, str) or not key or len(key) > 256:
+            raise ValueError("observation provenance keys must be non-empty strings")
+        if not isinstance(value, str) or not value or len(value) > 4096:
+            raise ValueError("observation provenance values must be non-empty strings")
+        provenance[sanitize_display_text(key)] = sanitize_display_text(value)
+    if "source" not in provenance:
+        raise ValueError("observation evaluation provenance must include source")
+    time_unit = result["time_unit"]
+    if not isinstance(time_unit, str) or not time_unit or len(time_unit) > 256:
+        raise ValueError("observation evaluation time_unit must be a non-empty string")
+    units = result["variable_units"]
+    if (not isinstance(units, Mapping) or not units
+            or len(units) > MAX_SCIENTIFIC_VIEW_SERIES):
+        raise ValueError("observation evaluation variable_units must be a bounded object")
+    variable_names = tuple(_result_name(name, "observation variable") for name in units)
+    variable_units: dict[str, str] = {}
+    for name, unit in units.items():
+        if not isinstance(unit, str) or not unit or len(unit) > 256:
+            raise ValueError(f"observation unit for {name!r} must be a non-empty string")
+        variable_units[name] = sanitize_display_text(unit)
+    times = tuple(_result_number(value, "observation evaluation time")
+                  for value in _result_sequence(result["times"], "observation evaluation times"))
+    if any(right <= left for left, right in zip(times, times[1:])):
+        raise ValueError("observation evaluation times must be strictly increasing")
+    observed = _result_sequence(result["observed_values"], "observed_values")
+    simulated = _result_sequence(result["simulated_values"], "simulated_values")
+    if len(observed) != len(times) or len(simulated) != len(times):
+        raise ValueError("observation evaluation rows must match times")
+    observed_coordinates: set[tuple[float, str]] = set()
+    observed_rows: list[Mapping[str, float]] = []
+    simulated_rows: list[Mapping[str, float]] = []
+    for row_index, (raw_observed, raw_simulated) in enumerate(zip(observed, simulated)):
+        if (not isinstance(raw_observed, Mapping) or not raw_observed
+                or not set(raw_observed).issubset(variable_units)):
+            raise ValueError(f"observed_values[{row_index}] contains invalid variables")
+        if (not isinstance(raw_simulated, Mapping)
+                or set(raw_simulated) != set(variable_units)):
+            raise ValueError(f"simulated_values[{row_index}] must match variable_units")
+        observed_row = {
+            name: _result_number(value, f"observed_values[{row_index}][{name!r}]")
+            for name, value in raw_observed.items()
+        }
+        simulated_row = {
+            name: _result_number(raw_simulated[name], f"simulated_values[{row_index}][{name!r}]")
+            for name in variable_names
+        }
+        for name in observed_row:
+            observed_coordinates.add((times[row_index], name))
+        observed_rows.append(MappingProxyType(observed_row))
+        simulated_rows.append(MappingProxyType(simulated_row))
+    raw_order = _result_sequence(result["residual_order"], "residual_order",
+                                 minimum=0, maximum=MAX_SIMULATION_VIEW_VALUES)
+    raw_residuals = _result_sequence(result["residuals"], "residuals",
+                                     minimum=0, maximum=MAX_SIMULATION_VIEW_VALUES)
+    if len(raw_order) != len(raw_residuals) or len(raw_order) != len(observed_coordinates):
+        raise ValueError("residual coordinates and residual values must match observations")
+    time_index_by_value = {time: index for index, time in enumerate(times)}
+    residual_order: list[tuple[float, str]] = []
+    residual_by_coordinate: dict[tuple[float, str], float] = {}
+    for coordinate, residual in zip(raw_order, raw_residuals):
+        entry = _result_object(coordinate, "residual coordinate", {"time", "variable"})
+        time = _result_number(entry["time"], "residual coordinate time")
+        variable = _result_name(entry["variable"], "residual coordinate variable")
+        key = (time, variable)
+        if key not in observed_coordinates or key in residual_by_coordinate:
+            raise ValueError("residual coordinates must uniquely match observed values")
+        value = _result_number(residual, "residual value")
+        row_index = time_index_by_value.get(time)
+        if row_index is None:
+            raise ValueError("residual coordinates must match observation times")
+        expected_residual = simulated_rows[row_index][variable] - observed_rows[row_index][variable]
+        if not math.isfinite(expected_residual) or not math.isclose(
+            value, expected_residual, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError("residual value does not match simulated minus observed data")
+        residual_by_coordinate[key] = value
+        residual_order.append(key)
+    model = _result_object(result["model"], "observation evaluation model", {
+        "time_unit", "variable_units", "parameters", "state_names", "initial_state",
+    })
+    model_state_names = _result_names(model["state_names"], "model state_names")
+    if not set(variable_names).issubset(model_state_names):
+        raise ValueError("model state_names must contain each observed variable")
+    if not isinstance(model["time_unit"], str) or not model["time_unit"] or len(model["time_unit"]) > 256:
+        raise ValueError("model time_unit must be a non-empty string")
+    model_initial_state = _result_sequence(model["initial_state"], "model initial_state",
+                                          maximum=MAX_SIMULATION_VIEW_STATES)
+    if len(model_initial_state) != len(model_state_names):
+        raise ValueError("model initial_state must match state_names")
+    for index, value in enumerate(model_initial_state):
+        _result_number(value, f"model initial_state[{index}]")
+    model_units = model["variable_units"]
+    if not isinstance(model_units, Mapping) or set(model_units) != set(variable_names):
+        raise ValueError("model variable_units must match observation variables")
+    for unit in model_units.values():
+        if not isinstance(unit, str) or not unit or len(unit) > 256:
+            raise ValueError("model variable units must be non-empty strings")
+    parameters = model["parameters"]
+    if not isinstance(parameters, Mapping) or len(parameters) > MAX_SIMULATION_VIEW_PARAMETERS:
+        raise ValueError("model parameters must be a bounded object")
+    for name, value in parameters.items():
+        _result_name(name, "model parameter name")
+        _result_number(value, f"model parameter {name!r}")
+    solver = _result_object(result["solver"], "observation evaluation solver", {
+        "requested_max_step", "segment_step_sizes", "segment_step_counts", "total_step_count",
+        "rhs_evaluation_count", "max_steps_per_interval", "max_total_steps",
+    })
+    requested_step = _result_number(solver["requested_max_step"], "requested_max_step")
+    if requested_step <= 0.0:
+        raise ValueError("requested_max_step must be positive")
+    step_sizes = _result_sequence(solver["segment_step_sizes"], "segment_step_sizes")
+    step_counts = _result_sequence(solver["segment_step_counts"], "segment_step_counts")
+    if len(step_sizes) != len(times) or len(step_counts) != len(times):
+        raise ValueError("solver segment metadata must match observation times")
+    normalized_step_counts: list[int] = []
+    for index, (step_size, step_count) in enumerate(zip(step_sizes, step_counts)):
+        if type(step_count) is not int or step_count < 0:
+            raise ValueError(f"segment_step_counts[{index}] must be non-negative")
+        normalized_step_counts.append(step_count)
+        if step_count == 0:
+            if step_size is not None:
+                raise ValueError("zero-step segments must not declare a step size")
+        elif (_result_number(step_size, f"segment_step_sizes[{index}]") <= 0.0):
+            raise ValueError("positive-step segments must declare a positive step size")
+    for name in ("total_step_count", "rhs_evaluation_count", "max_steps_per_interval", "max_total_steps"):
+        if type(solver[name]) is not int or solver[name] < 0:
+            raise ValueError(f"solver {name} must be a non-negative integer")
+    if (sum(normalized_step_counts) != solver["total_step_count"]
+            or solver["rhs_evaluation_count"] != 4 * solver["total_step_count"]
+            or solver["total_step_count"] > solver["max_total_steps"]
+            or any(count > solver["max_steps_per_interval"] for count in normalized_step_counts)):
+        raise ValueError("observation solver work counts are inconsistent")
+    if solver["max_steps_per_interval"] < 1 or solver["max_total_steps"] < 1:
+        raise ValueError("observation solver step limits must be positive")
+    series: list[ResidualSeriesView] = []
+    for variable in variable_names:
+        coordinates = tuple((time, variable) for time in times
+                            if (time, variable) in observed_coordinates)
+        series.append(ResidualSeriesView(
+            variable=variable, unit=variable_units[variable],
+            times=tuple(time for time, _ in coordinates),
+            observed=tuple(observed_rows[time_index_by_value[time]][variable]
+                           for time, _ in coordinates),
+            simulated=tuple(simulated_rows[time_index_by_value[time]][variable]
+                            for time, _ in coordinates),
+            residuals=tuple(residual_by_coordinate[key] for key in coordinates),
+        ))
+    return ObservationEvaluationView(
+        observation_sha256=digest,
+        provenance=MappingProxyType(provenance),
+        time_unit=sanitize_display_text(time_unit),
+        series=tuple(series),
+        residual_order=tuple(residual_order),
     )
 
 
@@ -490,12 +1004,18 @@ def _render_component(
     config = _object(component["config"], f"component {component_id} config")
     if component_type not in SUPPORTED_COMPONENT_TYPES:
         return ComponentView(component_id, component_type, title, "error", "Unregistered renderer")
+    source_resources = tuple(
+        _resource_view(resource_by_id[str(resource_id)]) for resource_id in refs
+    )
 
     try:
         if component_type == "artifact_browser":
             selected = set(refs)
             content = tuple(resource for resource in all_resources if resource.resource_id in selected)
-            return ComponentView(component_id, component_type, title, "ok", "Loaded resource metadata", content)
+            return ComponentView(
+                component_id, component_type, title, "ok", "Loaded resource metadata", content,
+                source_resources=source_resources,
+            )
 
         resource = resource_by_id[str(refs[0])]
         config_signature = tuple(
@@ -519,6 +1039,7 @@ def _render_component(
                 content,
                 truncated,
                 preview_text,
+                source_resources,
             )
         if component_type == "code_view":
             preview_bytes = resource.content[:MAX_TEXT_PREVIEW_BYTES]
@@ -526,7 +1047,10 @@ def _render_component(
             truncated = len(resource.content) > MAX_TEXT_PREVIEW_BYTES
             message = "Texto plano; no se ejecuta." if not truncated else "Vista truncada; el artefacto completo no se ejecuta."
             component_cache[cache_key] = ("ok", text, message, truncated, text)
-            return ComponentView(component_id, component_type, title, "ok", message, text, truncated)
+            return ComponentView(
+                component_id, component_type, title, "ok", message, text, truncated,
+                source_resources=source_resources,
+            )
 
         payload = _cached_json_payload(resource, json_cache, json_byte_count)
         is_sir_contract = (
@@ -556,12 +1080,36 @@ def _render_component(
             if isinstance(simulation_base, _CachedFailure):
                 raise ValueError(simulation_base.message)
             content = _simulation_content(simulation_base, config)
+        elif component_type == "fit_summary":
+            content = build_fit_summary_view(payload, config)
+        elif component_type == "sensitivity_plot":
+            content = build_sensitivity_plot_view(payload, config)
+        elif component_type == "residual_plot":
+            content = build_observation_evaluation_view(payload)
         else:
             content = _freeze(payload)
         if not (is_sir_contract and component_type in {"equation_view", "parameter_table"}):
             message = "Artefacto leído como datos inertes; no implica validación científica."
-            if component_type in {"uncertainty_summary", "sensitivity_plot"}:
-                message = "Se muestra el artefacto disponible; no se calcula ni valida incertidumbre o sensibilidad."
+            if component_type == "uncertainty_summary":
+                message = (
+                    "NOT_ASSESSED / NOT_CALCULATED: no hay una estimación de incertidumbre "
+                    "validada; no se generan intervalos ni bandas."
+                )
+            elif component_type == "fit_summary":
+                message = (
+                    "Se presenta el resultado del ajuste declarado; la convergencia no "
+                    "demuestra identificabilidad práctica ni incertidumbre estadística."
+                )
+            elif component_type == "sensitivity_plot":
+                message = (
+                    "Sensibilidad local del resultado suministrado; no establece "
+                    "identificabilidad práctica ni incertidumbre estadística."
+                )
+            elif component_type == "residual_plot":
+                message = (
+                    "Residuales calculados por el contrato de evaluación; representan "
+                    "simulación menos observación, no incertidumbre estadística."
+                )
             preview_text = ""
             truncated = False
             if component_type not in {"observation_table", "simulation_plot"}:
@@ -573,7 +1121,8 @@ def _render_component(
                     message += " Vista JSON limitada a 32 KiB."
         component_cache[cache_key] = ("ok", content, message, truncated, preview_text)
         return ComponentView(
-            component_id, component_type, title, "ok", message, content, truncated, preview_text
+            component_id, component_type, title, "ok", message, content, truncated, preview_text,
+            source_resources,
         )
     except (KeyError, TypeError, ValueError, UnicodeError, OverflowError) as exc:
         error_message = sanitize_display_text(f"No se pudo representar este componente: {exc}")[:300]
@@ -585,6 +1134,7 @@ def _render_component(
             title,
             "error",
             error_message,
+            source_resources=source_resources,
         )
 
 
