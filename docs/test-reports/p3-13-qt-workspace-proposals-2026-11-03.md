@@ -39,6 +39,6 @@ No se ejecuta código generado ni se sobrescriben los archivos originales. Si la
 ## Entrega
 
 - Commit de implementación: `924285e` (`feat: add Qt workspace proposal workflow`).
-- PR draft P3.13: por registrar, apilado sobre P3.12.
+- PR draft [#37](https://github.com/Josch01/scientific-software-engineering-council/pull/37), apilado sobre P3.12; CI pendiente.
 - Revisión independiente: completa, solo lectura; sin defectos reproducibles P0–P2 pendientes.
 - Merge a `main` y release: no realizados.
