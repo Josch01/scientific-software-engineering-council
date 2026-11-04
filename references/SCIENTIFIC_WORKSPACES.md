@@ -40,6 +40,18 @@ python scripts/scientific_workspace_app.py --project-root PROJECT_ROOT workspace
 
 The window can also start without arguments and use **Abrir espacio…** to select a project root and its manifest. From the SSEC configuration panel, **Abrir espacio científico** creates a child `Toplevel` on the existing Tk root and starts the manifest picker in the selected project. Both paths use the same loader, which checks the manifest and every declared SHA-256 before the UI receives captured bytes. Sections and components come from the validated manifest and are rendered by a fixed registry; manifest text cannot provide Python renderer code. For the closed SIR v1 contract, `equation_view` renders the fixed equations and `parameter_table` renders initial conditions, rate profiles, units, interval, and solver settings. Other model resources use bounded inert JSON views. The `code_view` component displays bounded UTF-8 text only. A workspace with exactly one verified, valid SIR `model_spec` automatically binds SSEC's built-in declarative SIR action to its `simulation_plot` components. No project Python is imported or executed.
 
+### Optional PySide6 desktop frontend
+
+When PySide6 is already available in the Python environment, the native Qt frontend can be started with:
+
+```text
+python scripts/scientific_workspace_qt.py --project-root PROJECT_ROOT workspace.json
+```
+
+Without arguments it opens a window with **Abrir espacio…** and asks for the project root and manifest. This frontend is optional; it does not install dependencies and the Tk app remains available. It calls the same safe loader and `WorkspaceViewModel`, uses a fixed component-renderer registry, shows the manifest sections and verified resource digests, and draws available simulation series with native Qt painting. Only SSEC's built-in declarative SIR callback is currently exposed here. Each run asks for the existing explicit human confirmation, runs on a Qt worker thread, validates the returned solver data through the shared result contract, and keeps the result in memory without modifying project files.
+
+The P3.12 Qt slice does not yet expose P3.10 audit dispatch or P3.11 proposal generation; those workflows remain in the Tk frontend and their reusable services remain outside Tkinter. Qt WebEngine is not required by this slice. The deterministic Qt tests run when PySide6 is present; CI environments without the optional dependency skip those UI tests. Neither Qt nor Tk views certify scientific validity.
+
 The built-in action accepts only the closed, versioned SIR equation set documented in `SCIENCE_NUMERICS.md`; it validates the verified resource bytes and uses SSEC's existing RK4 solver. Each run requires human confirmation. A custom `approved_simulations` map may still be passed by a trusted host and takes precedence for matching components; projects cannot register callbacks. Host callbacks receive immutable bytes captured by the safe loader plus the validated component view, and run on a daemon thread. The returned `OdeSolution` must pass row, value, parameter, schema, and series checks before the app opens an in-memory result tab. Callback errors leave the prior view intact. Closing the workspace does not cancel an already running host callback; only reviewed, bounded callbacks should be supplied. The result is not saved to the project and establishes no model validity. Invalid or ambiguous SIR model specs show a visible error and do not create a runnable action.
 
 ### Propose workspace changes with a local CLI
