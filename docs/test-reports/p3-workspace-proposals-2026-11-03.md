@@ -41,4 +41,4 @@ Una revisión independiente de seguimiento confirmó estos tres cambios. La mism
 
 ## PR y siguiente incremento
 
-PR borrador apilado sobre P3.8; se añadirá su número/estado al cierre tras revisar CI. No hacer merge ni publicar release. El siguiente incremento autorizado pendiente es la única invocación real de AGY para P1.4; se mantiene sin consumir hasta ejecutar el E2E seguro. No se usarán más invocaciones de modelos sin nueva autorización.
+PR borrador [#31](https://github.com/Josch01/scientific-software-engineering-council/pull/31), apilado sobre P3.8; checks CI iniciados y aún pendientes al redactar. No hacer merge ni publicar release. El siguiente incremento autorizado pendiente es la única invocación real de AGY para P1.4; se mantiene sin consumir hasta ejecutar el E2E seguro. No se usarán más invocaciones de modelos sin nueva autorización.

@@ -45,4 +45,4 @@
 - [x] Add GUI/API regressions for human approve/reject, stale previews, oversized valid manifests, canonical-copy collisions, and lossless Unicode review.
 - [x] Run focused GUI tests, workspace test groups, validation CLI, and `git diff --check`.
 - [x] Record Windows/Docker evidence, synthetic fixture limits, user SIR `NOT_RUN`, provider E2E `NOT_RUN`, and root replacement residual.
-- [ ] Commit the increment and open a draft PR based on P3.8; do not merge.
+- [x] Commit the increment and open draft PR #31 based on P3.8; do not merge.
