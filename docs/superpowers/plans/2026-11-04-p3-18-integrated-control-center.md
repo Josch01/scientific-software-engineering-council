@@ -55,10 +55,10 @@
 - `ControlCenterWindow.load_project(project_root, manifest_relative_path)` loads through the embedded `ScientificWorkspaceWindow` and updates shared project state only after success.
 - Navigation exposes `Projects`, `Agents`, `Experiments`, `Audits`, `Code`, and `Results`; category links reuse existing workspace sections.
 
-- [ ] Add tests for embedded workspace, shared project path, category navigation and cancellation/error state preservation.
-- [ ] Run the Qt shell tests before implementation and confirm expected failures.
-- [ ] Implement project selection, shell navigation, embedded workspace and explicit empty states.
-- [ ] Run Qt shell and workspace navigation regressions.
+- [x] Add tests for embedded workspace, shared project path, category navigation and cancellation/error state preservation.
+- [x] Run the Qt shell tests before implementation and confirm expected failures.
+- [x] Implement project selection, shell navigation, embedded workspace and explicit empty states.
+- [x] Run Qt shell and workspace navigation regressions.
 
 ### Task 3: Port the existing supervisor flow to a Qt page
 
