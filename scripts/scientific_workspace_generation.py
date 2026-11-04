@@ -53,6 +53,7 @@ _COMPONENTS = {
     "sensitivity_plot": {
         "resource_kind": "sensitivity_result", "config": ["state_names", "parameter_names"]
     },
+    "residual_plot": {"resource_kind": "observation_evaluation", "config": []},
     "uncertainty_summary": {"resource_kind": "uncertainty_result", "config": ["quantities"]},
     "audit_summary": {"resource_kind": "audit_report", "config": []},
     "artifact_browser": {"resource_kind": None, "config": []},

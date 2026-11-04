@@ -68,6 +68,38 @@ def valid_manifest():
 
 
 class WorkspaceManifestTests(unittest.TestCase):
+    def test_residual_plot_accepts_observation_evaluation_resource(self):
+        manifest = valid_manifest()
+        manifest["resources"].append(
+            {"id": "evaluation", "kind": "observation_evaluation", "path": "results/evaluation.json"}
+        )
+        manifest["sections"][1]["components"].append(
+            {"id": "residuals", "type": "residual_plot", "title": "Residuals",
+             "resource_refs": ["evaluation"], "config": {}}
+        )
+
+        summary = scientific_workspace.validate_workspace_manifest(manifest)
+
+        self.assertIn("residual_plot", summary.component_types)
+
+    def test_residual_plot_rejects_other_kinds_and_config_fields(self):
+        manifest = valid_manifest()
+        manifest["sections"][1]["components"].append(
+            {"id": "residuals", "type": "residual_plot", "title": "Residuals",
+             "resource_refs": ["data"], "config": {}}
+        )
+        with self.assertRaisesRegex(ValueError, "requires resource kind"):
+            scientific_workspace.validate_workspace_manifest(manifest)
+
+        manifest["resources"].append(
+            {"id": "evaluation", "kind": "observation_evaluation", "path": "results/evaluation.json"}
+        )
+        component = manifest["sections"][1]["components"][-1]
+        component["resource_refs"] = ["evaluation"]
+        component["config"] = {"html": "<script>"}
+        with self.assertRaisesRegex(ValueError, "unknown or missing fields"):
+            scientific_workspace.validate_workspace_manifest(manifest)
+
     def test_valid_model_agnostic_workspace_reports_ordered_summary(self):
         summary = scientific_workspace.validate_workspace_manifest(valid_manifest())
 
