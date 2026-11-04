@@ -19,6 +19,7 @@
 - `python -m unittest tests.test_structure -v` — **1/1 OK**.
 - `python -m compileall -q scripts tests` y `git diff --check` — PASS.
 - Los CLI de runner, app y workspace Qt mostraron `--help` con exit code 0 en Windows/Python 3.14; no iniciaron procesos de proveedor.
+- CI del incremento predecesor P4.1: PR [#43](https://github.com/Josch01/scientific-software-engineering-council/pull/43), run [41805070338](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41805070338), 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 success.
 - Las rutas e instrucciones de Codex y Gemini se contrastaron con documentación oficial enlazada en la guía; no se instaló ningún software ni skill.
 
 ## Límites
