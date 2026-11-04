@@ -227,8 +227,7 @@ if QtWidgets is not None:
         if point_count > row_count:
             stride = max(1, math.ceil(point_count / row_count))
             indices = list(range(0, point_count, stride))[:row_count]
-            if indices[-1] != point_count - 1 and len(indices) < row_count:
-                indices.append(point_count - 1)
+            indices[-1] = point_count - 1
         table = QtWidgets.QTableWidget(len(indices), len(series) + 1)
         table.setObjectName("scientificChartDataTable")
         table.setHorizontalHeaderLabels((str(normalized["x_label"]), *(str(item["name"]) for item in series)))
@@ -277,6 +276,11 @@ if QtWidgets is not None:
             super().__init__(parent)
             self._data = _normalize_chart_data(plot_data)
             self.setObjectName("scientificChartWidget")
+            self.setAccessibleName(str(self._data["title"]))
+            self.setAccessibleDescription(
+                f"Eje x: {self._data['x_label']}. Eje y: {self._data['y_label']}. "
+                f"Series: {', '.join(str(item['name']) for item in self._data['series'])}."
+            )
             layout = QtWidgets.QVBoxLayout(self)
             if WEBENGINE_AVAILABLE and QWebEngineView is not None:
                 view = QWebEngineView(self)

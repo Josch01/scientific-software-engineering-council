@@ -878,6 +878,8 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
     for variable in variable_names:
         coordinates = tuple((time, variable) for time in times
                             if (time, variable) in observed_coordinates)
+        if not coordinates:
+            continue
         series.append(ResidualSeriesView(
             variable=variable, unit=variable_units[variable],
             times=tuple(time for time, _ in coordinates),

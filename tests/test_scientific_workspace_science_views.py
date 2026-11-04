@@ -162,6 +162,19 @@ class ScientificResultViewBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "residual coordinates"):
             view.build_observation_evaluation_view(payload)
 
+    def test_observation_evaluation_omits_variables_without_observed_values(self):
+        view = self._view()
+        payload = observation_evaluation_payload()
+        for row in payload["observed_values"]:
+            row.pop("I", None)
+        payload["residual_order"] = [entry for entry in payload["residual_order"]
+                                     if entry["variable"] != "I"]
+        payload["residuals"] = [1.0, 1.0, 1.0]
+
+        result = view.build_observation_evaluation_view(payload)
+
+        self.assertEqual([series.variable for series in result.series], ["S"])
+
     def test_component_views_include_resource_path_and_digest(self):
         view = self._view()
         payload = fit_payload()
