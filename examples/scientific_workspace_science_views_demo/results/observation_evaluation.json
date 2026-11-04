@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "method": "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES",
+  "observation_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "provenance": {
+    "source": "SSEC synthetic UI fixture",
+    "description": "Invented values to demonstrate presentation only; not experimental data"
+  },
+  "time_unit": "day (illustrative)",
+  "variable_units": {"S": "person (illustrative)", "I": "person (illustrative)", "R": "person (illustrative)"},
+  "times": [0.0, 1.0, 2.0],
+  "observed_values": [
+    {"S": 90.0, "I": 10.0, "R": 0.0},
+    {"S": 88.0, "I": 11.0, "R": 1.0},
+    {"S": 85.0, "I": 13.0, "R": 2.0}
+  ],
+  "simulated_values": [
+    {"S": 90.0, "I": 10.0, "R": 0.0},
+    {"S": 87.5, "I": 11.5, "R": 1.0},
+    {"S": 84.0, "I": 14.0, "R": 2.0}
+  ],
+  "residual_order": [
+    {"time": 0.0, "variable": "S"}, {"time": 0.0, "variable": "I"}, {"time": 0.0, "variable": "R"},
+    {"time": 1.0, "variable": "S"}, {"time": 1.0, "variable": "I"}, {"time": 1.0, "variable": "R"},
+    {"time": 2.0, "variable": "S"}, {"time": 2.0, "variable": "I"}, {"time": 2.0, "variable": "R"}
+  ],
+  "residuals": [0.0, 0.0, 0.0, -0.5, 0.5, 0.0, -1.0, 1.0, 0.0],
+  "model": {
+    "time_unit": "day (illustrative)",
+    "variable_units": {"S": "person (illustrative)", "I": "person (illustrative)", "R": "person (illustrative)"},
+    "parameters": {"beta": 0.4, "gamma": 0.18},
+    "state_names": ["S", "I", "R"],
+    "initial_state": [90.0, 10.0, 0.0]
+  },
+  "solver": {
+    "requested_max_step": 0.1,
+    "segment_step_sizes": [null, 0.1, 0.1],
+    "segment_step_counts": [0, 10, 10],
+    "total_step_count": 20,
+    "rhs_evaluation_count": 80,
+    "max_steps_per_interval": 100,
+    "max_total_steps": 1000
+  }
+}

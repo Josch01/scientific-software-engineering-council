@@ -35,15 +35,19 @@ try:
     )
     from .scientific_workspace_audit import run_workspace_audit
     from .scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
+    from .scientific_workspace_qt_charts import ScientificChartWidget
     from .scientific_workspace_proposals import (
         approve_workspace_proposal,
         preview_workspace_proposal,
     )
     from .scientific_workspace_view import (
         ComponentView,
+        FitSummaryView,
+        ObservationEvaluationView,
         ResourceView,
         SirEquationView,
         SirParameterView,
+        SensitivityPlotView,
         WorkspaceViewModel,
         build_workspace_view_model,
         sanitize_display_text,
@@ -63,19 +67,26 @@ except ImportError:  # Direct execution from the scripts directory.
     )
     from scientific_workspace_audit import run_workspace_audit
     from scientific_workspace_loader import LoadedWorkspace, load_scientific_workspace
+    from scientific_workspace_qt_charts import ScientificChartWidget
     from scientific_workspace_proposals import (
         approve_workspace_proposal,
         preview_workspace_proposal,
     )
     from scientific_workspace_view import (
         ComponentView,
+        FitSummaryView,
+        ObservationEvaluationView,
         ResourceView,
         SirEquationView,
         SirParameterView,
+        SensitivityPlotView,
         WorkspaceViewModel,
         build_workspace_view_model,
         sanitize_display_text,
     )
+
+
+MAX_FIT_RESIDUAL_TABLE_ROWS = 200
 
 
 def _plain(value: object) -> object:
@@ -1247,9 +1258,10 @@ if QtWidgets is not None:
                 "parameter_table": self._render_parameters,
                 "observation_table": self._render_json,
                 "simulation_plot": self._render_simulation,
-                "fit_summary": self._render_json,
-                "sensitivity_plot": self._render_json,
-                "uncertainty_summary": self._render_json,
+                "fit_summary": self._render_fit_summary,
+                "sensitivity_plot": self._render_sensitivity,
+                "residual_plot": self._render_residuals,
+                "uncertainty_summary": self._render_uncertainty,
                 "audit_summary": self._render_json,
                 "artifact_browser": self._render_artifact_browser,
                 "code_view": self._render_code,
@@ -1353,6 +1365,172 @@ if QtWidgets is not None:
                 warning.setTextFormat(QtCore.Qt.TextFormat.PlainText)
                 warning.setStyleSheet("color: #9c3b2e;")
                 layout.addWidget(warning)
+
+        def _add_source_provenance(self, layout, component: ComponentView) -> None:
+            for source in component.source_resources:
+                label = QtWidgets.QLabel(
+                    f"Recurso verificado: {source.resource_id} · {source.path} · "
+                    f"SHA-256 {source.sha256}. La huella acredita integridad de bytes, "
+                    "no origen ni validez científica."
+                )
+                label.setObjectName(f"source-provenance-{component.component_id}")
+                label.setWordWrap(True)
+                label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+                layout.addWidget(label)
+
+        def _render_fit_summary(self, layout, component: ComponentView, *, action_error: str = "") -> None:
+            del action_error
+            content = component.content
+            if not isinstance(content, FitSummaryView):
+                self._render_json(layout, component)
+                return
+            summary = QtWidgets.QLabel(
+                f"{content.method} · estado {content.status} · coste {content.cost:.8g} · "
+                f"iteraciones {content.iterations}/{content.max_iterations} · "
+                f"evaluaciones {content.function_evaluations}/{content.max_function_evaluations} · "
+                f"pasos aceptados {content.accepted_steps} · residuales {len(content.residuals)}\n"
+                "Identificabilidad práctica: no evaluada. Incertidumbre estadística: no evaluada."
+            )
+            summary.setObjectName(f"fit-summary-{component.component_id}")
+            summary.setWordWrap(True)
+            summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(summary)
+            table = QtWidgets.QTableWidget(len(content.parameters), 6)
+            table.setObjectName("fit-parameters-table")
+            table.setHorizontalHeaderLabels((
+                "Parámetro", "Inicial", "Ajustado", "Límite inferior", "Límite superior", "Unidad"
+            ))
+            table.setAccessibleName("Parámetros y cotas del resultado de ajuste")
+            table.setAlternatingRowColors(True)
+            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            for row_index, parameter in enumerate(content.parameters):
+                values = (
+                    parameter.name, f"{parameter.initial_value:.8g}",
+                    f"{parameter.fitted_value:.8g}", f"{parameter.lower_bound:.8g}",
+                    f"{parameter.upper_bound:.8g}", parameter.unit,
+                )
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column,
+                                  QtWidgets.QTableWidgetItem(sanitize_display_text(value)))
+            table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+            layout.addWidget(table)
+            residual_count = len(content.residuals)
+            if residual_count > MAX_FIT_RESIDUAL_TABLE_ROWS:
+                sampled_indexes = tuple(
+                    round(index * (residual_count - 1) / (MAX_FIT_RESIDUAL_TABLE_ROWS - 1))
+                    for index in range(MAX_FIT_RESIDUAL_TABLE_ROWS)
+                )
+            else:
+                sampled_indexes = tuple(range(residual_count))
+            residuals = QtWidgets.QTableWidget(len(sampled_indexes), 2)
+            residuals.setObjectName("fit-residuals-table")
+            residuals.setHorizontalHeaderLabels(("Índice", "Residuo"))
+            residuals.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            for row_index, source_index in enumerate(sampled_indexes):
+                residuals.setItem(row_index, 0, QtWidgets.QTableWidgetItem(str(source_index)))
+                residuals.setItem(
+                    row_index, 1, QtWidgets.QTableWidgetItem(f"{content.residuals[source_index]:.8g}")
+                )
+            if residual_count > len(sampled_indexes):
+                residuals.setToolTip(
+                    f"Vista tabular limitada a {len(sampled_indexes)} filas de "
+                    f"{residual_count} residuales; se incluyen ambos extremos."
+                )
+            residuals.setMaximumHeight(min(300, 48 + 26 * len(sampled_indexes)))
+            layout.addWidget(residuals)
+            self._add_source_provenance(layout, component)
+
+        def _render_sensitivity(self, layout, component: ComponentView, *, action_error: str = "") -> None:
+            del action_error
+            content = component.content
+            if not isinstance(content, SensitivityPlotView):
+                self._render_json(layout, component)
+                return
+            groups: dict[str, list] = {}
+            for series in content.series:
+                groups.setdefault(series.unit, []).append(series)
+            for group_index, (unit, series_group) in enumerate(groups.items()):
+                chart = ScientificChartWidget({
+                    "title": f"Sensibilidad local · {unit}",
+                    "x_label": f"Tiempo · {content.time_unit}",
+                    "y_label": f"Derivada local · {unit}",
+                    "series": [
+                        {"name": series.label, "x": content.times, "y": series.values}
+                        for series in series_group
+                    ],
+                })
+                chart.setObjectName(f"plot-{component.component_id}-sensitivity-{group_index}")
+                layout.addWidget(chart)
+            method = QtWidgets.QLabel(
+                f"Método: {content.method}; trayectoria base: {content.solver_method}. "
+                "La sensibilidad local no demuestra identificabilidad práctica."
+            )
+            method.setWordWrap(True)
+            method.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(method)
+            self._add_source_provenance(layout, component)
+
+        def _render_residuals(self, layout, component: ComponentView, *, action_error: str = "") -> None:
+            del action_error
+            content = component.content
+            if not isinstance(content, ObservationEvaluationView):
+                self._render_json(layout, component)
+                return
+            tabs = QtWidgets.QTabWidget()
+            tabs.setObjectName(f"residual-tabs-{component.component_id}")
+            for series_index, series in enumerate(content.series):
+                page = QtWidgets.QWidget()
+                page_layout = QtWidgets.QVBoxLayout(page)
+                observed_chart = ScientificChartWidget({
+                    "title": f"{series.variable}: observado y simulado",
+                    "x_label": f"Tiempo · {content.time_unit}",
+                    "y_label": f"Valor · {series.unit}",
+                    "series": [
+                        {"name": "Observado", "x": series.times, "y": series.observed},
+                        {"name": "Simulado", "x": series.times, "y": series.simulated},
+                    ],
+                })
+                observed_chart.setObjectName(
+                    f"plot-{component.component_id}-observed-{series_index}"
+                )
+                page_layout.addWidget(observed_chart)
+                zero = tuple(0.0 for _ in series.residuals)
+                residual_chart = ScientificChartWidget({
+                    "title": f"{series.variable}: residuo (simulado − observado)",
+                    "x_label": f"Tiempo · {content.time_unit}",
+                    "y_label": f"Residuo · {series.unit}",
+                    "series": [
+                        {"name": "Residuo", "x": series.times, "y": series.residuals},
+                        {"name": "Referencia cero", "x": series.times, "y": zero},
+                    ],
+                })
+                residual_chart.setObjectName(f"plot-{component.component_id}-residual-{series_index}")
+                page_layout.addWidget(residual_chart)
+                tabs.addTab(page, sanitize_display_text(series.variable))
+            layout.addWidget(tabs)
+            provenance = QtWidgets.QLabel(
+                f"Procedencia declarada: { _display_json(content.provenance) } · "
+                f"SHA-256 normalizado de observaciones: {content.observation_sha256}. "
+                "Residuo = simulado − observado; no es incertidumbre estadística."
+            )
+            provenance.setWordWrap(True)
+            provenance.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            layout.addWidget(provenance)
+            self._add_source_provenance(layout, component)
+
+        def _render_uncertainty(self, layout, component: ComponentView, *, action_error: str = "") -> None:
+            del action_error
+            status = QtWidgets.QLabel(
+                "NOT_ASSESSED / NOT_CALCULATED · No hay una estimación estadística validada; "
+                "no se muestran intervalos ni bandas de confianza."
+            )
+            status.setObjectName(f"uncertainty-status-{component.component_id}")
+            status.setWordWrap(True)
+            status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            status.setStyleSheet("color: #825b18; font-weight: 600;")
+            layout.addWidget(status)
+            self._render_json(layout, component)
+            self._add_source_provenance(layout, component)
 
         def _render_artifact_browser(self, layout, component: ComponentView, *, action_error: str = "") -> None:
             del action_error

@@ -22,9 +22,11 @@ except ImportError:
 def make_workspace(root: Path):
     model = b'{"model_type":"sir","status":"synthetic"}\n'
     observations = b'{"schema_version":1,"variables":[]}\n'
+    evaluation = b'{"schema_version":1,"method":"test"}\n'
     unused = b"must not be sent to the agent"
     for path, content in (("models/sir.json", model),
                           ("data/observations.json", observations),
+                          ("results/evaluation.json", evaluation),
                           ("private/unused.txt", unused)):
         target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +35,7 @@ def make_workspace(root: Path):
     for resource_id, kind, path, content in (
         ("model", "model_spec", "models/sir.json", model),
         ("observations", "observations", "data/observations.json", observations),
+        ("evaluation", "observation_evaluation", "results/evaluation.json", evaluation),
         ("unused", "generic", "private/unused.txt", unused),
     ):
         resources.append({"id": resource_id, "kind": kind, "path": path,
@@ -274,6 +277,25 @@ class WorkspaceProposalGenerationBehaviorTests(unittest.TestCase):
         self.assertEqual(manifest["resources"][0]["sha256"],
                          hashlib.sha256(self.model).hexdigest())
         self.assertNotIn("unused", json.dumps(manifest))
+
+    def test_residual_component_is_available_to_deterministic_proposals(self):
+        plan = generation.build_workspace_generation_plan(
+            self.workspace, ("evaluation",), "Show observations and residuals"
+        )
+        layout = {
+            "title": "Residual analysis",
+            "description": "Residual view generated without a provider call",
+            "sections": [{"id": "results", "title": "Results", "components": [{
+                "id": "residuals", "type": "residual_plot", "title": "Residuals",
+                "resource_refs": ["evaluation"], "config": {},
+            }]}],
+        }
+
+        candidate = generation.build_workspace_proposal_manifest(plan, layout)
+
+        from scripts.scientific_workspace import validate_workspace_manifest
+        summary = validate_workspace_manifest(candidate)
+        self.assertEqual(summary.component_types, ("residual_plot",))
 
     def test_generation_persists_a_validated_unapproved_candidate_and_uses_read_only_runtime(self):
         runtime = StaticRuntime("gemini")

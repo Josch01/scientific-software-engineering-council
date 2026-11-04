@@ -56,6 +56,26 @@ If the configured provider mode cannot support that proposal policy, the generat
 
 The Qt frontend exposes audit dispatch through **Solicitar auditoría…**. It starts with no resources selected, requires explicit quota confirmation, and sends only the selected loader-verified resources to the existing audit service. Cancellation uses a temporary request file that is retained until the worker exits. The read-only result view marks `human_review=NOT_PERFORMED`, `release_status=NOT_APPROVED`, and `scientific_validity=NOT_CERTIFIED`; a successful CLI exit is reported as `PROCESSES_COMPLETED_NOT_AUDITED`. No project code is executed. Real provider invocation and Linux Qt visual use remain `NOT_RUN`; the offscreen tests mock the audit service. Qt WebEngine is not required. Neither Qt nor Tk views certify scientific validity.
 
+### Native fit, sensitivity, and residual views (P3.16)
+
+The Qt frontend now projects `LeastSquaresFit`, `OdeSensitivity`, and `ObservationEvaluation` schema v1 into bounded display models while leaving all numerical work in `scientific_core`. Fit results show method, status, cost, work counts, configured parameter order, initial/fitted values, declared bounds, residual values, and source resource digest. The residual table is capped at 200 evenly sampled rows, including both endpoints, while the summary retains the full count. The current fit schema carries no parameter-unit fields, so the view says `unidad no indicada` unless a trusted caller supplies explicit unit context. A fit status or residual magnitude is not an identifiability or uncertainty result.
+
+Sensitivity values are selected with the declared `[time][state][parameter]` tensor order and plotted by configured state/parameter axes. The current sensitivity schema has no unit fields; the view labels time and derivative units as not supplied unless explicit unit context is supplied. Sensitivity remains a local derivative result and does not establish practical identifiability.
+
+The `observation_evaluation` resource kind and `residual_plot` component consume the versioned evaluation record. For each observed variable, Qt shows separate observed-versus-simulated and residual plots over the original observation times, along with the declared units, provenance, normalized observation digest, and verified resource ID/path/SHA-256. Sparse rows and `(time, variable)` residual coordinates are preserved. The result verifier checks residual values against supplied simulated-minus-observed values; it does not fit, estimate uncertainty, or infer missing observations.
+
+When Qt WebEngine is available, chart pages are authored by SSEC, loaded from one bounded local `setHtml` document, and contain no CDN or remote/file fetches, Python bridge, or project-supplied HTML/script. A restrictive CSP hashes the inline chart script; only Qt's initial `data:text/html` document is admitted and later navigation is blocked. Labels travel as base64 JSON and are inserted as text. Hover inspection and legend toggles are available. The SVG trace samples at most 2,001 points per series; hover readouts still access the full validated values. Pages above 2,000,000 UTF-8 bytes fall back to QtPainter and a bounded table to stay within the local data-URL budget. The native plot includes both axis labels. Model/observation units must match exactly; no unit conversion is implied. Missing WebEngine, large-page fallback, and fallback rendering are tested.
+
+Uncertainty remains inert JSON with `NOT_ASSESSED / NOT_CALCULATED`; SSEC creates no estimate, interval, or confidence band. This keeps fit error, local sensitivity, practical identifiability, and statistical uncertainty distinct.
+
+Open the fully checked synthetic view demonstration from the repository root:
+
+```text
+python scripts/scientific_workspace_qt.py --project-root examples scientific_workspace_science_views_demo/workspace.json
+```
+
+`examples/scientific_workspace_science_views_demo/README.md` marks every value as a synthetic UI fixture. This example is not the user's SIR, experimental evidence, identifiability analysis, or a scientifically validated result. The user's SIR remains `NOT_RUN` until its equations and data are supplied.
+
 The built-in action accepts only the closed, versioned SIR equation set documented in `SCIENCE_NUMERICS.md`; it validates the verified resource bytes and uses SSEC's existing RK4 solver. Each run requires human confirmation. A custom `approved_simulations` map may still be passed by a trusted host and takes precedence for matching components; projects cannot register callbacks. Host callbacks receive immutable bytes captured by the safe loader plus the validated component view, and run on a daemon thread. The returned `OdeSolution` must pass row, value, parameter, schema, and series checks before the app opens an in-memory result tab. Callback errors leave the prior view intact. Closing the workspace does not cancel an already running host callback; only reviewed, bounded callbacks should be supplied. The result is not saved to the project and establishes no model validity. Invalid or ambiguous SIR model specs show a visible error and do not create a runnable action.
 
 ### Propose workspace changes with a local CLI

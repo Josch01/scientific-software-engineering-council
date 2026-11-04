@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "workspace_id": "synthetic-scientific-views",
+  "title": "Synthetic scientific views · software demonstration",
+  "description": "Synthetic-only UI fixture. Not the user SIR model, experimental evidence, identifiability analysis, or validated uncertainty.",
+  "resources": [
+    {
+      "id": "fit",
+      "kind": "fit_result",
+      "path": "scientific_workspace_science_views_demo/results/fit.json",
+      "sha256": "7d1fa9808d2cab53062396ebefbf9ca5032a6edd72f6258cb8ebcefe3be59362"
+    },
+    {
+      "id": "sensitivity",
+      "kind": "sensitivity_result",
+      "path": "scientific_workspace_science_views_demo/results/sensitivity.json",
+      "sha256": "896869a600a60ba19a307212e2a4ca11ea9c6d93948411712c41747627f529b3"
+    },
+    {
+      "id": "evaluation",
+      "kind": "observation_evaluation",
+      "path": "scientific_workspace_science_views_demo/results/observation_evaluation.json",
+      "sha256": "10ebebe792e2bfc787368d374f1edfad026c755d155b273fb5793063f438fbd4"
+    },
+    {
+      "id": "uncertainty",
+      "kind": "uncertainty_result",
+      "path": "scientific_workspace_science_views_demo/results/uncertainty_not_assessed.json",
+      "sha256": "115881328e9047fde81619638d7ac60be70b8bff798eb0219c91d14ccb1d6758"
+    }
+  ],
+  "sections": [
+    {
+      "id": "results",
+      "title": "Scientific results",
+      "components": [
+        {
+          "id": "fit-view",
+          "type": "fit_summary",
+          "title": "Fit result · synthetic",
+          "resource_refs": [
+            "fit"
+          ],
+          "config": {
+            "parameter_names": [
+              "beta",
+              "gamma"
+            ]
+          }
+        },
+        {
+          "id": "sensitivity-view",
+          "type": "sensitivity_plot",
+          "title": "Local sensitivity · synthetic",
+          "resource_refs": [
+            "sensitivity"
+          ],
+          "config": {
+            "state_names": [
+              "S",
+              "I",
+              "R"
+            ],
+            "parameter_names": [
+              "beta",
+              "gamma"
+            ]
+          }
+        },
+        {
+          "id": "residual-view",
+          "type": "residual_plot",
+          "title": "Observed, simulated, residual · synthetic",
+          "resource_refs": [
+            "evaluation"
+          ],
+          "config": {}
+        },
+        {
+          "id": "uncertainty-view",
+          "type": "uncertainty_summary",
+          "title": "Uncertainty",
+          "resource_refs": [
+            "uncertainty"
+          ],
+          "config": {
+            "quantities": [
+              "S",
+              "I",
+              "R"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "method": "CENTRAL_FINITE_DIFFERENCE",
+  "solver_method": "RK4_FIXED_STEP",
+  "times": [0.0, 1.0, 2.0],
+  "state_names": ["S", "I", "R"],
+  "parameter_names": ["beta", "gamma"],
+  "base_parameters": {"beta": 0.4, "gamma": 0.18},
+  "base_values": [[90.0, 10.0, 0.0], [87.5, 11.5, 1.0], [84.0, 14.0, 2.0]],
+  "perturbations": {"beta": 0.004, "gamma": 0.0018},
+  "parameter_bounds": {
+    "beta": {"lower": 0.01, "upper": 1.0},
+    "gamma": {"lower": 0.01, "upper": 1.0}
+  },
+  "values": [
+    [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+    [[-2.1, 0.3], [1.8, -1.1], [0.3, 0.8]],
+    [[-4.8, 0.6], [4.0, -2.5], [0.8, 1.9]]
+  ],
+  "requested_max_step": 0.1,
+  "actual_step_size": 0.1,
+  "step_count_per_trajectory": 20,
+  "trajectory_count": 5,
+  "total_step_count": 100,
+  "rhs_evaluation_count": 400
+}

@@ -9,6 +9,7 @@
     {"id": "simulation", "kind": "simulation_result", "path": "results/simulation.json"},
     {"id": "fit", "kind": "fit_result", "path": "results/fit.json"},
     {"id": "sensitivity", "kind": "sensitivity_result", "path": "results/sensitivity.json"},
+    {"id": "evaluation", "kind": "observation_evaluation", "path": "results/observation-evaluation.json"},
     {"id": "uncertainty", "kind": "uncertainty_result", "path": "results/uncertainty.json"},
     {"id": "audit", "kind": "audit_report", "path": "results/audit.json"},
     {"id": "source", "kind": "source_code", "path": "src/model.py"}
@@ -36,6 +37,7 @@
         {"id": "trajectory", "type": "simulation_plot", "title": "Simulation", "resource_refs": ["simulation"], "config": {"x_axis": "time", "series": ["state_1"]}},
         {"id": "fit-view", "type": "fit_summary", "title": "Fit", "resource_refs": ["fit"], "config": {"parameter_names": ["parameter_1"]}},
         {"id": "sensitivity-view", "type": "sensitivity_plot", "title": "Sensitivity", "resource_refs": ["sensitivity"], "config": {"state_names": ["state_1"], "parameter_names": ["parameter_1"]}},
+        {"id": "residual-view", "type": "residual_plot", "title": "Observed, simulated, and residual values", "resource_refs": ["evaluation"], "config": {}},
         {"id": "uncertainty-view", "type": "uncertainty_summary", "title": "Uncertainty", "resource_refs": ["uncertainty"], "config": {"quantities": ["state_1"]}},
         {"id": "audit-view", "type": "audit_summary", "title": "Audit", "resource_refs": ["audit"], "config": {}}
       ]
