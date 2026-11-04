@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -209,6 +210,151 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
             self.assertIsNone(_project_root_hint(root / "missing"))
             self.assertIsNone(_project_root_hint(None))
             self.assertIsNone(_project_root_hint(""))
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_proposal_diff_can_be_rejected_without_project_writes(self):
+        self._exercise_proposal_dialog(decision="reject")
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_approved_proposal_is_persisted_and_becomes_active_workspace(self):
+        self._exercise_proposal_dialog(decision="approve")
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_changed_proposal_after_preview_is_not_persisted(self):
+        self._exercise_proposal_dialog(decision="stale")
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_proposal_review_displays_unicode_format_controls_as_json_escapes(self):
+        output = self._exercise_proposal_dialog(
+            decision="reject", proposal_title="Proposed\u200b SIR"
+        )
+
+        self.assertIn(r"\u200b", output["diff"])
+        self.assertNotIn("\uFFFD", output["diff"])
+        self.assertIn(r'"Proposed\u200b SIR"', output["summary"])
+
+    def _exercise_proposal_dialog(self, *, decision: str, proposal_title: str | None = None):
+        import tkinter as tk
+        from tkinter import ttk
+
+        from scripts.scientific_workspace_app import create_workspace_window
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+        from scripts.scientific_workspace_view import build_workspace_view_model
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_workspace(root)
+            source_manifest = root / "workspace.json"
+            source_bytes = source_manifest.read_bytes()
+            resource = b'{"model_type":"sir","status":"proposal fixture"}\n'
+            (root / "proposal-model.json").write_bytes(resource)
+            proposal = json.loads(source_bytes)
+            proposal["title"] = proposal_title or "Agent proposal fixture"
+            proposal["resources"][0]["path"] = "proposal-model.json"
+            proposal["resources"][0]["sha256"] = hashlib.sha256(resource).hexdigest()
+            proposal["sections"][0]["title"] = "Proposed SIR section"
+            proposal_path = root / "proposal.json"
+            proposal_path.write_text(json.dumps(proposal, indent=2) + "\n", encoding="utf-8")
+            proposal_bytes = proposal_path.read_bytes()
+            active = load_scientific_workspace(root, "workspace.json")
+            window = create_workspace_window(
+                build_workspace_view_model(active), project_root=root, loaded_workspace=active
+            )
+            window.withdraw()
+            output: dict[str, object] = {}
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            buttons = [
+                widget for widget in descendants(window)
+                if isinstance(widget, ttk.Button)
+                and widget.cget("text") == "Revisar propuesta…"
+            ]
+            self.assertEqual(len(buttons), 1, "proposal review button should be available for an active workspace")
+
+            def act_on_dialog(attempt: int = 0) -> None:
+                dialogs = [
+                    child for child in window.winfo_children()
+                    if isinstance(child, tk.Toplevel)
+                    and child.title() == "Revisar propuesta de workspace"
+                ]
+                if not dialogs:
+                    if attempt >= 40:
+                        output["error"] = "proposal diff dialog did not open"
+                        return
+                    window.after(25, lambda: act_on_dialog(attempt + 1))
+                    return
+                dialog = dialogs[0]
+                text_widgets = [child for child in descendants(dialog) if isinstance(child, tk.Text)]
+                output["diff"] = text_widgets[0].get("1.0", "end-1c") if text_widgets else ""
+                summary_widgets = [
+                    child for child in descendants(dialog)
+                    if isinstance(child, ttk.Label) and "SHA-256 semántico:" in child.cget("text")
+                ]
+                output["summary"] = summary_widgets[0].cget("text") if summary_widgets else ""
+                if decision == "stale":
+                    changed = json.loads(proposal_path.read_text(encoding="utf-8"))
+                    changed["title"] = "Changed after preview"
+                    proposal_path.write_text(json.dumps(changed, indent=2) + "\n", encoding="utf-8")
+                button_text = "Rechazar" if decision == "reject" else "Aprobar y guardar"
+                action_buttons = [
+                    widget for widget in descendants(dialog)
+                    if isinstance(widget, ttk.Button) and widget.cget("text") == button_text
+                ]
+                if not action_buttons:
+                    output["error"] = f"missing dialog action {button_text!r}"
+                    return
+                action_buttons[0].invoke()
+                if decision == "stale":
+                    output["errors_shown"] = list(error_messages)
+                    reject_buttons = [
+                        widget for widget in descendants(dialog)
+                        if isinstance(widget, ttk.Button) and widget.cget("text") == "Rechazar"
+                    ]
+                    if reject_buttons:
+                        reject_buttons[0].invoke()
+
+            error_messages: list[str] = []
+            try:
+                with patch(
+                    "tkinter.filedialog.askopenfilename", return_value=str(proposal_path)
+                ), patch("tkinter.messagebox.askyesno", return_value=True) as confirm, patch(
+                    "tkinter.messagebox.showerror",
+                    side_effect=lambda title, message, **_kw: error_messages.append(str(message)),
+                ):
+                    window.after(50, act_on_dialog)
+                    buttons[0].invoke()
+                    output["confirm_calls"] = confirm.call_count
+                self.assertNotIn("error", output, output.get("error"))
+                self.assertIn("Proposed SIR section", output["diff"])
+                approved_files = list(root.glob(".ssec-workspace-*.json"))
+                if decision == "reject":
+                    self.assertEqual(approved_files, [])
+                    self.assertEqual(source_manifest.read_bytes(), source_bytes)
+                    self.assertEqual(proposal_path.read_bytes(), proposal_bytes)
+                    self.assertEqual(output["confirm_calls"], 0)
+                elif decision == "approve":
+                    self.assertEqual(len(approved_files), 1)
+                    self.assertEqual(source_manifest.read_bytes(), source_bytes)
+                    approved = load_scientific_workspace(
+                        root, approved_files[0].relative_to(root).as_posix()
+                    )
+                    self.assertEqual(approved.summary.title, "Agent proposal fixture")
+                    notebooks = [widget for widget in descendants(window) if isinstance(widget, ttk.Notebook)]
+                    self.assertEqual(len(notebooks), 1)
+                    tab_names = [notebooks[0].tab(tab, "text") for tab in notebooks[0].tabs()]
+                    self.assertIn("Proposed SIR section", tab_names)
+                    self.assertEqual(output["confirm_calls"], 1)
+                else:
+                    self.assertEqual(approved_files, [])
+                    self.assertTrue(any("proposal changed after preview" in item for item in error_messages))
+                    self.assertEqual(source_manifest.read_bytes(), source_bytes)
+            finally:
+                window.destroy()
+            return output
 
 
 if __name__ == "__main__":
