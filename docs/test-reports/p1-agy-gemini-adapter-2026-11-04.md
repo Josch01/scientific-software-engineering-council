@@ -1,6 +1,6 @@
 # P1 — Compatibilidad offline del CLI AGY en el slot Gemini
 
-**Estado:** `EXPERIMENTAL`; el E2E AGY real sigue `NOT_RUN`.  
+**Estado:** `EXPERIMENTAL`; el E2E AGY real sigue `NOT_RUN`.
 **Base:** P4.5 commit `42a308f`; este cambio conserva `gemini` como proveedor lógico.
 
 ## Cambio

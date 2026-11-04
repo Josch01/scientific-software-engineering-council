@@ -45,5 +45,5 @@
 - [x] Add failing argv, environment selection, and AGY NDJSON tests.
 - [x] Implement explicit command resolution and event parsing without weakening existing Gemini/Codex behavior.
 - [x] Document permissions and the unverified real-provider boundary.
-- [ ] Run focused tests, `compileall`, validator, and `git diff --check`.
-- [ ] Commit the focused increment.
+- [x] Run focused tests, `compileall`, validator, and `git diff --check`.
+- [x] Commit the focused increment.
