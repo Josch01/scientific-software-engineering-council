@@ -227,7 +227,9 @@ if QtWidgets is not None:
             self.setMinimumHeight(230)
             self.setAccessibleName("Gráfica de trayectoria de simulación")
             self.setAccessibleDescription(
-                "Representación de las series seleccionadas a partir de valores numéricos verificados."
+                f"Eje x: Tiempo · {self._content.get('time_unit') or 'unidad no indicada'}. "
+                f"Eje y: Población · {self._content.get('population_unit') or 'unidad no indicada'}. "
+                f"Series: {', '.join(map(str, self._content.get('series_names', ())))}."
             )
             self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
 
@@ -268,6 +270,15 @@ if QtWidgets is not None:
             painter.drawText(
                 rect.left(), self.height() - 8, f"Tiempo · {self._content.get('time_unit') or 'unidad no indicada'}"
             )
+            painter.save()
+            painter.translate(12, rect.center().y())
+            painter.rotate(-90)
+            painter.drawText(
+                QtCore.QRectF(-rect.height() / 2, -10, rect.height(), 20),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                f"Población · {self._content.get('population_unit') or 'unidad no indicada'}",
+            )
+            painter.restore()
 
             count = len(times)
             stride = max(1, math.ceil(count / 2000))
@@ -1335,13 +1346,26 @@ if QtWidgets is not None:
                 chart = _TrajectoryPlot(content)
                 chart.setObjectName(f"plot-{component.component_id}")
                 layout.addWidget(chart)
+                parameters = content.get("parameters", {})
+                parameter_units = content.get("parameter_units", {})
+                parameter_summary = " · ".join(
+                    f"{name}={float(value):.8g} "
+                    f"{parameter_units.get(name, 'unidad no indicada')}"
+                    for name, value in parameters.items()
+                ) if isinstance(parameters, Mapping) else ""
                 summary = QtWidgets.QLabel(
                     f"{content.get('method', 'Método no indicado')} · {content.get('row_count', 0)} puntos · "
-                    f"series: {', '.join(map(str, content.get('series_names', ())))}"
+                    f"{content.get('step_count', 0)} pasos · paso solicitado "
+                    f"{content.get('requested_max_step', '—')} · paso real "
+                    f"{content.get('actual_step_size', '—')} · "
+                    f"series: {', '.join(map(str, content.get('series_names', ())))} · "
+                    f"parámetros: {parameter_summary or 'no indicados'}"
                 )
+                summary.setObjectName(f"simulation-summary-{component.component_id}")
                 summary.setWordWrap(True)
                 summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
                 layout.addWidget(summary)
+                self._add_source_provenance(layout, result)
             else:
                 self._add_readonly_text(layout, _display_json(result.content), f"simulation-data-{component.component_id}", 150)
 
@@ -1542,7 +1566,10 @@ if QtWidgets is not None:
             text = component.content if isinstance(component.content, str) else _display_json(component.content)
             self._add_readonly_text(layout, text, f"code-text-{component.component_id}", 180)
 
-        def _render_json(self, layout, component: ComponentView) -> None:
+        def _render_json(
+            self, layout, component: ComponentView, *, action_error: str = ""
+        ) -> None:
+            del action_error
             value = component.preview_text or _display_json(component.content)
             self._add_readonly_text(layout, value, f"data-{component.component_id}", 160)
 

@@ -15,6 +15,7 @@ from scripts.scientific_core import (
     evaluate_observations,
     fit_least_squares,
     parameter_sensitivities,
+    solve_rk4,
 )
 
 
@@ -327,6 +328,51 @@ class ScientificResultViewBuilderTests(unittest.TestCase):
             ).sections[0].components[0]
         self.assertEqual(component.status, "ok")
         self.assertEqual(component.content.parameters[0].unit, "unidad no indicada")
+
+    def test_simulation_plot_context_shows_verified_sir_parameters_units_and_solver_metrics(self):
+        view = self._view()
+        definition = SirModelDefinition.from_dict(sir_model_payload())
+        model_content = json.dumps(definition.to_dict(), separators=(",", ":")).encode()
+        simulation_content = json.dumps(
+            solve_rk4(definition.to_ode_problem(), max_step=definition.max_step).to_dict(),
+            separators=(",", ":"),
+        ).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "model.json").write_bytes(model_content)
+            (root / "simulation.json").write_bytes(simulation_content)
+            manifest = {
+                "schema_version": 1, "workspace_id": "sir-simulation", "title": "SIR simulation",
+                "resources": [
+                    {"id": "model", "kind": "model_spec", "path": "model.json",
+                     "sha256": hashlib.sha256(model_content).hexdigest()},
+                    {"id": "simulation", "kind": "simulation_result", "path": "simulation.json",
+                     "sha256": hashlib.sha256(simulation_content).hexdigest()},
+                ],
+                "sections": [{"id": "results", "title": "Results", "components": [{
+                    "id": "trajectory", "type": "simulation_plot", "title": "Trajectory",
+                    "resource_refs": ["simulation"],
+                    "config": {"x_axis": "time", "series": ["S", "I", "R"],
+                               "context_refs": ["model"]},
+                }]}],
+            }
+            (root / "workspace.json").write_text(json.dumps(manifest), encoding="utf-8")
+            component = view.build_workspace_view_model(
+                load_scientific_workspace(root, "workspace.json")
+            ).sections[0].components[0]
+
+        self.assertEqual(component.status, "ok")
+        self.assertEqual(component.content["time_unit"], "day")
+        self.assertEqual(component.content["population_unit"], "person")
+        self.assertEqual(dict(component.content["parameters"]), {"beta": 0.3, "gamma": 0.1})
+        self.assertEqual(dict(component.content["parameter_units"]), {
+            "beta": "1/day", "gamma": "1/day",
+        })
+        self.assertEqual(component.content["step_count"], 10)
+        self.assertEqual(
+            [source.resource_id for source in component.source_resources], ["simulation", "model"]
+        )
+
 
     def test_actual_scientific_core_v1_results_map_to_the_display_contracts(self):
         view = self._view()

@@ -48,7 +48,10 @@ _COMPONENTS = {
     "equation_view": {"resource_kind": "model_spec", "config": []},
     "parameter_table": {"resource_kind": "model_spec", "config": []},
     "observation_table": {"resource_kind": "observations", "config": []},
-    "simulation_plot": {"resource_kind": "simulation_result", "config": ["x_axis", "series"]},
+    "simulation_plot": {
+        "resource_kind": "simulation_result", "config": ["x_axis", "series"],
+        "optional_config": ["context_refs"],
+    },
     "fit_summary": {
         "resource_kind": "fit_result", "config": ["parameter_names"],
         "optional_config": ["context_refs"],
@@ -195,7 +198,8 @@ def _prompt_for(workspace: LoadedWorkspace, plan: workspace_audit.WorkspaceAudit
         "schema_version, workspace_id y la lista de recursos seleccionados con sus "
         "digests verificados. Usa exclusivamente los IDs de recursos seleccionados y "
         "los tipos/configuraciones del registro incluido. Devuelve config exacta según "
-        "el componente. En fit_summary y sensitivity_plot puedes añadir "
+        "el componente. En simulation_plot puedes añadir config.context_refs con un "
+        "ID seleccionado model_spec. En fit_summary y sensitivity_plot puedes añadir "
         "config.context_refs con IDs seleccionados: fit_summary admite como máximo un "
         "model_spec y un observations; sensitivity_plot admite como máximo un model_spec. "
         "No repitas ahí el recurso principal. No afirmes validez científica; marca en la descripción cualquier "

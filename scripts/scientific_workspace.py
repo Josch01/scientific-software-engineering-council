@@ -71,7 +71,7 @@ _COMPONENT_CONFIG_FIELDS: dict[str, frozenset[str]] = {
     "equation_view": frozenset(),
     "parameter_table": frozenset(),
     "observation_table": frozenset(),
-    "simulation_plot": frozenset({"x_axis", "series"}),
+    "simulation_plot": frozenset({"x_axis", "series", "context_refs"}),
     "fit_summary": frozenset({"parameter_names", "context_refs"}),
     "sensitivity_plot": frozenset({"state_names", "parameter_names", "context_refs"}),
     "residual_plot": frozenset(),
@@ -195,7 +195,7 @@ def _name_list(value: object, label: str) -> tuple[str, ...]:
 def _validate_component_config(component_type: str, config: object, label: str) -> None:
     fields = _COMPONENT_CONFIG_FIELDS[component_type]
     optional_fields = {"context_refs"} if component_type in {
-        "fit_summary", "sensitivity_plot",
+        "simulation_plot", "fit_summary", "sensitivity_plot",
     } else set()
     required_fields = set(fields) - optional_fields
     config_mapping = _mapping(
@@ -210,8 +210,10 @@ def _validate_component_config(component_type: str, config: object, label: str) 
     elif component_type == "sensitivity_plot":
         _name_list(config_mapping["state_names"], f"{label}.config.state_names")
         _name_list(config_mapping["parameter_names"], f"{label}.config.parameter_names")
-    if component_type in {"fit_summary", "sensitivity_plot"} and "context_refs" in config_mapping:
-        maximum = 3 if component_type == "fit_summary" else 2
+    if component_type in {"simulation_plot", "fit_summary", "sensitivity_plot"} and "context_refs" in config_mapping:
+        maximum = {"simulation_plot": 1, "fit_summary": 3, "sensitivity_plot": 2}[
+            component_type
+        ]
         raw_context_refs = _sequence(
             config_mapping["context_refs"],
             f"{label}.config.context_refs",
@@ -325,7 +327,7 @@ def validate_workspace_manifest(payload: Mapping[str, object]) -> WorkspaceSumma
                         f"{component_label} requires resource kind {required_kind!r}"
                     )
             _validate_component_config(component_type, component["config"], component_label)
-            if component_type in {"fit_summary", "sensitivity_plot"}:
+            if component_type in {"simulation_plot", "fit_summary", "sensitivity_plot"}:
                 config = component["config"]
                 context_refs = tuple(config.get("context_refs", ()))
                 if len(set(context_refs)) != len(context_refs):
@@ -339,7 +341,10 @@ def validate_workspace_manifest(payload: Mapping[str, object]) -> WorkspaceSumma
                             f"{context_ref!r}"
                         )
                 context_kinds = tuple(resources[context_ref] for context_ref in context_refs)
-                if component_type == "fit_summary":
+                if component_type == "simulation_plot":
+                    if any(kind != "model_spec" for kind in context_kinds):
+                        _fail("simulation_plot context_refs only allow model_spec")
+                elif component_type == "fit_summary":
                     if any(kind not in {"model_spec", "observations"} for kind in context_kinds):
                         _fail(
                             "fit_summary context_refs only allow model_spec and observations"

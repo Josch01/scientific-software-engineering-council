@@ -68,6 +68,22 @@ def valid_manifest():
 
 
 class WorkspaceManifestTests(unittest.TestCase):
+    def test_simulation_plot_context_ref_accepts_only_a_resolved_model_spec(self):
+        manifest = valid_manifest()
+        manifest["sections"][2]["components"][0]["config"]["context_refs"] = ["model"]
+
+        scientific_workspace.validate_workspace_manifest(manifest)
+
+        invalid = valid_manifest()
+        invalid["sections"][2]["components"][0]["config"]["context_refs"] = ["data"]
+        with self.assertRaisesRegex(ValueError, "simulation_plot context_refs only allow model_spec"):
+            scientific_workspace.validate_workspace_manifest(invalid)
+
+        unresolved = valid_manifest()
+        unresolved["sections"][2]["components"][0]["config"]["context_refs"] = ["missing"]
+        with self.assertRaisesRegex(ValueError, "unknown context resource reference"):
+            scientific_workspace.validate_workspace_manifest(unresolved)
+
     def test_fit_and_sensitivity_context_refs_are_typed_unique_and_resolved(self):
         manifest = valid_manifest()
         manifest["sections"][2]["components"][1]["config"]["context_refs"] = [

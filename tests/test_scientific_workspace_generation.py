@@ -282,16 +282,22 @@ class WorkspaceProposalGenerationBehaviorTests(unittest.TestCase):
         manifest_path = self.root / "workspace.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         fit_content = b'{"schema_version":1,"status":"CONVERGED"}\n'
+        simulation_content = b'{"schema_version":1,"method":"RK4_FIXED_STEP"}\n'
         (self.root / "results").mkdir(exist_ok=True)
         (self.root / "results" / "fit.json").write_bytes(fit_content)
+        (self.root / "results" / "simulation.json").write_bytes(simulation_content)
         manifest["resources"].append({
             "id": "fit", "kind": "fit_result", "path": "results/fit.json",
             "sha256": hashlib.sha256(fit_content).hexdigest(),
         })
+        manifest["resources"].append({
+            "id": "simulation", "kind": "simulation_result", "path": "results/simulation.json",
+            "sha256": hashlib.sha256(simulation_content).hexdigest(),
+        })
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         workspace = load_scientific_workspace(self.root, "workspace.json")
         plan = generation.build_workspace_generation_plan(
-            workspace, ("model", "observations", "fit"), "Show fit with context"
+            workspace, ("model", "observations", "fit", "simulation"), "Show fit with context"
         )
         layout = {
             "title": "Fit with context", "description": "Verified resource links",
@@ -300,13 +306,20 @@ class WorkspaceProposalGenerationBehaviorTests(unittest.TestCase):
                 "resource_refs": ["fit"],
                 "config": {"parameter_names": ["beta"],
                            "context_refs": ["model", "observations"]},
+            }, {
+                "id": "simulation-view", "type": "simulation_plot", "title": "Simulation",
+                "resource_refs": ["simulation"],
+                "config": {"x_axis": "time", "series": ["S"],
+                           "context_refs": ["model"]},
             }]}],
         }
 
         proposal = generation.build_workspace_proposal_manifest(plan, layout)
 
         fit_component = proposal["sections"][0]["components"][0]
+        simulation_component = proposal["sections"][0]["components"][1]
         self.assertEqual(fit_component["config"]["context_refs"], ["model", "observations"])
+        self.assertEqual(simulation_component["config"]["context_refs"], ["model"])
         self.assertIn("optional_config", plan.prompt)
         layout["sections"][0]["components"][0]["config"]["context_refs"] = ["unused"]
         with self.assertRaisesRegex(ValueError, "unknown context resource reference"):

@@ -4,7 +4,7 @@
 
 **Goal:** Calculate SIR fit, local sensitivity, and observation residual records through existing `scientific_core` APIs and render them in one reproducible synthetic workspace.
 
-**Architecture:** Add a constant-rate adapter and an orchestration wrapper in `scientific_core`; keep solver and optimizer implementations unchanged. Extend only fit/sensitivity workspace config with optional typed context references so view models can derive units from a verified SIR contract; generate and render a deterministic demo.
+**Architecture:** Add a constant-rate adapter and an orchestration wrapper in `scientific_core`; keep solver and optimizer implementations unchanged. Add optional typed model context references to simulation, fit, and sensitivity views so display units, parameters, solver metrics, and provenance can derive from a verified SIR contract; generate and render a deterministic demo.
 
 **Tech Stack:** Python 3.11+, existing scientific_core RK4/fit/sensitivity/observation contracts, existing safe workspace loader, PySide6 with optional local Qt WebEngine, unittest.
 
@@ -69,9 +69,9 @@
 - Test: `tests/test_scientific_workspace_science_views.py`
 
 **Interfaces:**
-- Optional `config.context_refs: string[]` is accepted by `fit_summary` and `sensitivity_plot`; IDs must exist, be unique and distinct from the primary resource, and are limited to at most one `model_spec` plus one `observations` for fit, and at most one `model_spec` for sensitivity.
+- Optional `config.context_refs: string[]` is accepted by `simulation_plot`, `fit_summary`, and `sensitivity_plot`; IDs must exist, be unique and distinct from the primary resource. Simulation accepts one `model_spec`; fit accepts at most one `model_spec` plus one `observations`; sensitivity accepts one `model_spec`.
 - Primary `resource_refs` remains exactly one versioned result artifact.
-- View models include primary and context resources as verified sources. A validated SIR v1 context supplies population, rate, and time units; all other contexts leave units unspecified.
+- View models include primary and context resources as verified sources. A validated SIR v1 context supplies population, rate, and time units; all other contexts leave units unspecified. Simulation views also expose recorded parameter values and solver step metrics.
 
 - [x] Add failing validator/proposal/view tests for accepted context links, wrong resource kinds, unresolved/duplicate/primary IDs, and unit derivation only from a validated SIR.
 - [x] Run focused tests and confirm missing fields/derivation fail.
@@ -91,11 +91,11 @@
 - Builder loads a constant-rate SIR JSON fixture, creates exact model-generated observations, calls `analyze_sir_parameters()`, and writes byte-stable schema v1 resources and SHA-256 manifest entries to a requested output directory.
 - Demo workspace shows equations, parameters, simulation, observation table, fit, sensitivity, residuals, and explicitly unassessed uncertainty.
 
-- [ ] Add failing reproducibility and computed-result assertions, including `scientific_validity=NOT_ASSESSED` text in the demo documentation.
-- [ ] Run the new tests and observe failure before implementation.
-- [ ] Implement the bounded demo builder with no provider or project-code imports.
-- [ ] Add a Qt render test that compares visible parameter values/units and status with the computed records.
-- [ ] Run demo builder, safe loader, and the Qt focused tests; record Qt unavailable cases as skipped.
+- [x] Add failing reproducibility and computed-result assertions, including `scientific_validity=NOT_ASSESSED` text in the demo documentation.
+- [x] Run the new tests and observe failure before implementation.
+- [x] Implement the bounded demo builder with no provider or project-code imports.
+- [x] Add a Qt render test that compares visible parameter values/units and status with the computed records.
+- [x] Run demo builder, safe loader, and the Qt focused tests; record Qt unavailable cases as skipped.
 
 ### Task 5: Document evidence and prepare a separate draft PR
 
