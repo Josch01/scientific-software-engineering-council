@@ -3,3 +3,4 @@ docs/test-reports/*.txt binary
 examples/sir_*.json text eol=lf
 # Resource digests cover exact file bytes; do not rewrite them during checkout.
 examples/sir_analysis_workspace_demo/** -text
+examples/sir_profiled_analysis_workspace_demo/** -text

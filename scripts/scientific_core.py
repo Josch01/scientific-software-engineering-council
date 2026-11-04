@@ -205,20 +205,42 @@ class TimeFunction:
             raise ValueError("piecewise_linear points must cover both t_span endpoints")
         return profile
 
-    def evaluate(self, time: float) -> float:
+    def evaluate(
+        self,
+        time: float,
+        *,
+        value_overrides: Mapping[int, float] | None = None,
+    ) -> float:
         time_value = _finite_float(time, "time function evaluation time")
+        overrides: dict[int, float] = {}
+        if value_overrides is not None:
+            if not isinstance(value_overrides, Mapping):
+                raise ValueError("time function value_overrides must be a mapping")
+            if len(value_overrides) > len(self.points):
+                raise ValueError("time function value_overrides contain too many knot indices")
+            for index, raw_value in value_overrides.items():
+                if type(index) is not int or not 0 <= index < len(self.points):
+                    raise ValueError("time function value_overrides contain an invalid knot index")
+                value = _finite_float(raw_value, f"time function knot override {index}")
+                if value < 0.0:
+                    raise ValueError("time function knot overrides must be nonnegative")
+                overrides[index] = value
         if self.kind == "constant":
+            if overrides:
+                raise ValueError("constant time function cannot override knot values")
             assert self.value is not None
             return self.value
         if time_value < self.points[0][0] or time_value > self.points[-1][0]:
             raise ValueError("piecewise_linear evaluation time is outside its declared interval")
-        for (left_time, left_value), (right_time, right_value) in zip(
+        for index, ((left_time, left_value), (right_time, right_value)) in enumerate(zip(
             self.points, self.points[1:]
-        ):
+        )):
             if time_value <= right_time:
+                left_value = overrides.get(index, left_value)
+                right_value = overrides.get(index + 1, right_value)
                 fraction = (time_value - left_time) / (right_time - left_time)
                 return left_value + fraction * (right_value - left_value)
-        return self.points[-1][1]
+        return overrides.get(len(self.points) - 1, self.points[-1][1])
 
     def to_dict(self) -> dict[str, object]:
         if self.kind == "constant":
@@ -1080,6 +1102,7 @@ def evaluate_observations(
     max_step: float,
     max_steps_per_interval: int = _DEFAULT_MAX_STEPS,
     max_total_steps: int = _DEFAULT_MAX_TOTAL_OBSERVATION_STEPS,
+    breakpoints: Sequence[float] = (),
 ) -> ObservationEvaluation:
     """Integrate to exact observation times and build ordered residuals.
 
@@ -1139,33 +1162,60 @@ def evaluate_observations(
         raise ValueError("max_total_steps must be a positive integer")
 
     start, end = problem.t_span
+    if (not isinstance(breakpoints, Sequence)
+            or isinstance(breakpoints, (str, bytes, bytearray))):
+        raise ValueError("breakpoints must be a finite increasing sequence")
+    if len(breakpoints) > _MAX_SIR_PROFILE_POINTS:
+        raise ValueError(
+            f"breakpoints exceed the {_MAX_SIR_PROFILE_POINTS}-entry limit"
+        )
+    normalized_breakpoints = tuple(
+        _finite_float(value, f"breakpoints[{index}]")
+        for index, value in enumerate(breakpoints)
+    )
+    previous_breakpoint: float | None = None
+    for value in normalized_breakpoints:
+        if not start <= value <= end:
+            raise ValueError("breakpoints must lie within problem.t_span")
+        if previous_breakpoint is not None and value <= previous_breakpoint:
+            raise ValueError("breakpoints must be strictly increasing and unique")
+        previous_breakpoint = value
+
     current_time = start
     segment_step_counts: list[int] = []
+    segment_endpoints: list[tuple[float, ...]] = []
     total_step_count = 0
     for observation_time in dataset.times:
         if observation_time < start or observation_time > end:
             raise ValueError(
                 f"observation time {observation_time!r} is outside problem.t_span"
             )
-        if observation_time == current_time:
-            step_count = 0
-        else:
-            span = observation_time - current_time
+        endpoints = tuple(
+            point for point in normalized_breakpoints
+            if current_time < point < observation_time
+        ) + ((observation_time,) if observation_time > current_time else ())
+        step_count = 0
+        cursor_time = current_time
+        for endpoint in endpoints:
+            span = endpoint - cursor_time
             required_steps = span / requested_step
             if not math.isfinite(required_steps):
                 raise ValueError("observation interval requires a non-finite step count")
-            step_count = max(1, math.ceil(required_steps))
+            steps = max(1, math.ceil(required_steps))
+            step_count += steps
             if step_count > max_steps_per_interval:
                 raise ValueError(
                     "observation interval exceeds "
                     f"max_steps_per_interval={max_steps_per_interval}"
                 )
-            total_step_count += step_count
-            if total_step_count > max_total_steps:
-                raise ValueError(
-                    f"observation simulation exceeds max_total_steps={max_total_steps}"
-                )
+            cursor_time = endpoint
+        total_step_count += step_count
+        if total_step_count > max_total_steps:
+            raise ValueError(
+                f"observation simulation exceeds max_total_steps={max_total_steps}"
+            )
         segment_step_counts.append(step_count)
+        segment_endpoints.append(endpoints)
         current_time = observation_time
 
     current_time = start
@@ -1175,30 +1225,34 @@ def evaluate_observations(
     simulated_rows: list[Mapping[str, float]] = []
     residual_order: list[tuple[float, str]] = []
     residual_values: list[float] = []
-    for observation_time, step_count, observed_row in zip(
-        dataset.times, segment_step_counts, dataset.values
+    for observation_time, step_count, endpoints, observed_row in zip(
+        dataset.times, segment_step_counts, segment_endpoints, dataset.values
     ):
         if step_count:
-            segment_problem = OdeProblem(
-                rhs=problem.rhs,
-                t_span=(current_time, observation_time),
-                initial_state=current_state,
-                parameters=problem.parameters,
-                state_names=problem.state_names,
-            )
-            try:
-                segment = solve_rk4(
-                    segment_problem,
-                    requested_step,
-                    max_steps=max_steps_per_interval,
+            step_sizes: list[float] = []
+            for endpoint in endpoints:
+                segment_problem = OdeProblem(
+                    rhs=problem.rhs,
+                    t_span=(current_time, endpoint),
+                    initial_state=current_state,
+                    parameters=problem.parameters,
+                    state_names=problem.state_names,
                 )
-            except Exception as exc:
-                raise ValueError(
-                    f"RK4 evaluation failed before observation time "
-                    f"{observation_time!r}: {exc}"
-                ) from exc
-            current_state = segment.states[-1]
-            segment_step_sizes.append(segment.step_size)
+                try:
+                    segment = solve_rk4(
+                        segment_problem,
+                        requested_step,
+                        max_steps=max_steps_per_interval,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"RK4 evaluation failed before observation time "
+                        f"{observation_time!r}: {exc}"
+                    ) from exc
+                current_state = segment.states[-1]
+                current_time = endpoint
+                step_sizes.append(segment.step_size)
+            segment_step_sizes.append(max(step_sizes))
         else:
             segment_step_sizes.append(None)
 
@@ -1817,17 +1871,20 @@ def analyze_sir_parameters(
     initial_parameters: Mapping[str, float],
     bounds: Mapping[str, Sequence[float]],
     perturbations: Mapping[str, float],
+    fit_knots: Mapping[str, Sequence[int]] | None = None,
     max_step: float | None = None,
     max_iterations: int = _DEFAULT_MAX_FIT_ITERATIONS,
     max_function_evaluations: int = _DEFAULT_MAX_FIT_EVALUATIONS,
     max_total_steps: int = _DEFAULT_MAX_TOTAL_OBSERVATION_STEPS,
 ) -> SirParameterAnalysis:
-    """Run existing fit, sensitivity, and observation contracts for constant SIR rates.
+    """Run existing fit, sensitivity, and observation contracts for SIR rates.
 
     This composes the repository's bounded least-squares optimizer, fixed-step
     RK4 solver, finite-difference sensitivity, and residual evaluator. All RK4
     intermediate states are checked for nonnegative compartments and conserved
-    population. A shared step budget bounds fitting and the returned analyses.
+    population. For piecewise-linear profiles, ``fit_knots`` selects the fixed
+    knot ordinates to fit; all other profile values remain those in the model.
+    A shared step budget bounds fitting and the returned analyses.
     Convergence, local sensitivity, and small residuals do not establish model
     validity or parameter identifiability.
     """
@@ -1835,9 +1892,6 @@ def analyze_sir_parameters(
         raise ValueError("definition must be a validated SirModelDefinition")
     if not isinstance(dataset, ObservationDataset):
         raise ValueError("dataset must be a validated ObservationDataset")
-    # This also rejects time-varying profiles until a fit parameterization is
-    # explicitly declared by the SIR contract.
-    definition.to_ode_problem()
     if dataset.time_unit != definition.time_unit:
         raise ValueError(
             f"model time unit {definition.time_unit!r} does not match observation time unit "
@@ -1856,29 +1910,76 @@ def analyze_sir_parameters(
         raise ValueError("observation time is outside the SIR model t_span")
 
     rate_names = ("beta", "gamma")
-    if not isinstance(initial_parameters, Mapping) or set(initial_parameters) != set(rate_names):
-        raise ValueError("initial_parameters must contain exactly beta and gamma")
-    if not isinstance(bounds, Mapping) or set(bounds) != set(rate_names):
-        raise ValueError("bounds must contain exactly beta and gamma")
-    if not isinstance(perturbations, Mapping) or set(perturbations) != set(rate_names):
-        raise ValueError("perturbations must contain exactly beta and gamma")
+    profile_parameterization: dict[str, tuple[str, int]] = {}
+    parameter_names: list[str] = []
+    if fit_knots is None:
+        # Keep the original scalar analysis path and its explicit time-varying
+        # rejection unless a knot selection is supplied.
+        definition.to_ode_problem()
+        parameter_names.extend(rate_names)
+    else:
+        if not isinstance(fit_knots, Mapping) or any(
+            rate not in rate_names for rate in fit_knots
+        ):
+            raise ValueError("fit_knots must map only beta and gamma to knot indices")
+        for rate in rate_names:
+            profile = definition.parameters[rate]
+            raw_indices = fit_knots.get(rate, ())
+            if (not isinstance(raw_indices, Sequence)
+                    or isinstance(raw_indices, (str, bytes, bytearray))):
+                raise ValueError(f"fit_knots[{rate!r}] must be a sequence of indices")
+            indices = tuple(raw_indices)
+            if any(type(index) is not int for index in indices):
+                raise ValueError(f"fit_knots[{rate!r}] indices must be integers")
+            if len(set(indices)) != len(indices):
+                raise ValueError(f"fit_knots[{rate!r}] indices must be unique")
+            if profile.kind == "constant":
+                if indices:
+                    raise ValueError(
+                        f"fit_knots[{rate!r}] cannot select knots for a constant rate"
+                    )
+                parameter_names.append(rate)
+                continue
+            for index in sorted(indices):
+                if not 0 <= index < len(profile.points):
+                    raise ValueError(
+                        f"fit_knots[{rate!r}] index {index} is outside the declared profile"
+                    )
+                name = f"{rate}_knot_{index}"
+                profile_parameterization[name] = (rate, index)
+                parameter_names.append(name)
+        if not parameter_names:
+            raise ValueError("fit_knots must select at least one SIR fit parameter")
+
+    if len(parameter_names) > min(_MAX_FIT_PARAMETERS, _MAX_SENSITIVITY_PARAMETERS):
+        raise ValueError("SIR fit parameters exceed the existing fit/sensitivity limits")
+    expected_parameter_names = set(parameter_names)
+    for mapping, label in (
+        (initial_parameters, "initial_parameters"),
+        (bounds, "bounds"),
+        (perturbations, "perturbations"),
+    ):
+        if not isinstance(mapping, Mapping) or set(mapping) != expected_parameter_names:
+            raise ValueError(
+                f"{label} must contain exactly the selected SIR parameter names"
+            )
 
     initial: dict[str, float] = {}
     normalized_bounds: dict[str, tuple[float, float]] = {}
     normalized_perturbations: dict[str, float] = {}
-    for name in rate_names:
+    for name in parameter_names:
         value = _finite_float(initial_parameters[name], f"initial_parameters[{name!r}]")
         pair = _finite_vector(bounds[name], f"bounds[{name!r}]", expected_length=2)
         lower, upper = pair
         if lower < 0.0:
             raise ValueError("SIR analysis requires nonnegative SIR rate bounds")
         if lower >= upper:
-            raise ValueError(f"bounds for SIR rate {name!r} must have lower < upper")
+            raise ValueError(f"bounds for SIR parameter {name!r} must have lower < upper")
         if not lower <= value <= upper:
-            raise ValueError(f"initial SIR rate {name!r} must lie within its bounds")
+            raise ValueError(f"initial SIR parameter {name!r} must lie within its bounds")
         step = _finite_float(perturbations[name], f"perturbations[{name!r}]")
         if step <= 0.0:
-            raise ValueError(f"perturbation for SIR rate {name!r} must be positive")
+            raise ValueError(f"perturbation for SIR parameter {name!r} must be positive")
         initial[name] = value
         normalized_bounds[name] = (lower, upper)
         normalized_perturbations[name] = step
@@ -1902,6 +2003,26 @@ def analyze_sir_parameters(
     step_count = max(1, math.ceil(required_steps))
     if step_count > definition.max_steps:
         raise ValueError("SIR analysis exceeds the model integrator step budget")
+    analysis_step = span / step_count
+    profile_breakpoints = tuple(sorted({
+        knot_time
+        for profile in definition.parameters.values()
+        if profile.kind == "piecewise_linear"
+        for knot_time, _knot_value in profile.points[1:-1]
+    }))
+    for profile in definition.parameters.values():
+        if profile.kind != "piecewise_linear":
+            continue
+        for knot_time, _knot_value in profile.points[1:-1]:
+            grid_index = round((knot_time - start) / analysis_step)
+            grid_time = start + grid_index * analysis_step
+            tolerance = max(
+                math.ulp(knot_time), math.ulp(grid_time), abs(analysis_step) * 1e-12
+            )
+            if abs(knot_time - grid_time) > tolerance:
+                raise ValueError(
+                    "piecewise_linear knot must align with the analysis RK4 time grid"
+                )
 
     # Reserve one final evaluation, a baseline plus two trajectories per rate,
     # and the final full solution before allowing optimizer evaluations.
@@ -1909,13 +2030,21 @@ def analyze_sir_parameters(
     previous_time = start
     for time in dataset.times:
         interval_steps = 0
-        if time > previous_time:
-            interval_steps = max(1, math.ceil((time - previous_time) / requested_step))
-            if interval_steps > definition.max_steps:
-                raise ValueError("observation interval exceeds the SIR integrator step budget")
+        endpoints = tuple(
+            point for point in profile_breakpoints
+            if previous_time < point < time
+        ) + ((time,) if time > previous_time else ())
+        cursor_time = previous_time
+        for endpoint in endpoints:
+            interval_steps += max(
+                1, math.ceil((endpoint - cursor_time) / requested_step)
+            )
+            cursor_time = endpoint
+        if interval_steps > definition.max_steps:
+            raise ValueError("observation interval exceeds the SIR integrator step budget")
         observation_steps += interval_steps
         previous_time = time
-    sensitivity_steps = (1 + 2 * len(rate_names)) * step_count
+    sensitivity_steps = (1 + 2 * len(parameter_names)) * step_count
     reserved_steps = observation_steps + sensitivity_steps + step_count
     fit_step_budget = max_total_steps - reserved_steps
     if fit_step_budget < max(1, observation_steps):
@@ -1923,8 +2052,13 @@ def analyze_sir_parameters(
             "max_total_steps is too small for the fit and requested SIR analysis outputs"
         )
 
+    knot_indices_by_rate: dict[str, dict[int, str]] = {rate: {} for rate in rate_names}
+    for name, (rate, index) in profile_parameterization.items():
+        knot_indices_by_rate[rate][index] = name
+
     def parameterized_problem(rates: Mapping[str, float]) -> OdeProblem:
-        base_problem = definition.to_ode_problem()
+        if set(rates) != expected_parameter_names:
+            raise ValueError("SIR candidate parameters do not match the selected fit parameters")
 
         def checked_rhs(time: float, state: State, parameters: Mapping[str, float]) -> State:
             _validate_sir_state(
@@ -1932,7 +2066,20 @@ def analyze_sir_parameters(
                 definition.initial_population,
                 f"SIR RK4 intermediate at t={time!r}",
             )
-            return base_problem.rhs(time, state, parameters)
+            rate_values: dict[str, float] = {}
+            for rate in rate_names:
+                profile = definition.parameters[rate]
+                if profile.kind == "constant":
+                    rate_values[rate] = parameters[rate]
+                else:
+                    overrides = {
+                        index: parameters[name]
+                        for index, name in knot_indices_by_rate[rate].items()
+                    }
+                    rate_values[rate] = profile.evaluate(
+                        time, value_overrides=overrides
+                    )
+            return definition.rhs(time, state, rate_values)
 
         return OdeProblem(
             rhs=checked_rhs,
@@ -1959,6 +2106,7 @@ def analyze_sir_parameters(
             max_step=requested_step,
             max_steps_per_interval=definition.max_steps,
             max_total_steps=remaining,
+            breakpoints=profile_breakpoints,
         )
         fit_steps += evaluation.total_step_count
         return evaluation.residuals
@@ -1984,6 +2132,7 @@ def analyze_sir_parameters(
         max_step=requested_step,
         max_steps_per_interval=definition.max_steps,
         max_total_steps=max_total_steps - fit_steps,
+        breakpoints=profile_breakpoints,
     )
     if final_evaluation.residuals != fit.residuals:
         raise ValueError("final SIR residuals do not match the fitted parameter result")

@@ -1043,6 +1043,12 @@ def _sir_analysis_unit_context(
     except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
         return None
     parameter_units = {name: definition.rate_unit for name in ("beta", "gamma")}
+    for name, profile in definition.parameters.items():
+        if profile.kind == "piecewise_linear":
+            parameter_units.update({
+                f"{name}_knot_{index}": definition.rate_unit
+                for index in range(len(profile.points))
+            })
     if component_type == "fit_summary":
         return {"parameter_units": parameter_units}
     if component_type == "simulation_plot":
