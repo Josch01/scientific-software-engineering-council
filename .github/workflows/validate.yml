@@ -18,6 +18,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Static package validation
         run: python scripts/validate_skill.py
+      - name: Compile Python sources and tests
+        run: python -m compileall -q scripts tests
       - name: Deterministic skill tests
         run: python -m unittest discover -s tests -v
       - name: Router smoke test
