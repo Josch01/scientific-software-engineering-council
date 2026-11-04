@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any
 
 KINDS = {"build", "audit", "debug", "refactor", "optimize", "migrate", "release"}
-DOMAINS = {"numerical", "identifiability", "dynamics", "differential_algebra", "optimization", "ml", "data", "symbolic", "general"}
+DOMAINS = {"numerical", "ode", "identifiability", "dynamics", "differential_algebra", "optimization", "ml", "data", "symbolic", "general"}
 INTERFACES = {"desktop_gui", "cli", "api", "none"}
 TARGETS = {"windows", "linux", "macos"}
 LANGUAGES = {"python", "idl", "cpp", "rust", "julia", "other"}
 RISKS = {"R0", "R1", "R2", "R3"}
 SCIENCE_CLAIM_DOMAINS = {"identifiability", "dynamics", "differential_algebra", "symbolic"}
-NUMERICAL_DOMAINS = {"numerical", "identifiability", "dynamics", "optimization", "ml"}
+NUMERICAL_DOMAINS = {"numerical", "ode", "identifiability", "dynamics", "optimization", "ml"}
 
 
 def _validate_task_fields(task: dict[str, Any]) -> None:
@@ -77,6 +77,7 @@ def route(task: dict[str, Any]) -> dict[str, Any]:
     if task["kind"] != "audit":
         primary.append("implementation_engineer")
     for need, role in (
+        ("ode" in d, "ode_model_specialist"),
         (bool(d & NUMERICAL_DOMAINS), "numerical_analyst"),
         (bool(d & SCIENCE_CLAIM_DOMAINS), "mathematical_model_specialist"),
         (bool(d & {"ml", "optimization"}), "optimization_ml_engineer"),

@@ -3,7 +3,9 @@ import json
 import unittest
 from pathlib import Path
 
-from scripts.route_task import route, required_checks, validate_task
+from scripts.configuration import DEFAULT_CONFIG
+from scripts.prepare_agents import choose_roles, make_files
+from scripts.route_task import DOMAINS, route, required_checks, validate_task
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +45,31 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("scientific_validation", plan["required_evidence"])
         self.assertNotIn("independent_reviewer", plan["review_roles"])
         self.assertIn("implementation_engineer", plan["implementation_or_domain_roles"])
+
+    def test_ode_domain_routes_model_and_numerical_specialists_without_claim_escalation(self):
+        task = copy.deepcopy(self.task)
+        task.update(kind="build", domains=["ode"], interfaces=["cli"],
+                    targets=["linux"], risk="R1")
+
+        self.assertIn("ode", DOMAINS)
+        plan = route(task)
+        roles = plan["implementation_or_domain_roles"]
+        self.assertIn("implementation_engineer", roles)
+        self.assertIn("ode_model_specialist", roles)
+        self.assertIn("numerical_analyst", roles)
+        self.assertNotIn("mathematical_model_specialist", roles)
+        self.assertEqual(plan["scientific_bridge"], "CONDITIONAL_ON_CLAIMS")
+        self.assertNotIn("scientific_validation", plan["required_evidence"])
+        self.assertNotIn("independent_review", plan["required_evidence"])
+        prepared_roles, _, _ = choose_roles(task, DEFAULT_CONFIG)
+        self.assertIn("ode_model_specialist", prepared_roles)
+        manifest, files = make_files(task, "codex", dict(DEFAULT_CONFIG, provider_mode="codex"))
+        assignment = next(item for item in manifest["assignments"]
+                          if item["role"] == "ode_model_specialist")
+        self.assertIn("ssec-ode-model-specialist", files[assignment["profile"]])
+        self.assertIn("Formular estados, parámetros", files[assignment["packet"]])
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("ode_model_specialist", skill)
 
     def test_check_specs_are_validated_as_part_of_task_validation(self):
         task = copy.deepcopy(self.task)

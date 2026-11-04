@@ -37,7 +37,7 @@ Activar para `BUILD | AUDIT | DEBUG | REFACTOR | OPTIMIZE | MIGRATE | GUI | IDL 
 
 ## Router mínimo de expertos
 
-Roles bajo demanda: `software_architect`, `implementation_engineer`, `numerical_analyst`, `mathematical_model_specialist`, `optimization_ml_engineer`, `data_engineer`, `gui_engineer`, `idl_engineer`, `software_auditor`, `security_reviewer`, `independent_reviewer`, `release_engineer`.
+Roles bajo demanda: `software_architect`, `implementation_engineer`, `ode_model_specialist`, `numerical_analyst`, `mathematical_model_specialist`, `optimization_ml_engineer`, `data_engineer`, `gui_engineer`, `idl_engineer`, `software_auditor`, `security_reviewer`, `independent_reviewer`, `release_engineer`. Una tarea con el dominio `ode` incluye especialista de formulación ODE y analista numérico; las revisiones de claims matemáticos o científicos se activan sólo por los dominios y el riesgo declarados.
 
 El arquitecto elige **roles**, no modelos específicos. Los workers no autocertifican su trabajo. Repartir cambios en worktrees/ramas de propiedad exclusiva; revisión sólo lectura sobre candidatos. Ante conflicto, abrir una obligación de resolución con evidencia, no votar. En ausencia de runtime multiagente real, ejecutar pases secuenciales y no llamarlos independientes.
 

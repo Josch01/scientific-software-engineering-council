@@ -6,7 +6,9 @@ Identificar `kind`, `domains[]`, `languages[]`, `interfaces[]`, `targets[]`, `ri
 
 - Tarea de software simple: implementador/revisor puntual y checks mecánicos.
 - Auditoría: auditor de software antes de cualquier cambio, especialista sólo si existe superficie del dominio.
-- Simulación ODE/PDE, optimización, inferencia o ML: especialista del algoritmo + revisión de validez numérica.
+- Dominio `ode`: `ode_model_specialist` para formulación del sistema y `numerical_analyst` para integración, tolerancias, error e invariantes. Los claims de identificabilidad, estabilidad o prueba se enrutan aparte; declarar ODE no los afirma.
+- PDE no tiene todavía un dominio/ruta específica implementada; no inferir soporte de enrutamiento a partir de `ode`.
+- Optimización, inferencia o ML: especialista del algoritmo + revisión de validez numérica.
 - Identificabilidad, estructura, simetrías o prueba matemática: puente con skill científica sólo para evaluación de claims.
 - GUI escritorio: ingeniero de GUI y pruebas de interacción/asíncronas.
 - IDL: ingeniero IDL, verificación de versión/licencia/bridge y conversión de shapes.
