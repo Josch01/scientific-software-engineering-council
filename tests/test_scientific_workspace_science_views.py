@@ -11,6 +11,7 @@ from scripts.scientific_workspace_loader import load_scientific_workspace
 from scripts.scientific_core import (
     ObservationDataset,
     OdeProblem,
+    SirModelDefinition,
     evaluate_observations,
     fit_least_squares,
     parameter_sensitivities,
@@ -95,6 +96,27 @@ def observation_evaluation_payload():
             "rhs_evaluation_count": 80, "max_steps_per_interval": 100,
             "max_total_steps": 1000,
         },
+    }
+
+
+def sir_model_payload():
+    return {
+        "schema_version": 1, "model_type": "sir",
+        "equation_set": "sir_frequency_dependent_v1",
+        "equations": {
+            "dS/dt": "-beta(t) * S * I / N",
+            "dI/dt": "beta(t) * S * I / N - gamma(t) * I",
+            "dR/dt": "gamma(t) * I",
+        },
+        "states": ["S", "I", "R"],
+        "initial_conditions": {"S": 90.0, "I": 10.0, "R": 0.0},
+        "parameters": {
+            "beta": {"kind": "constant", "value": 0.3},
+            "gamma": {"kind": "constant", "value": 0.1},
+        },
+        "t_span": [0.0, 1.0],
+        "units": {"time": "day", "population": "person", "rate": "1/day"},
+        "integrator": {"method": "RK4_FIXED_STEP", "max_step": 0.1, "max_steps": 10},
     }
 
 
@@ -208,6 +230,103 @@ class ScientificResultViewBuilderTests(unittest.TestCase):
         self.assertEqual(component.source_resources[0].sha256, digest)
         self.assertEqual(component.status, "ok")
         self.assertIn("identificabilidad", component.message.lower())
+
+    def test_fit_and_sensitivity_context_refs_show_validated_sir_units_and_sources(self):
+        view = self._view()
+        sir_bytes = json.dumps(sir_model_payload(), separators=(",", ":")).encode()
+        _definition = SirModelDefinition.from_json(sir_bytes)
+        resources = []
+        contents = {
+            "fit": ("fit_result", "fit.json", json.dumps(fit_payload()).encode()),
+            "sensitivity": (
+                "sensitivity_result", "sensitivity.json", json.dumps(sensitivity_payload()).encode(),
+            ),
+            "model": ("model_spec", "model.json", sir_bytes),
+            "observations": ("observations", "observations.json", b'{"schema_version":1}'),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for resource_id, (kind, relative_path, content) in contents.items():
+                target = root / relative_path
+                target.write_bytes(content)
+                resources.append({
+                    "id": resource_id, "kind": kind, "path": relative_path,
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                })
+            manifest = {
+                "schema_version": 1, "workspace_id": "sir-units", "title": "SIR units",
+                "resources": resources,
+                "sections": [{"id": "results", "title": "Results", "components": [
+                    {"id": "fit-view", "type": "fit_summary", "title": "Fit",
+                     "resource_refs": ["fit"], "config": {
+                         "parameter_names": ["beta", "gamma"],
+                         "context_refs": ["model", "observations"],
+                     }},
+                    {"id": "sensitivity-view", "type": "sensitivity_plot", "title": "Sensitivity",
+                     "resource_refs": ["sensitivity"], "config": {
+                         "state_names": ["S", "I"], "parameter_names": ["beta", "gamma"],
+                         "context_refs": ["model"],
+                     }},
+                ]}],
+            }
+            (root / "workspace.json").write_text(json.dumps(manifest), encoding="utf-8")
+            workspace = load_scientific_workspace(root, "workspace.json")
+            result = view.build_workspace_view_model(workspace).sections[0].components
+
+        fit_view, sensitivity_view = result
+        self.assertEqual([item.unit for item in fit_view.content.parameters], ["1/day", "1/day"])
+        self.assertEqual(sensitivity_view.content.time_unit, "day")
+        self.assertEqual(sensitivity_view.content.series[0].unit, "person / 1/day")
+        self.assertEqual(
+            [source.resource_id for source in fit_view.source_resources],
+            ["fit", "model", "observations"],
+        )
+        self.assertTrue(all(source.sha256 for component in result for source in component.source_resources))
+
+    def test_non_sir_or_invalid_model_context_leaves_analysis_units_unspecified(self):
+        view = self._view()
+        fit_content = json.dumps(fit_payload()).encode()
+        invalid_model = b'{"model_type":"sir","unknown":true}'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fit.json").write_bytes(fit_content)
+            (root / "model.json").write_bytes(invalid_model)
+            manifest = {
+                "schema_version": 1, "workspace_id": "invalid-sir-context", "title": "Invalid SIR",
+                "resources": [
+                    {"id": "fit", "kind": "fit_result", "path": "fit.json",
+                     "sha256": hashlib.sha256(fit_content).hexdigest()},
+                    {"id": "model", "kind": "model_spec", "path": "model.json",
+                     "sha256": hashlib.sha256(invalid_model).hexdigest()},
+                ],
+                "sections": [{"id": "results", "title": "Results", "components": [{
+                    "id": "fit-view", "type": "fit_summary", "title": "Fit",
+                    "resource_refs": ["fit"], "config": {
+                        "parameter_names": ["beta"], "context_refs": ["model"],
+                    },
+                }]}],
+            }
+            (root / "workspace.json").write_text(json.dumps(manifest), encoding="utf-8")
+            component = view.build_workspace_view_model(
+                load_scientific_workspace(root, "workspace.json")
+            ).sections[0].components[0]
+
+        self.assertEqual(component.status, "ok")
+        self.assertEqual(component.content.parameters[0].unit, "unidad no indicada")
+
+        non_sir_content = b'{"model_type":"other","units":{"rate":"widgets/day"}}'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fit.json").write_bytes(fit_content)
+            (root / "model.json").write_bytes(non_sir_content)
+            manifest["workspace_id"] = "non-sir-context"
+            manifest["resources"][1]["sha256"] = hashlib.sha256(non_sir_content).hexdigest()
+            (root / "workspace.json").write_text(json.dumps(manifest), encoding="utf-8")
+            component = view.build_workspace_view_model(
+                load_scientific_workspace(root, "workspace.json")
+            ).sections[0].components[0]
+        self.assertEqual(component.status, "ok")
+        self.assertEqual(component.content.parameters[0].unit, "unidad no indicada")
 
     def test_actual_scientific_core_v1_results_map_to_the_display_contracts(self):
         view = self._view()

@@ -994,6 +994,36 @@ def _sir_parameter_view(definition: SirModelDefinition) -> SirParameterView:
     )
 
 
+def _sir_analysis_unit_context(
+    component_type: str,
+    context_resources: tuple[LoadedResource, ...],
+    json_cache: dict[str, object | _CachedFailure],
+    json_byte_count: list[int],
+) -> Mapping[str, object] | None:
+    model_resources = tuple(
+        resource for resource in context_resources if resource.kind == "model_spec"
+    )
+    if len(model_resources) != 1:
+        return None
+    try:
+        payload = _cached_json_payload(model_resources[0], json_cache, json_byte_count)
+        if not isinstance(payload, Mapping) or payload.get("model_type") != "sir":
+            return None
+        definition = SirModelDefinition.from_dict(payload)
+    except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
+        return None
+    parameter_units = {name: definition.rate_unit for name in ("beta", "gamma")}
+    if component_type == "fit_summary":
+        return {"parameter_units": parameter_units}
+    return {
+        "time_unit": definition.time_unit,
+        "state_units": {
+            name: definition.population_unit for name in definition.state_names
+        },
+        "parameter_units": parameter_units,
+    }
+
+
 def _render_component(
     component: Mapping[str, object],
     resource_by_id: Mapping[str, LoadedResource],
@@ -1010,8 +1040,12 @@ def _render_component(
     config = _object(component["config"], f"component {component_id} config")
     if component_type not in SUPPORTED_COMPONENT_TYPES:
         return ComponentView(component_id, component_type, title, "error", "Unregistered renderer")
+    context_refs = config.get("context_refs", ())
+    context_resources = tuple(
+        resource_by_id[str(resource_id)] for resource_id in context_refs
+    )
     source_resources = tuple(
-        _resource_view(resource_by_id[str(resource_id)]) for resource_id in refs
+        _resource_view(resource_by_id[str(resource_id)]) for resource_id in (*refs, *context_refs)
     )
 
     try:
@@ -1087,9 +1121,21 @@ def _render_component(
                 raise ValueError(simulation_base.message)
             content = _simulation_content(simulation_base, config)
         elif component_type == "fit_summary":
-            content = build_fit_summary_view(payload, config)
+            content = build_fit_summary_view(
+                payload,
+                config,
+                unit_context=_sir_analysis_unit_context(
+                    component_type, context_resources, json_cache, json_byte_count
+                ),
+            )
         elif component_type == "sensitivity_plot":
-            content = build_sensitivity_plot_view(payload, config)
+            content = build_sensitivity_plot_view(
+                payload,
+                config,
+                unit_context=_sir_analysis_unit_context(
+                    component_type, context_resources, json_cache, json_byte_count
+                ),
+            )
         elif component_type == "residual_plot":
             content = build_observation_evaluation_view(payload)
         else:

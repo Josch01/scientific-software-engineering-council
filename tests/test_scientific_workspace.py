@@ -68,6 +68,60 @@ def valid_manifest():
 
 
 class WorkspaceManifestTests(unittest.TestCase):
+    def test_fit_and_sensitivity_context_refs_are_typed_unique_and_resolved(self):
+        manifest = valid_manifest()
+        manifest["sections"][2]["components"][1]["config"]["context_refs"] = [
+            "model", "data",
+        ]
+        manifest["sections"][2]["components"][2]["config"]["context_refs"] = [
+            "model",
+        ]
+
+        summary = scientific_workspace.validate_workspace_manifest(manifest)
+
+        self.assertIn("fit_summary", summary.component_types)
+        self.assertIn("sensitivity_plot", summary.component_types)
+
+        cases = (
+            (["missing"], "unknown context resource reference"),
+            (["model", "model"], "context_refs must be unique"),
+            (["fit"], "distinct from resource_refs"),
+            (["raw"], "fit_summary context_refs only allow model_spec and observations"),
+        )
+        for refs, message in cases:
+            with self.subTest(refs=refs):
+                candidate = valid_manifest()
+                candidate["sections"][2]["components"][1]["config"]["context_refs"] = refs
+                with self.assertRaisesRegex(ValueError, message):
+                    scientific_workspace.validate_workspace_manifest(candidate)
+
+        multiple_models = valid_manifest()
+        multiple_models["resources"].append(
+            {"id": "model-2", "kind": "model_spec", "path": "model/second.json"}
+        )
+        multiple_models["sections"][2]["components"][1]["config"]["context_refs"] = [
+            "model", "data", "model-2",
+        ]
+        with self.assertRaisesRegex(ValueError, "at most one model_spec and one observations"):
+            scientific_workspace.validate_workspace_manifest(multiple_models)
+
+        multiple_datasets = valid_manifest()
+        multiple_datasets["resources"].append(
+            {"id": "data-2", "kind": "observations", "path": "data/second.json"}
+        )
+        multiple_datasets["sections"][2]["components"][1]["config"]["context_refs"] = [
+            "model", "data", "data-2",
+        ]
+        with self.assertRaisesRegex(ValueError, "at most one model_spec and one observations"):
+            scientific_workspace.validate_workspace_manifest(multiple_datasets)
+
+        sensitivity_with_observations = valid_manifest()
+        sensitivity_with_observations["sections"][2]["components"][2]["config"][
+            "context_refs"
+        ] = ["data"]
+        with self.assertRaisesRegex(ValueError, "sensitivity_plot context_refs only allow model_spec"):
+            scientific_workspace.validate_workspace_manifest(sensitivity_with_observations)
+
     def test_generic_template_includes_observation_evaluation_and_residual_view(self):
         template_path = Path(__file__).resolve().parents[1] / "examples" / "scientific_workspace_template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))

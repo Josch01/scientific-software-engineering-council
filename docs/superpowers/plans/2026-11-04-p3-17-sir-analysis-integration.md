@@ -73,10 +73,10 @@
 - Primary `resource_refs` remains exactly one versioned result artifact.
 - View models include primary and context resources as verified sources. A validated SIR v1 context supplies population, rate, and time units; all other contexts leave units unspecified.
 
-- [ ] Add failing validator/proposal/view tests for accepted context links, wrong resource kinds, unresolved/duplicate/primary IDs, and unit derivation only from a validated SIR.
-- [ ] Run focused tests and confirm missing fields/derivation fail.
-- [ ] Update manifest and proposal validators, then derive display unit context from loaded safe-loader resources.
-- [ ] Run manifest, generation, and scientific view tests.
+- [x] Add failing validator/proposal/view tests for accepted context links, wrong resource kinds, unresolved/duplicate/primary IDs, and unit derivation only from a validated SIR.
+- [x] Run focused tests and confirm missing fields/derivation fail.
+- [x] Update manifest and proposal validators, then derive display unit context from loaded safe-loader resources.
+- [x] Run manifest, generation, and scientific view tests.
 
 ### Task 4: Generate and display a computed synthetic SIR workspace
 

@@ -278,6 +278,40 @@ class WorkspaceProposalGenerationBehaviorTests(unittest.TestCase):
                          hashlib.sha256(self.model).hexdigest())
         self.assertNotIn("unused", json.dumps(manifest))
 
+    def test_proposal_can_link_only_selected_model_and_observation_context(self):
+        manifest_path = self.root / "workspace.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fit_content = b'{"schema_version":1,"status":"CONVERGED"}\n'
+        (self.root / "results").mkdir(exist_ok=True)
+        (self.root / "results" / "fit.json").write_bytes(fit_content)
+        manifest["resources"].append({
+            "id": "fit", "kind": "fit_result", "path": "results/fit.json",
+            "sha256": hashlib.sha256(fit_content).hexdigest(),
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        workspace = load_scientific_workspace(self.root, "workspace.json")
+        plan = generation.build_workspace_generation_plan(
+            workspace, ("model", "observations", "fit"), "Show fit with context"
+        )
+        layout = {
+            "title": "Fit with context", "description": "Verified resource links",
+            "sections": [{"id": "results", "title": "Results", "components": [{
+                "id": "fit-view", "type": "fit_summary", "title": "Fit",
+                "resource_refs": ["fit"],
+                "config": {"parameter_names": ["beta"],
+                           "context_refs": ["model", "observations"]},
+            }]}],
+        }
+
+        proposal = generation.build_workspace_proposal_manifest(plan, layout)
+
+        fit_component = proposal["sections"][0]["components"][0]
+        self.assertEqual(fit_component["config"]["context_refs"], ["model", "observations"])
+        self.assertIn("optional_config", plan.prompt)
+        layout["sections"][0]["components"][0]["config"]["context_refs"] = ["unused"]
+        with self.assertRaisesRegex(ValueError, "unknown context resource reference"):
+            generation.build_workspace_proposal_manifest(plan, layout)
+
     def test_residual_component_is_available_to_deterministic_proposals(self):
         plan = generation.build_workspace_generation_plan(
             self.workspace, ("evaluation",), "Show observations and residuals"
