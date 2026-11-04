@@ -1,3 +1,4 @@
+import gc
 import hashlib
 import json
 import os
@@ -5,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -233,6 +235,198 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
         self.assertNotIn("\uFFFD", output["diff"])
         self.assertIn(r'"Proposed\u200b SIR"', output["summary"])
 
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_workspace_audit_requires_explicit_confirmation(self):
+        output = self._exercise_workspace_audit_dialog(confirmed=False)
+
+        self.assertEqual(output["audit_calls"], 0)
+        self.assertEqual(output["confirm_calls"], 1)
+        self.assertIn("no dispone de medidor", output["confirmation_text"])
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_confirmed_workspace_audit_runs_async_and_displays_unapproved_result(self):
+        output = self._exercise_workspace_audit_dialog(confirmed=True)
+
+        self.assertEqual(output["audit_calls"], 1)
+        self.assertEqual(output["confirm_calls"], 1)
+        self.assertEqual(output["selected_ids"], ("model",))
+        self.assertEqual(output["dispatched_ids"], ("model",))
+        self.assertTrue(output["cost_acknowledged"])
+        self.assertEqual(output["release_status"], "NOT_APPROVED")
+        self.assertIn("Resultado · Auditoría", output["tabs"])
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_workspace_audit_cancel_button_signals_worker_and_displays_cancelled(self):
+        output = self._exercise_workspace_audit_dialog(confirmed=True, request_cancel=True)
+
+        self.assertEqual(output["audit_calls"], 1)
+        self.assertTrue(output["cancel_marker_observed"])
+        self.assertEqual(output["execution"], "CANCELLED")
+        self.assertEqual(output["release_status"], "NOT_APPROVED")
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_closing_workspace_during_audit_cancels_before_destroy(self):
+        output = self._exercise_workspace_audit_dialog(
+            confirmed=True, request_cancel=True, close_window=True
+        )
+
+        self.assertTrue(output["window_closed"])
+        self.assertTrue(output["cancel_marker_observed"])
+        self.assertEqual(output["execution"], "CANCELLED")
+        self.assertEqual(output["release_status"], "NOT_APPROVED")
+
+    def _exercise_workspace_audit_dialog(
+        self, *, confirmed: bool, request_cancel: bool = False, close_window: bool = False
+    ):
+        import tkinter as tk
+        from tkinter import ttk
+
+        from scripts.scientific_workspace_app import create_workspace_window
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+        from scripts.scientific_workspace_view import build_workspace_view_model
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_workspace(root)
+            workspace = load_scientific_workspace(root, "workspace.json")
+            window = create_workspace_window(
+                build_workspace_view_model(workspace), project_root=root, loaded_workspace=workspace
+            )
+            window.withdraw()
+            output: dict[str, object] = {}
+
+            def window_exists() -> bool:
+                try:
+                    return bool(window.winfo_exists())
+                except tk.TclError:
+                    return False
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            buttons = [
+                widget for widget in descendants(window)
+                if isinstance(widget, ttk.Button)
+                and widget.cget("text") == "Solicitar auditoría…"
+            ]
+            self.assertEqual(len(buttons), 1)
+
+            def fake_audit(*_args, **kwargs):
+                output["cost_acknowledged"] = kwargs.get("accept_unmetered_cost")
+                output["dispatched_ids"] = _args[2]
+                if request_cancel:
+                    cancel_file = kwargs["cancel_file"]
+                    deadline = time.monotonic() + 2
+                    while not cancel_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    output["cancel_marker_observed"] = cancel_file.exists()
+                report = {
+                    "execution": "CANCELLED" if request_cancel else "PROCESSES_COMPLETED_NOT_AUDITED",
+                    "release_status": "NOT_APPROVED",
+                    "workspace_audit": {
+                        "workspace_id": "app-test",
+                        "cancellation_requested": request_cancel,
+                    },
+                }
+                output["worker_result"] = report
+                return report
+
+            def interact(attempt: int = 0) -> None:
+                dialogs = [
+                    child for child in window.winfo_children()
+                    if isinstance(child, tk.Toplevel)
+                    and child.title() == "Solicitar auditoría del workspace"
+                ]
+                if not dialogs:
+                    if attempt >= 40:
+                        output["error"] = "workspace audit dialog did not open"
+                        return
+                    window.after(25, lambda: interact(attempt + 1))
+                    return
+                dialog = dialogs[0]
+                tables = [child for child in descendants(dialog) if isinstance(child, ttk.Treeview)]
+                output["selected_ids"] = tables[0].selection() if tables else ()
+                send_buttons = [
+                    child for child in descendants(dialog)
+                    if isinstance(child, ttk.Button) and child.cget("text") == "Enviar a especialistas…"
+                ]
+                if not send_buttons:
+                    output["error"] = "workspace audit dispatch button is missing"
+                    return
+                send_buttons[0].invoke()
+                if confirmed and request_cancel:
+                    if close_window:
+                        window.tk.call(window.protocol("WM_DELETE_WINDOW"))
+                    else:
+                        cancel_buttons = [
+                            child for child in descendants(window)
+                            if isinstance(child, ttk.Button)
+                            and child.cget("text") == "Cancelar auditoría"
+                        ]
+                        if cancel_buttons:
+                            cancel_buttons[0].invoke()
+                if not confirmed:
+                    cancel_buttons = [
+                        child for child in descendants(dialog)
+                        if isinstance(child, ttk.Button) and child.cget("text") == "Cancelar"
+                    ]
+                    if cancel_buttons:
+                        cancel_buttons[0].invoke()
+
+            try:
+                with patch(
+                    "tkinter.messagebox.askyesno", return_value=confirmed
+                ) as confirm, patch(
+                    "scripts.scientific_workspace_app.run_workspace_audit",
+                    side_effect=fake_audit,
+                ) as audit:
+                    window.after(50, interact)
+                    buttons[0].invoke()
+                    deadline = time.monotonic() + 3
+                    while confirmed and time.monotonic() < deadline:
+                        if not window_exists():
+                            break
+                        window.update()
+                        if not window_exists():
+                            break
+                        if any(
+                            isinstance(child, ttk.Notebook)
+                            and any(child.tab(tab, "text") == "Resultado · Auditoría" for tab in child.tabs())
+                            for child in descendants(window)
+                        ):
+                            break
+                        time.sleep(0.01)
+                    output["audit_calls"] = audit.call_count
+                    output["confirm_calls"] = confirm.call_count
+                    output["confirmation_text"] = confirm.call_args.args[1] if confirm.call_args else ""
+                    if window_exists():
+                        output["tabs"] = [
+                            child.tab(tab, "text")
+                            for child in descendants(window) if isinstance(child, ttk.Notebook)
+                            for tab in child.tabs()
+                        ]
+                        result_texts = [
+                            child.get("1.0", "end-1c")
+                            for child in descendants(window)
+                            if isinstance(child, tk.Text)
+                            and "workspace_audit" in child.get("1.0", "end-1c")
+                        ]
+                        displayed = json.loads(result_texts[-1]) if result_texts else {}
+                    else:
+                        output["tabs"] = []
+                        displayed = output.get("worker_result", {})
+                    output["release_status"] = displayed.get("release_status")
+                    output["execution"] = displayed.get("execution")
+                    output["window_closed"] = not window_exists()
+                self.assertNotIn("error", output, output.get("error"))
+            finally:
+                if window_exists():
+                    window.destroy()
+                gc.collect()
+            return output
+
     def _exercise_proposal_dialog(self, *, decision: str, proposal_title: str | None = None):
         import tkinter as tk
         from tkinter import ttk
@@ -354,6 +548,7 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
                     self.assertEqual(source_manifest.read_bytes(), source_bytes)
             finally:
                 window.destroy()
+                gc.collect()
             return output
 
 
