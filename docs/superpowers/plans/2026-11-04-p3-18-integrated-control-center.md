@@ -71,10 +71,10 @@
 - Launch only `kind=audit` through `QProcess` with argv entries, project cwd, bounded log, cancel-file path and the existing CLI arguments.
 - Inject a confirmation handler/process factory only at an internal test boundary; production default must always use the human dialog.
 
-- [ ] Test policy validation, plan preview, declined confirmation, bounded progress, cancel request and exit-zero-unapproved using deterministic local test processes.
-- [ ] Verify the start/cancel tests fail before implementation.
-- [ ] Implement start, progress, cancel and terminal error/status handling with no provider calls.
-- [ ] Run supervisor and integration tests.
+- [x] Test policy validation/plan preview, declined confirmation, bounded progress, cancel request, launch failure/retry and exit-zero-unapproved using deterministic local test processes.
+- [x] Verify the start/cancel tests fail before implementation.
+- [x] Implement start, progress, cancel and terminal error/status handling with no provider calls.
+- [x] Run supervisor and integration tests.
 
 ### Task 4: Add demonstration and delivery evidence
 
@@ -83,7 +83,7 @@
 - Modify: `README.md`, `docs/roadmap/FEATURE_MATRIX.md`
 - Create: `docs/test-reports/assets/p3-18-control-center.png`
 
-- [ ] Launch the application with the checked-in synthetic SIR workspace and capture an actual UI screenshot; no agent provider is invoked.
-- [ ] Record focused test commands, screenshot/demo command, Linux/provider limitations, defects and architectural decisions.
-- [ ] Run `py_compile`, focused regression suites and `git diff --check`.
+- [x] Launch the application with the checked-in synthetic SIR workspace and capture an actual UI screenshot; no agent provider is invoked.
+- [x] Record focused test commands, screenshot/demo command, Linux/provider limitations, defects and architectural decisions.
+- [x] Run `py_compile`, focused regression suites and `git diff --check`.
 - [ ] Create a draft PR stacked on P3.17; do not merge.

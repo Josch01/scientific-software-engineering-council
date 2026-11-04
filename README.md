@@ -86,3 +86,14 @@ python scripts/scientific_workspace_app.py --check --project-root /ruta/al/proye
 ```
 
 Los recursos de código se muestran como texto inerte y la app no importa código del proyecto o del manifiesto. Un host confiable puede inyectar un callback de simulación ya revisado; el usuario debe confirmar cada ejecución, la salida se muestra en memoria y no valida ciencia. Consulte [manifiestos, loader y espacio de escritorio](references/SCIENTIFIC_WORKSPACES.md) para el contrato y sus límites.
+
+## Centro de Control Científico Qt (experimental, P3.18)
+
+La aplicación opcional de PySide6 integra proyectos, agentes, experimentos, auditorías, código y resultados en una ventana. Reutiliza el workspace y los componentes científicos existentes; carga manifiestos y recursos por el loader con contención y SHA-256. La vista de agentes reutiliza configuración, preparación de perfiles y el runner local; una auditoría requiere confirmación humana y puede consumir cuota. Cancelar, fallar o salir con código cero nunca aprueba el resultado. Abrir la aplicación no invoca proveedores.
+
+```bash
+python scripts/scientific_control_center_qt.py
+python scripts/scientific_control_center_qt.py --project-root /ruta/al/proyecto --manifest workspace.json
+```
+
+PySide6 sigue siendo opcional. Las vistas científicas usan WebEngine local si está disponible y mantienen su fallback nativo; no necesitan CDN. La demostración reproducible y sus límites están en [el informe P3.18](docs/test-reports/p3-18-integrated-control-center-2026-11-04.md). El SIR y los datos del usuario siguen `NOT_RUN`.
