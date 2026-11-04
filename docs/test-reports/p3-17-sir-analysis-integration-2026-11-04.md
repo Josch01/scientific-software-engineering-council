@@ -18,9 +18,9 @@ Se regenera con `python scripts/build_sir_analysis_demo.py`. La tabla de observa
 - `321863e` — componer ajuste, sensibilidad, simulación y residuales SIR.
 - `7e44991` — validar y enlazar recursos de contexto para unidades de las vistas.
 - `49ae05c` — agregar builder determinista, workspace calculada y renderizado Qt.
-- pendiente — rechazar contextos de modelo ambiguos en vistas de sensibilidad.
+- `3468038` — rechazar contextos de modelo ambiguos en vistas de sensibilidad.
 
-Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. No se hizo merge ni release. Estado del PR P3.17: pendiente de creación.
+Rama: `codex/p3-17-sir-analysis-integration`. Draft PR [#41](https://github.com/Josch01/scientific-software-engineering-council/pull/41), apilado sobre P3.16 [#40](https://github.com/Josch01/scientific-software-engineering-council/pull/40). GitHub informa `mergeable=true`; no se hizo merge ni release.
 
 ## Verificación ejecutada
 
@@ -32,6 +32,7 @@ Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. 
 - `WEBENGINE_AVAILABLE`: `True`. Las pruebas verificaron render WebEngine local y fallback Qt nativo.
 - `python -m py_compile` para módulos y pruebas modificados: OK.
 - `git diff --check`: OK.
+- Estado de checks remotos consultado después de publicar PR #41: no hay estados reportados aún.
 
 ## Resultado científico de la fixture y límites
 
@@ -54,4 +55,4 @@ Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. 
 - Qt en Linux: `NOT_RUN` (entorno disponible: Windows).
 - Ajuste interactivo desde el botón Qt: fuera de este incremento; el motor de análisis ya es invocable mediante API.
 - Integrar supervisor de agentes y workspaces científicos en una aplicación Qt unificada, con navegación por proyectos, agentes, experimentos, auditorías, código y resultados: siguiente incremento P3.18.
-- Estado de CI remoto y PR: pendiente de publicación de la rama y de ejecución de GitHub Actions.
+- CI remota para PR #41: pendiente/no hay checks reportados al consultar; actualizar cuando GitHub Actions publique resultado.

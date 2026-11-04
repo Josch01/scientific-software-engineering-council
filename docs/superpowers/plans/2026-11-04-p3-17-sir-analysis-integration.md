@@ -107,4 +107,4 @@
 
 - [x] Document the constant-rate limit, model-derived units, linked-resource semantics, and scientific non-claims.
 - [x] Run focused regression, `python -m py_compile`, template/digest checks, and `git diff --check`; do not repeat the full suite.
-- [ ] Record real SIR, real observations, and Linux Qt as `NOT_RUN`; create a draft PR stacked on P3.16 without merging.
+- [x] Record real SIR, real observations, and Linux Qt as `NOT_RUN`; create draft PR #41 stacked on P3.16 without merging.
