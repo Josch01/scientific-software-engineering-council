@@ -441,6 +441,93 @@ class SIRDeclarativeContractTests(unittest.TestCase):
             self.core.solve_sir_model(contract)
 
 
+class SIRParameterAnalysisTests(unittest.TestCase):
+    def setUp(self):
+        self.core = load_scientific_core(self)
+        payload = sir_contract_payload()
+        payload["t_span"] = [0.0, 10.0]
+        payload["integrator"] = {
+            "method": "RK4_FIXED_STEP", "max_step": 0.1, "max_steps": 100,
+        }
+        self.definition = self.core.SirModelDefinition.from_dict(payload)
+        solution = self.core.solve_sir_model(self.definition)
+        observations = []
+        for index in range(0, len(solution.times), 20):
+            observations.append({
+                "time": solution.times[index],
+                "values": dict(zip(solution.state_names, solution.states[index])),
+            })
+        self.dataset = self.core.ObservationDataset.from_dict({
+            "schema_version": 1,
+            "time_unit": "day",
+            "variables": [
+                {"name": name, "unit": "person"} for name in solution.state_names
+            ],
+            "observations": observations,
+            "provenance": {"source": "synthetic exact SIR fixture"},
+        })
+
+    def _analyze(self, *, initial_parameters=None, bounds=None, perturbations=None,
+                 dataset=None):
+        return self.core.analyze_sir_parameters(
+            self.definition,
+            dataset or self.dataset,
+            initial_parameters=initial_parameters or {"beta": 0.25, "gamma": 0.08},
+            bounds=bounds or {"beta": (0.05, 0.8), "gamma": (0.02, 0.4)},
+            perturbations=perturbations or {"beta": 0.001, "gamma": 0.001},
+            max_step=0.1,
+            max_iterations=100,
+            max_function_evaluations=500,
+        )
+
+    def test_sir_analysis_uses_existing_fit_sensitivity_and_residual_contracts(self):
+        analyze = getattr(self.core, "analyze_sir_parameters", None)
+        self.assertIsNotNone(analyze, "scientific_core must expose SIR analysis composition")
+
+        result = self._analyze()
+
+        self.assertIn(result.fit.status, {"CONVERGED", "STALLED"})
+        self.assertAlmostEqual(result.fit.parameters["beta"], 0.3, delta=1e-5)
+        self.assertAlmostEqual(result.fit.parameters["gamma"], 0.1, delta=1e-5)
+        self.assertTrue(any(
+            abs(value) > 1e-6
+            for time_row in result.sensitivity.values
+            for state_row in time_row
+            for value in state_row
+        ))
+        self.assertLess(max(abs(value) for value in result.evaluation.residuals), 1e-6)
+        self.assertEqual(result.evaluation.time_unit, "day")
+        self.assertEqual(dict(result.evaluation.variable_units), {
+            "S": "person", "I": "person", "R": "person",
+        })
+        self.assertEqual(result.solution.parameters, result.fit.parameters)
+        self.assertAlmostEqual(sum(result.solution.states[-1]), self.definition.initial_population)
+        self.assertEqual(result.to_dict()["scientific_validity"], "NOT_ASSESSED")
+        self.assertEqual(result.to_dict()["identifiability"], "NOT_ASSESSED")
+
+    def test_sir_analysis_rejects_negative_rate_bounds_and_oversized_sensitivity_steps(self):
+        with self.assertRaisesRegex(ValueError, "nonnegative SIR rate bounds"):
+            self._analyze(bounds={"beta": (-0.1, 0.8), "gamma": (0.02, 0.4)})
+
+        with self.assertRaisesRegex(ValueError, "sensitivity perturbation crosses"):
+            self._analyze(perturbations={"beta": 0.5, "gamma": 0.001})
+
+    def test_sir_analysis_validates_fit_trajectory_invariants(self):
+        with self.assertRaisesRegex(ValueError, "negative compartment"):
+            self._analyze(
+                initial_parameters={"beta": 100.0, "gamma": 0.1},
+                bounds={"beta": (50.0, 150.0), "gamma": (0.02, 0.4)},
+            )
+
+    def test_sir_analysis_rejects_observation_unit_mismatch_before_fitting(self):
+        payload = self.dataset.to_dict()
+        payload["time_unit"] = "week"
+        payload.pop("content_sha256")
+        mismatched = self.core.ObservationDataset.from_dict(payload)
+        with self.assertRaisesRegex(ValueError, "does not match observation time unit"):
+            self._analyze(dataset=mismatched)
+
+
 class SIRDemoTests(unittest.TestCase):
     def test_synthetic_demo_runs_from_outside_repo_and_marks_science_unassessed(self):
         repository = Path(__file__).resolve().parents[1]

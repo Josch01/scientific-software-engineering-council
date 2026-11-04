@@ -880,6 +880,28 @@ class LeastSquaresFit:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SirParameterAnalysis:
+    """Composition of existing SIR fit, sensitivity, and residual contracts."""
+
+    fit: LeastSquaresFit
+    sensitivity: OdeSensitivity
+    evaluation: ObservationEvaluation
+    solution: OdeSolution
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "status": "COMPUTED",
+            "scientific_validity": "NOT_ASSESSED",
+            "identifiability": "NOT_ASSESSED",
+            "fit": self.fit.to_dict(),
+            "sensitivity": self.sensitivity.to_dict(),
+            "evaluation": self.evaluation.to_dict(),
+            "solution": self.solution.to_dict(),
+        }
+
+
 def _evaluate(problem: OdeProblem, time: float, state: State) -> State:
     derivative = problem.rhs(time, state, problem.parameters)
     return _finite_vector(
@@ -1000,6 +1022,31 @@ def solve_rk4(
     )
 
 
+def _validate_sir_state(state: State, population: float, location: str) -> None:
+    if any(value < 0.0 for value in state):
+        raise ValueError(f"{location}: negative compartment")
+    try:
+        state_population = math.fsum(state)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{location}: SIR population invariant failed") from exc
+    tolerance = max(1e-12, population * 1e-9)
+    if (not math.isfinite(state_population)
+            or abs(state_population - population) > tolerance):
+        raise ValueError(f"{location}: SIR population invariant drift exceeded tolerance")
+
+
+def _validate_sir_solution(solution: OdeSolution, population: float) -> None:
+    for index, state in enumerate(solution.states):
+        try:
+            _validate_sir_state(state, population, f"RK4 step {index}")
+        except ValueError as exc:
+            if "negative compartment" in str(exc):
+                raise ValueError(
+                    f"RK4 produced a negative compartment at step {index}; reduce max_step"
+                ) from exc
+            raise
+
+
 def solve_sir_model(definition: SirModelDefinition) -> OdeSolution:
     """Run the validated SIR contract with the existing RK4 solver.
 
@@ -1020,20 +1067,7 @@ def solve_sir_model(definition: SirModelDefinition) -> OdeSolution:
         max_step=definition.max_step,
         max_steps=definition.max_steps,
     )
-    population = definition.initial_population
-    population_tolerance = max(1e-12, population * 1e-9)
-    for index, state in enumerate(solution.states):
-        if any(value < 0.0 for value in state):
-            raise ValueError(
-                f"RK4 produced a negative compartment at step {index}; reduce max_step"
-            )
-        try:
-            state_population = math.fsum(state)
-        except (OverflowError, ValueError) as exc:
-            raise ValueError(f"SIR population invariant failed at step {index}") from exc
-        if (not math.isfinite(state_population)
-                or abs(state_population - population) > population_tolerance):
-            raise ValueError(f"SIR population invariant drift exceeded tolerance at step {index}")
+    _validate_sir_solution(solution, definition.initial_population)
     return solution
 
 
@@ -1773,4 +1807,209 @@ def fit_least_squares(
         max_function_evaluations=max_function_evaluations,
         finite_difference_fraction=fd_fraction,
         final_damping=damping,
+    )
+
+
+def analyze_sir_parameters(
+    definition: SirModelDefinition,
+    dataset: ObservationDataset,
+    *,
+    initial_parameters: Mapping[str, float],
+    bounds: Mapping[str, Sequence[float]],
+    perturbations: Mapping[str, float],
+    max_step: float | None = None,
+    max_iterations: int = _DEFAULT_MAX_FIT_ITERATIONS,
+    max_function_evaluations: int = _DEFAULT_MAX_FIT_EVALUATIONS,
+    max_total_steps: int = _DEFAULT_MAX_TOTAL_OBSERVATION_STEPS,
+) -> SirParameterAnalysis:
+    """Run existing fit, sensitivity, and observation contracts for constant SIR rates.
+
+    This composes the repository's bounded least-squares optimizer, fixed-step
+    RK4 solver, finite-difference sensitivity, and residual evaluator. All RK4
+    intermediate states are checked for nonnegative compartments and conserved
+    population. A shared step budget bounds fitting and the returned analyses.
+    Convergence, local sensitivity, and small residuals do not establish model
+    validity or parameter identifiability.
+    """
+    if not isinstance(definition, SirModelDefinition):
+        raise ValueError("definition must be a validated SirModelDefinition")
+    if not isinstance(dataset, ObservationDataset):
+        raise ValueError("dataset must be a validated ObservationDataset")
+    # This also rejects time-varying profiles until a fit parameterization is
+    # explicitly declared by the SIR contract.
+    definition.to_ode_problem()
+    if dataset.time_unit != definition.time_unit:
+        raise ValueError(
+            f"model time unit {definition.time_unit!r} does not match observation time unit "
+            f"{dataset.time_unit!r}"
+        )
+    for name, unit in dataset.variable_units.items():
+        if name not in definition.state_names:
+            raise ValueError(f"observation variable {name!r} is not an SIR state")
+        if unit != definition.population_unit:
+            raise ValueError(
+                f"observation unit for SIR state {name!r} must match model population unit "
+                f"{definition.population_unit!r}"
+            )
+    if any(time < definition.t_span[0] or time > definition.t_span[1]
+           for time in dataset.times):
+        raise ValueError("observation time is outside the SIR model t_span")
+
+    rate_names = ("beta", "gamma")
+    if not isinstance(initial_parameters, Mapping) or set(initial_parameters) != set(rate_names):
+        raise ValueError("initial_parameters must contain exactly beta and gamma")
+    if not isinstance(bounds, Mapping) or set(bounds) != set(rate_names):
+        raise ValueError("bounds must contain exactly beta and gamma")
+    if not isinstance(perturbations, Mapping) or set(perturbations) != set(rate_names):
+        raise ValueError("perturbations must contain exactly beta and gamma")
+
+    initial: dict[str, float] = {}
+    normalized_bounds: dict[str, tuple[float, float]] = {}
+    normalized_perturbations: dict[str, float] = {}
+    for name in rate_names:
+        value = _finite_float(initial_parameters[name], f"initial_parameters[{name!r}]")
+        pair = _finite_vector(bounds[name], f"bounds[{name!r}]", expected_length=2)
+        lower, upper = pair
+        if lower < 0.0:
+            raise ValueError("SIR analysis requires nonnegative SIR rate bounds")
+        if lower >= upper:
+            raise ValueError(f"bounds for SIR rate {name!r} must have lower < upper")
+        if not lower <= value <= upper:
+            raise ValueError(f"initial SIR rate {name!r} must lie within its bounds")
+        step = _finite_float(perturbations[name], f"perturbations[{name!r}]")
+        if step <= 0.0:
+            raise ValueError(f"perturbation for SIR rate {name!r} must be positive")
+        initial[name] = value
+        normalized_bounds[name] = (lower, upper)
+        normalized_perturbations[name] = step
+
+    requested_step = definition.max_step if max_step is None else _finite_float(
+        max_step, "max_step"
+    )
+    if requested_step <= 0.0:
+        raise ValueError("max_step must be positive and finite")
+    if requested_step > definition.max_step:
+        raise ValueError("max_step cannot exceed the SIR model integrator max_step")
+    if (isinstance(max_total_steps, bool) or not isinstance(max_total_steps, int)
+            or max_total_steps < 1):
+        raise ValueError("max_total_steps must be a positive integer")
+
+    start, end = definition.t_span
+    span = end - start
+    required_steps = span / requested_step
+    if not math.isfinite(required_steps):
+        raise ValueError("SIR analysis requires a non-finite step count")
+    step_count = max(1, math.ceil(required_steps))
+    if step_count > definition.max_steps:
+        raise ValueError("SIR analysis exceeds the model integrator step budget")
+
+    # Reserve one final evaluation, a baseline plus two trajectories per rate,
+    # and the final full solution before allowing optimizer evaluations.
+    observation_steps = 0
+    previous_time = start
+    for time in dataset.times:
+        interval_steps = 0
+        if time > previous_time:
+            interval_steps = max(1, math.ceil((time - previous_time) / requested_step))
+            if interval_steps > definition.max_steps:
+                raise ValueError("observation interval exceeds the SIR integrator step budget")
+        observation_steps += interval_steps
+        previous_time = time
+    sensitivity_steps = (1 + 2 * len(rate_names)) * step_count
+    reserved_steps = observation_steps + sensitivity_steps + step_count
+    fit_step_budget = max_total_steps - reserved_steps
+    if fit_step_budget < max(1, observation_steps):
+        raise ValueError(
+            "max_total_steps is too small for the fit and requested SIR analysis outputs"
+        )
+
+    def parameterized_problem(rates: Mapping[str, float]) -> OdeProblem:
+        base_problem = definition.to_ode_problem()
+
+        def checked_rhs(time: float, state: State, parameters: Mapping[str, float]) -> State:
+            _validate_sir_state(
+                state,
+                definition.initial_population,
+                f"SIR RK4 intermediate at t={time!r}",
+            )
+            return base_problem.rhs(time, state, parameters)
+
+        return OdeProblem(
+            rhs=checked_rhs,
+            t_span=definition.t_span,
+            initial_state=definition.initial_state,
+            parameters=rates,
+            state_names=definition.state_names,
+        )
+
+    fit_steps = 0
+
+    def residual_function(rates: Mapping[str, float]) -> tuple[float, ...]:
+        nonlocal fit_steps
+        remaining = fit_step_budget - fit_steps
+        if remaining < 1:
+            raise ValueError("SIR fit exceeded its shared RK4 step budget")
+        evaluation = evaluate_observations(
+            parameterized_problem(rates),
+            dataset,
+            model_time_unit=definition.time_unit,
+            model_variable_units={
+                name: definition.population_unit for name in definition.state_names
+            },
+            max_step=requested_step,
+            max_steps_per_interval=definition.max_steps,
+            max_total_steps=remaining,
+        )
+        fit_steps += evaluation.total_step_count
+        return evaluation.residuals
+
+    fit = fit_least_squares(
+        residual_function,
+        initial,
+        normalized_bounds,
+        max_iterations=max_iterations,
+        max_function_evaluations=max_function_evaluations,
+    )
+    if fit.status not in {"CONVERGED", "MAX_ITERATIONS", "MAX_FUNCTION_EVALUATIONS", "STALLED"}:
+        raise ValueError(f"unsupported SIR fit status {fit.status!r}")
+
+    fitted_problem = parameterized_problem(fit.parameters)
+    final_evaluation = evaluate_observations(
+        fitted_problem,
+        dataset,
+        model_time_unit=definition.time_unit,
+        model_variable_units={
+            name: definition.population_unit for name in definition.state_names
+        },
+        max_step=requested_step,
+        max_steps_per_interval=definition.max_steps,
+        max_total_steps=max_total_steps - fit_steps,
+    )
+    if final_evaluation.residuals != fit.residuals:
+        raise ValueError("final SIR residuals do not match the fitted parameter result")
+
+    for name, step in normalized_perturbations.items():
+        center = fit.parameters[name]
+        if center - step < 0.0:
+            raise ValueError(
+                f"sensitivity perturbation crosses the nonnegative SIR rate domain for {name!r}"
+            )
+    sensitivity = parameter_sensitivities(
+        fitted_problem,
+        normalized_perturbations,
+        requested_step,
+        max_steps=definition.max_steps,
+        max_total_steps=max_total_steps - fit_steps - final_evaluation.total_step_count,
+    )
+    solution = solve_rk4(
+        fitted_problem,
+        requested_step,
+        max_steps=definition.max_steps,
+    )
+    _validate_sir_solution(solution, definition.initial_population)
+    return SirParameterAnalysis(
+        fit=fit,
+        sensitivity=sensitivity,
+        evaluation=final_evaluation,
+        solution=solution,
     )
