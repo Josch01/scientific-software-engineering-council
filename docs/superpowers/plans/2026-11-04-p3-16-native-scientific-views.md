@@ -118,4 +118,4 @@
 - [x] Document schemas consumed, units/provenance display, WebEngine restrictions/fallback, and the explicit uncertainty limitation.
 - [x] Record actual Windows Qt/WebEngine tests, CI state, and Linux/real-SIR/provider paths as `NOT_RUN` where applicable.
 - [x] Run `python -m unittest discover -s tests -v`, `python -m py_compile` for changed modules, and `git diff --check`; record exact counts and skip reasons.
-- [ ] Commit documentation, update the PR draft stacked on P3.15, and do not merge.
+- [x] Commit documentation and create draft PR #40 stacked on P3.15 PR #39; leave unmerged.

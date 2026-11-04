@@ -14,7 +14,8 @@ Qt WebEngine renders SSEC-authored local SVG with hover inspection and legend to
 - `2386c67` — add scientific result view models.
 - `47fd70c` — add local scientific chart widget.
 - `3e6b396` — render scientific results in Qt.
-- Documentation/report and review-fix commit: pending.
+- Review-fix commit: `5aa41f4` — bounded rendering, unit validation, and reviewer regression tests.
+- Documentation/report commit: `957b286` — roadmap, contracts, and synthetic example.
 
 All commits are on `codex/p3-16-native-science-views`, based on P3.15 (`7ba39e9`). No merge to `main` was performed.
 
@@ -47,7 +48,8 @@ An independent read-only review reproduced four P2 issues. They are fixed and co
 - Sensitivity is local and does not assess practical identifiability. Fit convergence and residuals do not establish identifiability or model validity.
 - In the native fallback, the chart is static; hover and legend interaction require Qt WebEngine. Fit residual tables show at most 200 evenly sampled rows; chart paths show at most 2,001 sampled points per series while tooltips use original validated values.
 - Symlink refusal cases needing symlink-creation privileges and the root-folder/frontmatter structure check remain environment/worktree limitations; 7 tests were skipped with platform/environment reasons. These are recorded rather than treated as product verification.
-- Independent review: completed; the four reproducible P2 findings above were fixed and the focused regression passed. CI and draft PR state: pending.
+- Independent review: completed; the four reproducible P2 findings above were fixed and the focused regression passed.
+- Draft PR: [#40](https://github.com/Josch01/scientific-software-engineering-council/pull/40), open and stacked on P3.15 PR #39. CI state is live in the PR; no merge or release was performed.
 
 ## Example
 
