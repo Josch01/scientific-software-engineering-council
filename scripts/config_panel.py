@@ -60,6 +60,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.check:
         assert build_policy("gemini", "2", "read_only", "60", "10", "standard")
+        assert build_policy("agy", "2", "read_only", "60", "10", "standard")
         print("GUI model valid (headless check); no desktop window opened")
         return 0
     try:

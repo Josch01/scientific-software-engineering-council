@@ -63,6 +63,7 @@ class RuntimeLaunchControl:
 
     stop_event: threading.Event
     deadline: float
+    cancel_file: Path | None = None
     gate: threading.RLock = field(default_factory=threading.RLock, init=False,
                                   repr=False, compare=False)
 
@@ -82,6 +83,10 @@ class RuntimeLaunchControl:
 
     def blocked_status(self) -> RuntimeStatus | None:
         with self.gate:
+            if self.cancel_file is not None and self.cancel_file.exists():
+                # The external cancel marker must join the same gate as stop()
+                # so the final pre-spawn authorization observes it.
+                self.stop_event.set()
             if self.stop_event.is_set():
                 return RuntimeStatus.CANCELLED
             if time.monotonic() >= self.deadline:

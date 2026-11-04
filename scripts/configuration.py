@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-PROVIDERS = ("gemini", "codex", "both")
+PROVIDERS = ("gemini", "agy", "codex", "both")
 PERMISSIONS = ("read_only", "propose_patches", "request_write_approval")
 AUDIT_LEVELS = ("basic", "standard", "strict")
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -33,7 +33,7 @@ def validate_config(raw: dict[str, Any]) -> dict[str, Any]:
     if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
         raise ValueError("unsupported schema_version; expected 1")
     if raw["provider_mode"] not in PROVIDERS:
-        raise ValueError("provider_mode must be gemini, codex or both")
+        raise ValueError("provider_mode must be gemini, agy, codex or both")
     cap = raw["max_parallel_agents"]
     if type(cap) is not int or not (1 <= cap <= 12):
         raise ValueError("max_parallel_agents must be an integer from 1 to 12")

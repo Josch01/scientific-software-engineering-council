@@ -36,6 +36,10 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_policy("codex", "2.5", "read_only", "30", "3", "standard")
 
+    def test_agy_provider_mode_is_explicitly_valid(self):
+        config = build_policy("agy", "2", "read_only", "60", "10", "standard")
+        self.assertEqual(validate_config(config)["provider_mode"], "agy")
+
     def test_save_load_explicit(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

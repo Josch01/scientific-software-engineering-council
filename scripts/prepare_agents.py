@@ -16,7 +16,7 @@ else:
     from configuration import DEFAULT_CONFIG, load_config, validate_config
     from route_task import route
 
-MODES = ("gemini", "codex", "both")
+MODES = ("gemini", "agy", "codex", "both")
 REVIEWERS = {"software_auditor", "security_reviewer", "independent_reviewer", "release_engineer"}
 ROLE_TASKS = {
     "software_architect": "Analizar diseño modular, contratos y dependencias; proponer ADR.",
@@ -135,10 +135,17 @@ def make_files(task: dict, mode: str, config: dict | None = None) -> tuple[dict,
     for role in primary + reviews:
         provider = provider_for(role, mode)
         name = agent_name(role)
-        target = (f".gemini/agents/{name}.md" if provider == "gemini"
-                  else f".codex/agents/{name}.toml")
+        if provider == "gemini":
+            target = f".gemini/agents/{name}.md"
+        elif provider == "codex":
+            target = f".codex/agents/{name}.toml"
+        else:
+            # AGY receives role instructions in the SSEC prompt/packet; do not
+            # imply it loaded a provider-native agent profile.
+            target = None
         packet = f"{folder}/{name}.md"
-        files[target] = profile(role, provider, policy)
+        if target is not None:
+            files[target] = profile(role, provider, policy)
         files[packet] = (
             f"# SSEC task packet: {name}\n\n"
             f"Task: {task_id}\nProvider: {provider}\nRole: {role}\n"
