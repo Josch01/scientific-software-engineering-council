@@ -44,4 +44,4 @@
 
 - [x] Ejecutar pruebas focales y suite de workspace/runner; `py_compile` y `git diff --check`.
 - [x] Revisión independiente acotada; corregir los defectos importantes reproducibles.
-- [ ] Commit separado, push y PR draft apilado sobre #31. Registrar CI; no merge ni release.
+- [x] Commit separado `9ba4123`, push y PR draft #34 apilado sobre #31. Registrar CI; no merge ni release.

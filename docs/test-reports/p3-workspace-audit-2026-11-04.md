@@ -1,6 +1,6 @@
 # P3.10 — solicitud de auditoría desde un workspace verificado
 
-**Estado:** implementado en rama de trabajo; CI del incremento pendiente. No se hizo merge ni se publicó una release.
+**Estado:** implementado y enviado para revisión; CI del incremento en cola. No se hizo merge ni se publicó una release.
 
 ## Resultado
 
@@ -47,7 +47,8 @@ No se añadió una segunda API de snapshot a `run_agents.py`: se invoca el runne
 
 ## Estado de entrega
 
-- Commit de rama: pendiente.
-- Pull request draft apilado sobre P3.9: pendiente.
+- Commit de implementación: `9ba412332d438f907d0d61227deb810df7da652d`.
+- Pull request draft #34: https://github.com/Josch01/scientific-software-engineering-council/pull/34, apilado sobre P3.9 PR #31.
+- CI del commit de implementación: run [#150](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41759813456), en cola al preparar este informe.
 - Merge a `main`, tag y release: no realizados.
-- Próximo paso: confirmar revisión puntual de cancelación, crear el commit y PR draft, y registrar el CI del incremento.
+- Próximo paso: registrar el resultado de CI; conservar el PR como borrador.
