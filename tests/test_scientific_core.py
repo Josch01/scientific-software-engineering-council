@@ -242,6 +242,45 @@ class SIRDeclarativeContractTests(unittest.TestCase):
         self.assertAlmostEqual(contract.parameters["beta"].evaluate(0.5), 0.3)
         self.assertAlmostEqual(contract.parameters["beta"].evaluate(1.5), 0.25)
 
+    def test_parameterized_ode_problem_reuses_sir_equations_and_honors_rate_overrides(self):
+        contract = self.core.SirModelDefinition.from_dict(sir_contract_payload())
+        to_problem = getattr(contract, "to_ode_problem", None)
+        self.assertIsNotNone(to_problem, "SIR v1 must expose a parameterized OdeProblem")
+
+        problem = to_problem()
+        reference = self.core.solve_sir_model(contract)
+        actual = self.core.solve_rk4(problem, max_step=contract.max_step)
+
+        self.assertEqual(problem.parameters, {"beta": 0.3, "gamma": 0.1})
+        self.assertEqual(actual.times, reference.times)
+        for actual_state, expected_state in zip(actual.states, reference.states):
+            for actual_value, expected_value in zip(actual_state, expected_state):
+                self.assertAlmostEqual(actual_value, expected_value, places=13)
+
+        higher_beta = self.core.OdeProblem(
+            rhs=problem.rhs, t_span=problem.t_span, initial_state=problem.initial_state,
+            parameters={"beta": 0.5, "gamma": 0.1}, state_names=problem.state_names,
+        )
+        changed = self.core.solve_rk4(higher_beta, max_step=contract.max_step)
+        self.assertGreater(changed.states[-1][1], actual.states[-1][1])
+
+        negative_beta = self.core.OdeProblem(
+            rhs=problem.rhs, t_span=problem.t_span, initial_state=problem.initial_state,
+            parameters={"beta": -0.1, "gamma": 0.1}, state_names=problem.state_names,
+        )
+        with self.assertRaisesRegex(ValueError, "rates must be nonnegative"):
+            self.core.solve_rk4(negative_beta, max_step=contract.max_step)
+
+    def test_parameterized_ode_problem_rejects_time_varying_rate_profiles(self):
+        payload = sir_contract_payload()
+        payload["parameters"]["beta"] = {
+            "kind": "piecewise_linear", "points": [[0.0, 0.3], [2.0, 0.2]],
+        }
+        contract = self.core.SirModelDefinition.from_dict(payload)
+
+        with self.assertRaisesRegex(ValueError, "constant beta and gamma"):
+            contract.to_ode_problem()
+
     def test_contract_rejects_unknown_equation_text_and_profile_functions(self):
         payload = sir_contract_payload()
         payload["equations"]["dS/dt"] = "__import__('os').system('whoami')"

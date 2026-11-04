@@ -414,19 +414,44 @@ class SirModelDefinition:
         )
 
     def rhs(
-        self, time: float, state: State, _parameters: Mapping[str, float]
+        self, time: float, state: State, parameters: Mapping[str, float]
     ) -> State:
         time_value = _finite_float(time, "SIR evaluation time")
         if time_value < self.t_span[0] or time_value > self.t_span[1]:
             raise ValueError("SIR evaluation time is outside t_span")
         state_values = _finite_vector(state, "SIR state", expected_length=3)
         susceptible, infectious, recovered = state_values
-        beta = self.parameters["beta"].evaluate(time_value)
-        gamma = self.parameters["gamma"].evaluate(time_value)
+        if parameters:
+            if set(parameters) != {"beta", "gamma"}:
+                raise ValueError("SIR parameter overrides must contain exactly beta and gamma")
+            beta = _finite_float(parameters["beta"], "SIR beta override")
+            gamma = _finite_float(parameters["gamma"], "SIR gamma override")
+            if beta < 0.0 or gamma < 0.0:
+                raise ValueError("SIR rates must be nonnegative")
+        else:
+            beta = self.parameters["beta"].evaluate(time_value)
+            gamma = self.parameters["gamma"].evaluate(time_value)
         incidence = beta * susceptible * infectious / self.initial_population
         removal = gamma * infectious
         derivative = (-incidence, incidence - removal, removal)
         return _finite_vector(derivative, "SIR derivative", expected_length=3)
+
+    def to_ode_problem(self) -> OdeProblem:
+        """Return a parameterized ODE problem for constant-rate beta and gamma.
+
+        Time-dependent profiles remain supported by ``solve_sir_model`` but
+        need an explicit knot parameterization before fit/sensitivity use.
+        """
+        if any(self.parameters[name].kind != "constant" for name in ("beta", "gamma")):
+            raise ValueError("parameterized SIR analysis requires constant beta and gamma")
+        rates = {name: self.parameters[name].value for name in ("beta", "gamma")}
+        return OdeProblem(
+            rhs=self.rhs,
+            t_span=self.t_span,
+            initial_state=self.initial_state,
+            parameters=rates,
+            state_names=self.state_names,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
