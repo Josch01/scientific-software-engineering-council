@@ -21,7 +21,8 @@ La ejecución remota completa más reciente de estas pruebas es CI PR #43, [run 
 - Cancelación durante escritura concurrente de un artefacto grande real: `NOT_RUN`; los tests cubren fallos de persistencia, cancelación de worker y publicación terminal, no todos los cortes de energía/OS.
 - Symlink creado localmente en Windows con permisos limitados: `NOT_RUN` cuando la creación del fixture falla por `WinError 1314`; CI Windows no se usa aquí para afirmar que esa ruta se ejercitó salvo evidencia del runner.
 - Edición coherente de estado/logs por el mismo usuario con acceso al workspace: `UNVERIFIED`; hashes detectan cambios no coherentes, pero no autentican una identidad ni una fuente de confianza.
-- Revisión independiente integral P4.4: `NOT_RUN`; el revisor delegado no entregó un resultado acotado antes de cerrar la consulta. La revisión de PR P3.18 y la revisión específica P4.2 no sustituyen esta revisión del sistema completo.
+- Consistencia independiente de este informe: `VERIFIED` mediante revisión documental acotada. El revisor contrastó el reporte completo, sus mapeos de pruebas y las referencias CI de PR #43, #41 y #42; no encontró contradicciones P0–P2. No revisó toda la base de código ni ejecutó pruebas o proveedores.
+- Revisión independiente integral del sistema/código P4.4: `NOT_RUN`; la revisión documental anterior no la sustituye.
 - Escaneo automatizado de secretos/dependencias/vulnerabilidades y benchmark de tres proyectos: `NOT_RUN`; las herramientas requerirían selección/aprobación de dependencias y los benchmarks reales requieren proyectos de referencia y autorización de proveedor.
 
 ## Hallazgos y alcance
