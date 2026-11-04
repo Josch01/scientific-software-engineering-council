@@ -24,6 +24,10 @@ try:
     from .scientific_workspace_loader import load_scientific_workspace
     from .scientific_workspace_loader import LoadedWorkspace
     from .scientific_workspace_audit import run_workspace_audit
+    from .scientific_workspace_generation import (
+        configured_proposal_providers,
+        generate_workspace_proposal,
+    )
     from .scientific_workspace_view import (
         ComponentView,
         SirEquationView,
@@ -48,6 +52,10 @@ except ImportError:  # Support `python scripts/scientific_workspace_app.py`.
     from scripts.scientific_workspace_loader import load_scientific_workspace
     from scripts.scientific_workspace_loader import LoadedWorkspace
     from scripts.scientific_workspace_audit import run_workspace_audit
+    from scripts.scientific_workspace_generation import (
+        configured_proposal_providers,
+        generate_workspace_proposal,
+    )
     from scripts.scientific_workspace_view import (
         ComponentView,
         SirEquationView,
@@ -543,6 +551,10 @@ def create_workspace_window(
     ttk.Label(header, textvariable=title_var, style="WorkspaceTitle.TLabel").pack(side="left")
     status_var = tk.StringVar(value="Sin espacio científico abierto")
     ttk.Label(header, textvariable=status_var).pack(side="right", padx=(12, 0))
+    generation_button = ttk.Button(
+        header, text="Proponer cambios con IA", state="disabled"
+    )
+    generation_button.pack(side="right", padx=(0, 8))
     proposal_button = ttk.Button(header, text="Revisar propuesta…", state="disabled")
     proposal_button.pack(side="right", padx=(0, 8))
     audit_button = ttk.Button(header, text="Solicitar auditoría…", state="disabled")
@@ -585,7 +597,9 @@ def create_workspace_window(
 
     def display(model: WorkspaceViewModel | None) -> None:
         ready = active_workspace[0] is not None and active_project_root[0] is not None
-        busy = active_simulation[0] is not None or active_audit[0] is not None
+        busy = (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None)
+        generation_button.configure(state=("normal" if ready and not busy else "disabled"))
         proposal_button.configure(
             state=("normal" if ready and not busy else "disabled")
         )
@@ -677,7 +691,8 @@ def create_workspace_window(
             notebook.add(page, text=section.title)
 
     def open_workspace() -> None:
-        if active_simulation[0] is not None or active_audit[0] is not None:
+        if (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None):
             return
         selected_root = project_hint
         if selected_root is None:
@@ -705,8 +720,9 @@ def create_workspace_window(
         active_project_root[0] = root_path
         display(model)
 
-    def review_proposal() -> None:
-        if active_simulation[0] is not None or active_audit[0] is not None:
+    def review_proposal(proposal_relative_path: str | None = None) -> None:
+        if (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None):
             return
         current = active_workspace[0]
         root_path = active_project_root[0]
@@ -717,17 +733,20 @@ def create_workspace_window(
                 parent=root,
             )
             return
-        selected = filedialog.askopenfilename(
-            parent=root,
-            title="Seleccionar propuesta de workspace",
-            initialdir=str(root_path),
-            filetypes=(("Workspace manifest", "*.json"), ("All files", "*")),
-        )
-        if not selected:
-            return
         try:
-            selected_path = Path(selected).resolve(strict=True)
-            relative_path = selected_path.relative_to(root_path).as_posix()
+            if proposal_relative_path is None:
+                selected = filedialog.askopenfilename(
+                    parent=root,
+                    title="Seleccionar propuesta de workspace",
+                    initialdir=str(root_path),
+                    filetypes=(("Workspace manifest", "*.json"), ("All files", "*")),
+                )
+                if not selected:
+                    return
+                selected_path = Path(selected).resolve(strict=True)
+                relative_path = selected_path.relative_to(root_path).as_posix()
+            else:
+                relative_path = proposal_relative_path
             preview = preview_workspace_proposal(root_path, current, relative_path)
         except (OSError, ValueError, TypeError) as exc:
             messagebox.showerror("Propuesta no válida", str(exc), parent=root)
@@ -817,8 +836,148 @@ def create_workspace_window(
         dialog.grab_set()
         dialog.wait_window()
 
+    def propose_workspace_changes() -> None:
+        if (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None):
+            return
+        workspace = active_workspace[0]
+        root_path = active_project_root[0]
+        if workspace is None or root_path is None:
+            messagebox.showinfo(
+                "Abra un workspace primero",
+                "La propuesta requiere un workspace cargado y verificado.",
+                parent=root,
+            )
+            return
+        try:
+            policy_path = config_path(root_path)
+            policy_folder = policy_path.parent
+            if policy_folder.is_symlink() or policy_path.is_symlink():
+                raise ValueError("la configuración SSEC no puede atravesar symlinks")
+            if policy_folder.exists() and not policy_folder.is_dir():
+                raise ValueError(".ssec existe, pero no es un directorio")
+            policy = load_config(policy_path) if policy_path.exists() else dict(DEFAULT_CONFIG)
+            providers = configured_proposal_providers(policy)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Configuración SSEC no válida", str(exc), parent=root)
+            return
+        if not providers:
+            messagebox.showinfo(
+                "Generación local no disponible",
+                ("Codex CLI no ofrece en esta integración una política que impida "
+                 "la ejecución de comandos. Configure Gemini CLI con plan mode "
+                 "o importe un manifiesto JSON desde \u00abRevisar propuesta\u2026\u00bb."),
+                parent=root,
+            )
+            return
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Proponer cambios con IA")
+        dialog.minsize(760, 560)
+        dialog.transient(root)
+        ttk.Label(
+            dialog,
+            text=(
+                f"Workspace: {sanitize_display_text(workspace.summary.title)}\n"
+                f"CLI local: {' → '.join(providers)}. Seleccione los recursos verificados "
+                "que podrá leer el agente. Los demás archivos no se incluyen."
+            ),
+            wraplength=1050,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+        table_frame = ttk.Frame(dialog)
+        table_frame.pack(fill="both", expand=True, padx=12, pady=6)
+        columns = ("kind", "path", "bytes", "sha256")
+        resource_table = ttk.Treeview(
+            table_frame, columns=columns, show="tree headings", selectmode="extended", height=9
+        )
+        resource_table.heading("#0", text="Resource ID")
+        resource_table.column("#0", width=130, stretch=False)
+        for column, width in (("kind", 120), ("path", 240), ("bytes", 75), ("sha256", 190)):
+            resource_table.heading(column, text=column)
+            resource_table.column(column, width=width, stretch=(column == "path"))
+        for resource in workspace.resources:
+            resource_table.insert(
+                "", "end", iid=resource.resource_id, text=resource.resource_id,
+                values=(resource.kind, resource.path, len(resource.content), resource.sha256),
+            )
+        vertical = ttk.Scrollbar(table_frame, orient="vertical", command=resource_table.yview)
+        resource_table.configure(yscrollcommand=vertical.set)
+        resource_table.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        resource_table.selection_set(tuple(resource.resource_id for resource in workspace.resources))
+
+        ttk.Label(
+            dialog, text="Describa qué quiere agregar o modificar:", justify="left"
+        ).pack(fill="x", padx=12, pady=(8, 2))
+        objective_text = tk.Text(dialog, wrap="word", height=5, width=100)
+        objective_text.pack(fill="x", padx=12, pady=(0, 8))
+        objective_text.insert(
+            "1.0", "Muestre las ecuaciones, parámetros y datos; agregue las vistas "
+            "científicas que correspondan a los recursos seleccionados."
+        )
+        ttk.Label(
+            dialog,
+            text=(
+                "La CLI puede consumir cuota y SSEC no mide ni limita el coste. "
+                "El agente solo propondrá componentes registrados. La propuesta se "
+                "validará y mostrará con diff; nada se guarda como workspace activo "
+                "hasta que usted lo apruebe. No se ejecuta código generado."
+            ),
+            wraplength=1050,
+            justify="left",
+        ).pack(fill="x", padx=12, pady=6)
+        actions = ttk.Frame(dialog)
+        actions.pack(fill="x", padx=12, pady=(4, 12))
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def dispatch() -> None:
+            selected_ids = tuple(resource_table.selection())
+            objective = objective_text.get("1.0", "end-1c").strip()
+            if not selected_ids:
+                messagebox.showinfo(
+                    "Seleccione recursos",
+                    "Debe seleccionar al menos un recurso verificado.",
+                    parent=dialog,
+                )
+                return
+            if not objective:
+                messagebox.showinfo(
+                    "Describa los cambios",
+                    "Escriba qué quiere agregar o modificar en el workspace.",
+                    parent=dialog,
+                )
+                return
+            if not messagebox.askyesno(
+                "Confirmar propuesta con IA",
+                (
+                    f"Enviar {len(selected_ids)} recurso(s) del workspace "
+                    f"{workspace.summary.workspace_id!r} al CLI local "
+                    f"{' / '.join(providers)} para pedir una propuesta?\n\n"
+                    "La llamada puede consumir cuota. Solo se enviarán los bytes "
+                    "seleccionados y contexto derivado. SSEC no mide el coste."
+                ),
+                parent=dialog,
+            ):
+                return
+            dialog.destroy()
+            start_workspace_generation(
+                workspace, root_path, selected_ids, objective, policy
+            )
+
+        ttk.Button(actions, text="Cancelar", command=cancel).pack(side="right", padx=(8, 0))
+        ttk.Button(actions, text="Solicitar propuesta…", command=dispatch).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.grab_set()
+        dialog.wait_window()
+
     def audit_workspace() -> None:
-        if active_simulation[0] is not None or active_audit[0] is not None:
+        if (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None):
             return
         workspace = active_workspace[0]
         root_path = active_project_root[0]
@@ -927,6 +1086,7 @@ def create_workspace_window(
 
     open_button.configure(command=open_workspace)
     proposal_button.configure(command=review_proposal)
+    generation_button.configure(command=propose_workspace_changes)
     audit_button.configure(command=audit_workspace)
     root.bind("<Control-o>", lambda _event: open_workspace())
     active_workspace = [loaded_workspace]
@@ -937,7 +1097,9 @@ def create_workspace_window(
     result_tabs: dict[str, object] = {}
     active_simulation = [None]
     active_audit = [None]
+    active_generation = [None]
     close_after_audit = [False]
+    close_after_generation = [False]
 
     def show_simulation_result(component: ComponentView, result: ComponentView) -> None:
         previous = result_tabs.pop(component.component_id, None)
@@ -965,6 +1127,10 @@ def create_workspace_window(
         open_button.configure(state="normal")
         cancel_audit_button.configure(state="disabled")
         has_workspace = active_workspace[0] is not None and active_project_root[0] is not None
+        generation_button.configure(
+            state="normal" if has_workspace else "disabled",
+            text="Proponer cambios con IA",
+        )
         proposal_button.configure(state="normal" if has_workspace else "disabled")
         audit_button.configure(state="normal" if has_workspace else "disabled")
         for component_id, action_button in simulation_buttons.items():
@@ -972,6 +1138,148 @@ def create_workspace_window(
             action = active_simulation_actions[0].get(component_id)
             if action is not None:
                 action_button.configure(text=f"Ejecutar: {action.label}")
+
+    def start_workspace_generation(workspace, root_path, selected_ids, objective, policy) -> None:
+        result_queue = queue.Queue()
+        cancel_event = threading.Event()
+        progress_dialog = tk.Toplevel(root)
+        progress_dialog.title("Proponer cambios con IA")
+        progress_dialog.transient(root)
+        progress_dialog.resizable(False, False)
+        progress_var = tk.StringVar(value="Preparando snapshot de recursos verificados…")
+        ttk.Label(
+            progress_dialog, textvariable=progress_var, wraplength=520, justify="left"
+        ).pack(fill="x", padx=16, pady=(16, 10))
+        cancel_button = ttk.Button(progress_dialog, text="Cancelar")
+        cancel_button.pack(anchor="e", padx=16, pady=(0, 14))
+        active_generation[0] = {
+            "queue": result_queue,
+            "cancel_event": cancel_event,
+            "cancel_requested": False,
+            "dialog": progress_dialog,
+            "progress_var": progress_var,
+            "cancel_button": cancel_button,
+        }
+        open_button.configure(state="disabled")
+        generation_button.configure(state="disabled", text="Preparando propuesta…")
+        proposal_button.configure(state="disabled")
+        audit_button.configure(state="disabled")
+        for action_button in simulation_buttons.values():
+            action_button.configure(state="disabled")
+        status_var.set("Preparando propuesta · sin aprobación")
+        root.update_idletasks()
+
+        def worker() -> None:
+            try:
+                result = generate_workspace_proposal(
+                    root_path,
+                    workspace,
+                    selected_ids,
+                    objective,
+                    policy,
+                    accept_unmetered_cost=True,
+                    cancel_event=cancel_event,
+                    progress_callback=lambda event: result_queue.put(("progress", event)),
+                )
+                result_queue.put(("result", result))
+            except BaseException as exc:
+                result_queue.put(("error", f"{type(exc).__name__}: {exc}"[:2000]))
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"ssec-workspace-proposal-{workspace.summary.workspace_id}",
+            daemon=True,
+        )
+        active_generation[0]["thread"] = thread
+
+        def request_cancel() -> None:
+            active = active_generation[0]
+            if active is None or active["cancel_requested"]:
+                return
+            active["cancel_event"].set()
+            active["cancel_requested"] = True
+            active["cancel_button"].configure(state="disabled")
+            active["progress_var"].set("Cancelación solicitada · esperando el CLI local")
+            status_var.set("Cancelación solicitada · esperando el CLI local")
+
+        cancel_button.configure(command=request_cancel)
+        progress_dialog.protocol("WM_DELETE_WINDOW", request_cancel)
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            active_generation[0] = None
+            progress_dialog.destroy()
+            restore_idle_controls()
+            messagebox.showerror("No se pudo iniciar la propuesta", str(exc), parent=root)
+            return
+        root.after(100, poll_workspace_generation)
+
+    def poll_workspace_generation() -> None:
+        active = active_generation[0]
+        if active is None:
+            return
+        if "terminal" in active:
+            if active["thread"].is_alive():
+                root.after(25, poll_workspace_generation)
+                return
+            outcome, payload = active.pop("terminal")
+        else:
+            try:
+                outcome, payload = active["queue"].get_nowait()
+            except queue.Empty:
+                root.after(100, poll_workspace_generation)
+                return
+            if outcome in {"result", "error"} and active["thread"].is_alive():
+                active["terminal"] = (outcome, payload)
+                root.after(25, poll_workspace_generation)
+                return
+        if outcome == "progress":
+            label = payload.get("status", "Agente trabajando")
+            active["progress_var"].set(sanitize_display_text(str(label)))
+            if not active["cancel_requested"]:
+                status_var.set(f"Propuesta en curso · {label} · sin aprobación")
+            root.after(100, poll_workspace_generation)
+            return
+
+        dialog = active["dialog"]
+        active_generation[0] = None
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:
+            pass
+        restore_idle_controls()
+        generated_path = None
+        if outcome == "error":
+            status_var.set("Propuesta fallida · sin aprobación")
+            messagebox.showerror("No se pudo generar la propuesta", payload, parent=root)
+        else:
+            status = payload.get("status")
+            if status == "PROPOSAL_READY_NOT_APPROVED":
+                generated_path = payload.get("proposal_relative_path")
+                status_var.set("Propuesta recibida · revisar diff antes de aprobar")
+            elif status == "PROVIDER_UNAVAILABLE":
+                status_var.set("CLI local no disponible · importación manual disponible")
+                messagebox.showinfo(
+                    "Proveedor local no disponible",
+                    "No se inició una llamada. Puede usar «Revisar propuesta…» para "
+                    "importar un manifiesto JSON manual.",
+                    parent=root,
+                )
+            elif status == "CANCELLED":
+                status_var.set("Propuesta cancelada · sin aprobación")
+            else:
+                status_var.set("Propuesta fallida · sin aprobación")
+                messagebox.showerror(
+                    "Propuesta no disponible",
+                    str(payload.get("error") or status or "Error desconocido"),
+                    parent=root,
+                )
+        if close_after_generation[0]:
+            root.destroy()
+            return
+        if isinstance(generated_path, str):
+            review_proposal(generated_path)
 
     def start_workspace_audit(workspace, root_path, selected_ids, policy) -> None:
         result_queue = queue.Queue()
@@ -1040,6 +1348,14 @@ def create_workspace_window(
     cancel_audit_button.configure(command=request_workspace_audit_cancel)
 
     def close_workspace_window() -> None:
+        if active_generation[0] is not None:
+            active = active_generation[0]
+            close_after_generation[0] = True
+            active["cancel_event"].set()
+            active["cancel_requested"] = True
+            active["cancel_button"].configure(state="disabled")
+            active["progress_var"].set("Cancelación solicitada · esperando el CLI local")
+            return
         if active_audit[0] is not None:
             close_after_audit[0] = True
             request_workspace_audit_cancel()
@@ -1107,7 +1423,8 @@ def create_workspace_window(
 
     def run_simulation(component: ComponentView, action: ApprovedSimulationAction,
                        button) -> None:
-        if active_simulation[0] is not None or active_audit[0] is not None:
+        if (active_simulation[0] is not None or active_audit[0] is not None
+                or active_generation[0] is not None):
             return
         workspace = active_workspace[0]
         if workspace is None:
@@ -1133,6 +1450,7 @@ def create_workspace_window(
             return
         for action_button in simulation_buttons.values():
             action_button.configure(state="disabled")
+        generation_button.configure(state="disabled")
         button.configure(text="Ejecutando…")
         open_button.configure(state="disabled")
         proposal_button.configure(state="disabled")

@@ -244,6 +244,219 @@ class ScientificWorkspaceAppTests(unittest.TestCase):
         self.assertIn("no dispone de medidor", output["confirmation_text"])
 
     @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_workspace_window_exposes_ai_proposal_action(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        from scripts.scientific_workspace_app import create_workspace_window
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+        from scripts.scientific_workspace_view import build_workspace_view_model
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_workspace(root)
+            workspace = load_scientific_workspace(root, "workspace.json")
+            window = create_workspace_window(
+                build_workspace_view_model(workspace), project_root=root,
+                loaded_workspace=workspace,
+            )
+            window.withdraw()
+            try:
+                buttons = [
+                    child for container in window.winfo_children()
+                    for child in container.winfo_children()
+                    if isinstance(child, ttk.Button)
+                    and child.cget("text") == "Proponer cambios con IA"
+                ]
+                self.assertEqual(len(buttons), 1)
+                self.assertTrue(buttons[0].instate(["!disabled"]))
+            finally:
+                window.destroy()
+                gc.collect()
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_codex_proposal_action_explains_safe_fallback_without_model_confirmation(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        from scripts.configuration import DEFAULT_CONFIG, save_config
+        from scripts.scientific_workspace_app import create_workspace_window
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+        from scripts.scientific_workspace_view import build_workspace_view_model
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_workspace(root)
+            save_config(root, dict(DEFAULT_CONFIG, provider_mode="codex"))
+            workspace = load_scientific_workspace(root, "workspace.json")
+            window = create_workspace_window(
+                build_workspace_view_model(workspace), project_root=root,
+                loaded_workspace=workspace,
+            )
+            window.withdraw()
+            try:
+                def descendants(widget):
+                    for child in widget.winfo_children():
+                        yield child
+                        yield from descendants(child)
+
+                button = next(
+                    widget for widget in descendants(window)
+                    if isinstance(widget, ttk.Button)
+                    and widget.cget("text") == "Proponer cambios con IA"
+                )
+                with patch("tkinter.messagebox.showinfo") as info, \
+                        patch("tkinter.messagebox.askyesno") as confirm, \
+                        patch("scripts.scientific_workspace_app.generate_workspace_proposal") as generate:
+                    button.invoke()
+                info.assert_called_once()
+                self.assertIn("manifiesto JSON", info.call_args.args[1])
+                confirm.assert_not_called()
+                generate.assert_not_called()
+            finally:
+                window.destroy()
+                gc.collect()
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
+    def test_ai_proposal_requires_confirmation_then_uses_existing_diff_approval(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        from scripts.scientific_workspace_app import create_workspace_window
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+        from scripts.scientific_workspace_view import build_workspace_view_model
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_workspace(root)
+            source_manifest = root / "workspace.json"
+            source_bytes = source_manifest.read_bytes()
+            active = load_scientific_workspace(root, "workspace.json")
+            proposal = json.loads(source_bytes)
+            proposal["title"] = "Agent configured SIR workspace"
+            proposal["sections"][0]["title"] = "Proposed equation view"
+            generated_path = root / ".ssec" / "runs" / "synthetic" / "workspace-proposal.json"
+            generated_path.parent.mkdir(parents=True)
+            generated_path.write_text(json.dumps(proposal), encoding="utf-8")
+            relative_generated = generated_path.relative_to(root).as_posix()
+            window = create_workspace_window(
+                build_workspace_view_model(active), project_root=root, loaded_workspace=active
+            )
+            window.withdraw()
+            output: dict[str, object] = {}
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            buttons = [
+                widget for widget in descendants(window)
+                if isinstance(widget, ttk.Button)
+                and widget.cget("text") == "Proponer cambios con IA"
+            ]
+            self.assertEqual(len(buttons), 1)
+
+            def fake_generation(*args, **kwargs):
+                output["confirmation_seen_before_provider"] = confirm.call_count
+                output["selected_ids"] = args[2]
+                output["objective"] = args[3]
+                output["cost_acknowledged"] = kwargs.get("accept_unmetered_cost")
+                return {
+                    "status": "PROPOSAL_READY_NOT_APPROVED",
+                    "release_status": "NOT_APPROVED",
+                    "scientific_validity": "NOT_ASSESSED",
+                    "proposal_relative_path": relative_generated,
+                }
+
+            def open_generation_dialog(attempt=0):
+                dialogs = [
+                    child for child in window.winfo_children()
+                    if isinstance(child, tk.Toplevel)
+                    and child.title() == "Proponer cambios con IA"
+                ]
+                if not dialogs:
+                    if attempt >= 40:
+                        output["error"] = "proposal generation dialog did not open"
+                        return
+                    window.after(25, lambda: open_generation_dialog(attempt + 1))
+                    return
+                dialog = dialogs[0]
+                objective_widgets = [child for child in descendants(dialog) if isinstance(child, tk.Text)]
+                objective_widgets[0].delete("1.0", "end")
+                objective_widgets[0].insert("1.0", "Add model and observation views")
+                request_buttons = [
+                    child for child in descendants(dialog)
+                    if isinstance(child, ttk.Button)
+                    and child.cget("text") == "Solicitar propuesta…"
+                ]
+                self.assertEqual(len(request_buttons), 1)
+                request_buttons[0].invoke()
+                window.after(25, open_review_dialog)
+
+            def open_review_dialog(attempt=0):
+                dialogs = [
+                    child for child in window.winfo_children()
+                    if isinstance(child, tk.Toplevel)
+                    and child.title() == "Revisar propuesta de workspace"
+                ]
+                if not dialogs:
+                    if attempt >= 80:
+                        output["error"] = "generated proposal did not reach diff review"
+                        return
+                    window.after(25, lambda: open_review_dialog(attempt + 1))
+                    return
+                dialog = dialogs[0]
+                text_widgets = [child for child in descendants(dialog) if isinstance(child, tk.Text)]
+                output["diff"] = text_widgets[0].get("1.0", "end-1c")
+                approve_buttons = [
+                    child for child in descendants(dialog)
+                    if isinstance(child, ttk.Button) and child.cget("text") == "Aprobar y guardar"
+                ]
+                self.assertEqual(len(approve_buttons), 1)
+                approve_buttons[0].invoke()
+                output["approved_files"] = list(root.glob(".ssec-workspace-*.json"))
+
+            error_messages: list[str] = []
+            try:
+                with patch(
+                    "scripts.scientific_workspace_app.generate_workspace_proposal",
+                    side_effect=fake_generation,
+                ) as generate, patch(
+                    "tkinter.messagebox.askyesno", return_value=True
+                ) as confirm, patch(
+                    "tkinter.messagebox.showerror",
+                    side_effect=lambda _title, message, **_kw: error_messages.append(str(message)),
+                ):
+                    window.after(25, open_generation_dialog)
+                    buttons[0].invoke()
+                    deadline = time.monotonic() + 5
+                    while "approved_files" not in output and time.monotonic() < deadline:
+                        window.update()
+                        time.sleep(0.01)
+                    output["generation_calls"] = generate.call_count
+                    output["confirm_calls"] = confirm.call_count
+                    output["confirmation_text"] = "\n".join(
+                        str(call.args[1]) for call in confirm.call_args_list
+                    )
+                self.assertNotIn("error", output, output.get("error"))
+                self.assertEqual(output["generation_calls"], 1)
+                self.assertEqual(output["confirm_calls"], 2)
+                self.assertEqual(output["confirmation_seen_before_provider"], 1)
+                self.assertEqual(output["selected_ids"], ("model",))
+                self.assertEqual(output["objective"], "Add model and observation views")
+                self.assertTrue(output["cost_acknowledged"])
+                self.assertIn("puede consumir cuota", output["confirmation_text"])
+                self.assertIn("Agent configured SIR workspace", output["diff"])
+                self.assertEqual(source_manifest.read_bytes(), source_bytes)
+                self.assertEqual(len(output["approved_files"]), 1)
+                self.assertEqual(error_messages, [])
+            finally:
+                if window.winfo_exists():
+                    window.destroy()
+                gc.collect()
+
+    @unittest.skipUnless(os.name == "nt" or os.environ.get("DISPLAY"), "Tk display is unavailable")
     def test_confirmed_workspace_audit_runs_async_and_displays_unapproved_result(self):
         output = self._exercise_workspace_audit_dialog(confirmed=True)
 

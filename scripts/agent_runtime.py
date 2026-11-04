@@ -22,6 +22,7 @@ class RuntimeRequest:
     writable: bool
     cost_acknowledged: bool
     launch_control: "RuntimeLaunchControl | None" = None
+    tool_policy_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id or not self.task_id or not self.role:
