@@ -45,7 +45,7 @@ También se probó que fallar al cargar un digest nuevo no reemplaza el workspac
 
 ## Entrega
 
-- Commit de implementación: pendiente.
+- Commit de implementación: `f1e3219` (`feat: add optional PySide6 scientific workspace UI`).
 - Pull request P3.12: pendiente; se mantendrá como borrador apilado sobre P3.11.
 - Revisión independiente: completa, solo lectura; sin hallazgos P0–P2 pendientes.
 - Merge a `main` y release: no realizados.
