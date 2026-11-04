@@ -138,6 +138,16 @@ class WorkspaceManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sensitivity_plot context_refs only allow model_spec"):
             scientific_workspace.validate_workspace_manifest(sensitivity_with_observations)
 
+        sensitivity_with_multiple_models = valid_manifest()
+        sensitivity_with_multiple_models["resources"].append(
+            {"id": "model-2", "kind": "model_spec", "path": "model/second.json"}
+        )
+        sensitivity_with_multiple_models["sections"][2]["components"][2]["config"][
+            "context_refs"
+        ] = ["model", "model-2"]
+        with self.assertRaisesRegex(ValueError, "at most one model_spec"):
+            scientific_workspace.validate_workspace_manifest(sensitivity_with_multiple_models)
+
     def test_generic_template_includes_observation_evaluation_and_residual_view(self):
         template_path = Path(__file__).resolve().parents[1] / "examples" / "scientific_workspace_template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))

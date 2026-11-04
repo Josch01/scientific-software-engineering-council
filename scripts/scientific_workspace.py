@@ -354,8 +354,13 @@ def validate_workspace_manifest(payload: Mapping[str, object]) -> WorkspaceSumma
                         _fail(
                             "fit_summary context_refs allow at most one model_spec and one observations"
                         )
-                elif any(kind != "model_spec" for kind in context_kinds):
-                    _fail("sensitivity_plot context_refs only allow model_spec")
+                else:
+                    if any(kind != "model_spec" for kind in context_kinds):
+                        _fail("sensitivity_plot context_refs only allow model_spec")
+                    if context_kinds.count("model_spec") > 1:
+                        _fail(
+                            "sensitivity_plot context_refs allow at most one model_spec"
+                        )
             component_types.append(component_type)
 
     return WorkspaceSummary(

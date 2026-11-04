@@ -18,6 +18,7 @@ Se regenera con `python scripts/build_sir_analysis_demo.py`. La tabla de observa
 - `321863e` — componer ajuste, sensibilidad, simulación y residuales SIR.
 - `7e44991` — validar y enlazar recursos de contexto para unidades de las vistas.
 - `49ae05c` — agregar builder determinista, workspace calculada y renderizado Qt.
+- pendiente — rechazar contextos de modelo ambiguos en vistas de sensibilidad.
 
 Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. No se hizo merge ni release. Estado del PR P3.17: pendiente de creación.
 
@@ -26,6 +27,7 @@ Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. 
 - `python -m unittest tests.test_scientific_core -v`: **33/33 pruebas OK**.
 - `python -m unittest tests.test_scientific_workspace tests.test_scientific_workspace_generation tests.test_scientific_workspace_science_views tests.test_scientific_sir_analysis_demo tests.test_scientific_workspace_qt_views -v`: **54/54 pruebas OK**.
 - `python -m unittest tests.test_scientific_workspace_qt_charts tests.test_scientific_workspace_qt tests.test_scientific_workspace_qt_e2e -v`: **16/16 pruebas OK**, incluyendo Qt WebEngine local, fallback nativo y flujo Qt integrado.
+- Tras el arreglo de revisión: `python -m unittest -q tests.test_scientific_workspace tests.test_scientific_workspace_generation tests.test_scientific_workspace_science_views tests.test_scientific_sir_analysis_demo tests.test_scientific_workspace_qt_views`: **54/54 pruebas OK**. La reproducción añadió el rechazo de dos modelos en `sensitivity_plot`.
 - Builder ejecutado y cargado por el safe loader. Dos construcciones temporales generaron archivos byte por byte idénticos; los SHA-256 coincidieron.
 - `WEBENGINE_AVAILABLE`: `True`. Las pruebas verificaron render WebEngine local y fallback Qt nativo.
 - `python -m py_compile` para módulos y pruebas modificados: OK.
@@ -44,11 +46,12 @@ Rama: `codex/p3-17-sir-analysis-integration`, basada en la cabeza del PR P3.16. 
 
 - Un render de workspace SIR falló porque el dispatcher Qt enviaba `action_error` al renderer de tabla JSON, cuya firma no lo aceptaba. Se corrigió y se cubrió con render de la tabla de observaciones.
 - La demo P3.16 existente contenía cuatro digests que no coincidían con sus recursos; se actualizaron para restaurar su prueba de carga Qt.
+- La revisión independiente halló que `sensitivity_plot` aceptaba dos recursos `model_spec`, aunque la vista deriva unidades solo de un modelo. Se reprodujo y corrigió el validador para rechazar esa configuración; la regresión focalizada pasó y el revisor confirmó el arreglo sin otros hallazgos P0–P2.
 
 ## Pendiente
 
 - SIR modificado del usuario y datos experimentales: `NOT_RUN` (no proporcionados).
 - Qt en Linux: `NOT_RUN` (entorno disponible: Windows).
 - Ajuste interactivo desde el botón Qt: fuera de este incremento; el motor de análisis ya es invocable mediante API.
-- Integrar supervisor de agentes y workspaces científicos en una aplicación Qt unificada, con navegación por proyectos, agentes, experimentos, auditorías, código y resultados: siguiente incremento P3.
-- Revisión final independiente y estado de CI/PR: pendientes al momento de este informe.
+- Integrar supervisor de agentes y workspaces científicos en una aplicación Qt unificada, con navegación por proyectos, agentes, experimentos, auditorías, código y resultados: siguiente incremento P3.18.
+- Estado de CI remoto y PR: pendiente de publicación de la rama y de ejecución de GitHub Actions.
