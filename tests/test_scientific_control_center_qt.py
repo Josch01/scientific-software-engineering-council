@@ -159,6 +159,30 @@ class ControlCenterShellTests(unittest.TestCase):
             window.workspace_value.text().split(" · ")[-1], model.verification_status
         )
 
+    def test_generated_analysis_workspace_renders_calculated_results_in_integrated_center(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        source = Path(__file__).resolve().parents[1] / "examples" / "sir_analysis_input_demo"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "analysis"
+            build_analysis_workspace(source, "workspace.json", output)
+            window = self._window()
+            model = window.load_project(output, "workspace.json")
+            window.navigate("results")
+            window.show()
+            self.app.processEvents()
+
+            fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+            residual_table = window.findChild(QtWidgets.QTableWidget, "fit-residuals-table")
+            self.assertIsNotNone(fit_table)
+            self.assertEqual(fit_table.item(0, 0).text(), "beta_knot_1")
+            self.assertEqual(fit_table.item(0, 5).text(), "1/day")
+            self.assertIsNotNone(residual_table)
+            self.assertGreater(residual_table.rowCount(), 0)
+            self.assertEqual(window.current_project_root, output.resolve())
+            self.assertEqual(window.agent_supervisor.project_root, output.resolve())
+            self.assertEqual(window.workspace_window.workspace_view_model, model)
+
     def test_profiled_sir_results_can_request_workspace_audit_in_same_center(self):
         root = self.profiled_examples
         window = self._window()
