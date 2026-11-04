@@ -21,6 +21,7 @@ No se ejecuta código generado ni se sobrescriben los archivos originales. Si la
 - `py_compile` y `git diff --check`: **PASS**.
 - Captura del diálogo de selección/datos verificados inspeccionada con Qt nativo; se corrigió el contraste de diálogo heredado del tema oscuro.
 - Las llamadas a `generate_workspace_proposal` son mocks deterministas. No se invocó ningún modelo ni CLI real, no hubo coste y no se afirmó validez científica.
+- El CI de P3.12 base pasó 4/4 jobs Windows/Ubuntu × Python 3.11/3.12 en el run [#162](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41771930991). El CI de P3.13 todavía debe ejecutarse.
 
 ## Defectos encontrados y decisiones
 
@@ -37,6 +38,7 @@ No se ejecuta código generado ni se sobrescriben los archivos originales. Si la
 
 ## Entrega
 
-- Commit y PR draft: por registrar.
+- Commit de implementación: `924285e` (`feat: add Qt workspace proposal workflow`).
+- PR draft P3.13: por registrar, apilado sobre P3.12.
 - Revisión independiente: completa, solo lectura; sin defectos reproducibles P0–P2 pendientes.
 - Merge a `main` y release: no realizados.
