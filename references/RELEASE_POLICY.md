@@ -11,3 +11,5 @@ En este incremento P1.1a, el script devuelve `BLOCKED` y exit code 2 incluso con
 Se bloquea release ante: fallos, `NOT_RUN`, evidencias ausentes, revisión contradictoria, licencias incompatibles, drift de contrato/semántica, cambios no autorizados o plataforma destino no verificada.
 
 Política de publicación: versionado semántico, changelog, hashes de builds, provenance de datos/commits, matriz de OS, rollback e instrucciones de actualización. Los CI en GitHub sólo validan la skill; no equivalen a probar aplicaciones ajenas.
+
+Consulta [`docs/security/THREAT_MODEL.md`](../docs/security/THREAT_MODEL.md) para los límites de confianza y riesgos observados, y [`docs/release/RELEASE_CANDIDATE_CHECKLIST.md`](../docs/release/RELEASE_CANDIDATE_CHECKLIST.md) para la matriz de evidencia previa a un candidato. Ambos documentos son obligatorios en la validación estructural del paquete.

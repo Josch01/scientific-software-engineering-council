@@ -16,6 +16,7 @@ MANDATORY = [
     "references/DEPENDENCY_SKILLS.md", "references/RELEASE_POLICY.md",
     "references/ARCHITECTURE.md", "references/PROVIDER_MODES.md", "references/RUNNER.md",
     "references/CONFIG_PANEL.md", "references/EXTENSION_CATALOG.md",
+    "docs/security/THREAT_MODEL.md", "docs/release/RELEASE_CANDIDATE_CHECKLIST.md",
     "scripts/extension_catalog.py", "scripts/configuration.py",
     "scripts/config_panel.py", "scripts/prepare_agents.py", "scripts/run_agents.py", "scripts/route_task.py", "scripts/release_gate.py",
     "templates/TASK_PACKET.json", ".github/workflows/validate.yml",
