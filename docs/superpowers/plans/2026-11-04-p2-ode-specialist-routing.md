@@ -22,4 +22,4 @@
 - [x] Add one failing R1 ODE routing regression; run it and confirm the expected missing-domain failure.
 - [x] Add the minimal `ode` mapping and profile task; 45 focused routing/evidence/work-item tests pass.
 - [x] Update portable routing guidance and feature matrix; `validate_skill.py`, compile and diff checks pass.
-- [ ] Record final commit SHA and open a draft PR against `codex/p4-release-governance`.
+- [x] Record final implementation commit `bf03202123c7c9a6bfe9315fd537424eae6f4d16`; open draft PR #50 against `codex/p4-release-governance`.

@@ -30,4 +30,4 @@ La revisión independiente no encontró defectos críticos ni importantes. Su ob
 
 ## Commits y PR
 
-La rama es `codex/p2-ode-specialist-routing`, separada de P3 y basada en `codex/p4-release-governance`. Se entrega como PR draft independiente, sin merge ni release; los commits están registrados en el historial de la rama.
+La rama es `codex/p2-ode-specialist-routing`, separada de P3 y basada en `codex/p4-release-governance`. Commit de implementación/evidencia `bf03202123c7c9a6bfe9315fd537424eae6f4d16`; draft PR [#50](https://github.com/Josch01/scientific-software-engineering-council/pull/50), abierto y sin merge ni release. El CI de ese commit está en curso al emitir este informe.
