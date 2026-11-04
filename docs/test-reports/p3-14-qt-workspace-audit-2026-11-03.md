@@ -24,11 +24,11 @@ python -m unittest tests.test_scientific_workspace_generation tests.test_scienti
 - Auditoría real con Gemini/AGY/Codex CLI: `NOT_RUN`; las pruebas mockean el servicio y no consumen cuota.
 - Ejecución visual Qt en Linux: `NOT_RUN`; la suite sin PySide6 omite estas pruebas opcionales.
 - Auditoría independiente de las salidas, validez matemática/científica y SIR concreto del usuario: `NOT_RUN`.
-- CI de esta rama: pendiente.
+- CI del commit `ba05084`: run [#170](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41775685094), en curso en Windows/Ubuntu × Python 3.11/3.12. PySide6 es opcional y no se instala en esos jobs.
 - Se corrigió un defecto reproducible del modo de lanzamiento documentado: la ejecución directa del script no encontraba `scripts.agent_runtime`; ahora la raíz del repositorio se agrega a la ruta de imports. La regresión de `--help` pasa. Otros hallazgos reproducibles P0–P2: ninguno; los tests rojos anteriores confirmaron la ausencia de la acción Qt y el fallo de import, no se usaron como prueba de seguridad.
 
 ## Entrega
 
-- Commit: pendiente.
-- PR draft: pendiente.
+- Commit de implementación: `ba05084` (`feat: add Qt workspace audit workflow`).
+- PR draft [#38](https://github.com/Josch01/scientific-software-engineering-council/pull/38), apilado sobre P3.13; abierto y sin merge.
 - No se hizo merge ni se invocó ningún proveedor real.
