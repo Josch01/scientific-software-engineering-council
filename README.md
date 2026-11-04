@@ -89,7 +89,7 @@ Los recursos de código se muestran como texto inerte y la app no importa códig
 
 ## Centro de Control Científico Qt (experimental, P3.18)
 
-La aplicación opcional de PySide6 integra proyectos, agentes, experimentos, auditorías, código y resultados en una ventana. Reutiliza el workspace y los componentes científicos existentes; carga manifiestos y recursos por el loader con contención y SHA-256. La vista de agentes reutiliza configuración, preparación de perfiles y el runner local; una auditoría requiere confirmación humana y puede consumir cuota. Cancelar, fallar o salir con código cero nunca aprueba el resultado. Abrir la aplicación no invoca proveedores.
+La aplicación opcional de PySide6 integra proyectos, agentes, experimentos, auditorías, código y resultados en una ventana. Reutiliza el workspace y los componentes científicos existentes; carga manifiestos y recursos por el loader con contención y SHA-256. La vista de agentes reutiliza configuración, preparación de perfiles y el runner local. Guardar política, preparar perfiles e iniciar auditorías requiere confirmación humana; la confirmación de auditoría describe la actualización de `.ssec/config.json` y advierte que puede consumir cuota sin costo medible. Cancelar, fallar o salir con código cero nunca aprueba el resultado. Abrir la aplicación no invoca proveedores.
 
 ```bash
 python scripts/scientific_control_center_qt.py

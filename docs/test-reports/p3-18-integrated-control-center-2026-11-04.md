@@ -4,7 +4,7 @@
 
 P3.18 entrega una aplicación PySide6 opcional que integra una raíz de proyecto y workspace verificado con navegación persistente a **Proyectos, Agentes, Experimentos, Auditorías, Código y Resultados**. El shell incrusta el `ScientificWorkspaceWindow` existente y reutiliza sus componentes; no duplica el motor científico ni modifica su contrato. `scripts/scientific_control_center_qt.py` ya se puede lanzar directamente, con o sin proyecto inicial.
 
-La página **Agentes** reutiliza configuración, previsualización/preparación de perfiles y `run_agents.py`. Solo admite tareas de auditoría, advierte que una ejecución CLI puede consumir cuota sin costo medible, exige confirmación humana, usa argv con `QProcess`, muestra el último progreso JSONL válido dentro del límite y permite solicitar cancelación por archivo. Vista previa y rechazo de confirmación no inician procesos ni escriben configuración/logs de ejecución. `FailedToStart`, cancelación y exit 0 sin revisión quedan explícitamente `NOT_APPROVED` / **NO APROBADA**.
+La página **Agentes** reutiliza configuración, previsualización/preparación de perfiles y `run_agents.py`. Solo admite tareas de auditoría. Guardar política, preparar perfiles e iniciar una auditoría exigen confirmación humana; la confirmación de auditoría informa que también guardará la política local en `.ssec/config.json`, y advierte cuota/costo no medible. Usa argv con `QProcess`, muestra el último progreso JSONL válido dentro del límite y permite solicitar cancelación por archivo. Vista previa y rechazo de confirmación no inician procesos ni escriben configuración/logs de ejecución. `FailedToStart`, cancelación y exit 0 sin revisión quedan explícitamente `NOT_APPROVED` / **NO APROBADA**.
 
 Los cambios de proyecto se validan antes de cargar el workspace y se rechazan durante una auditoría activa. El loader existente verifica SHA-256 y contención. El import del módulo no inicia Tkinter. PySide6 continúa opcional; el frontend científico existente conserva WebEngine local/fallback Qt nativo.
 
@@ -13,8 +13,9 @@ Los cambios de proyecto se validan antes de cargar el workspace y se rechazan du
 - `9ca601e` — mapa de secciones de workspace para las rutas científicas.
 - `19a5540` — shell Qt y navegación común de proyectos.
 - `388edeb` — supervisor Qt, CLI ejecutable, regresiones de lifecycle y ciclo local integrado.
+- `2d13c22` — confirmar la persistencia de política y describirla al confirmar la auditoría.
 
-La documentación de entrega y captura visual se añade en un commit separado de este informe.
+La documentación de entrega y captura visual se añade en un commit separado.
 
 La rama `codex/p3-18-integrated-control-center` se apila sobre `codex/p3-17-sir-analysis-integration` (P3.17, draft PR #41). Sin merge a `main` ni release.
 
@@ -24,7 +25,7 @@ Entorno local: Windows, Python 3.14.0, PySide6 6.11.1.
 
 ```text
 python -m unittest -q tests.test_control_center tests.test_scientific_control_center_qt tests.test_scientific_sir_analysis_demo tests.test_scientific_workspace_qt
-Ran 30 tests — OK
+Ran 32 tests — OK
 
 python -m py_compile scripts/scientific_control_center_qt.py
 git diff --check
@@ -39,7 +40,8 @@ Se abrió la app en modo Windows con `examples/sir_analysis_workspace_demo/works
 
 1. La ruta Agentes aún era un placeholder; ahora contiene la página supervisora Qt.
 2. El botón Cancelar permanecía deshabilitado después de `QProcess.start()`: el estado se actualizaba antes de que llegara la señal `started`. El slot ahora refresca los controles al iniciar.
-3. Un `FailedToStart` seguido de una prueba Qt con `QThread` podía terminar Python con código nativo `-1073740791` y dejar el log abierto en Windows. La causa era destruir el `QProcess` dentro de la secuencia de señal y perder su instancia; el supervisor ahora conserva y reutiliza el proceso detenido. Una regresión cubre fallo→reintento y las 29 pruebas combinadas terminan correctamente.
+3. Un `FailedToStart` seguido de una prueba Qt con `QThread` podía terminar Python con código nativo `-1073740791` y dejar el log abierto en Windows. La causa era destruir el `QProcess` dentro de la secuencia de señal y perder su instancia; el supervisor ahora conserva y reutiliza el proceso detenido. Una regresión cubre fallo→reintento.
+4. La revisión independiente encontró que guardar una política escribía `.ssec/config.json` sin una confirmación que describiera la persistencia. Ahora guardar política solicita aprobación antes de escribir y la confirmación de auditoría avisa que el flujo actualizará el mismo archivo. Pruebas de aceptación/rechazo confirman que el rechazo no escribe; suite combinada: 32 pruebas.
 
 ## Decisiones y límites
 

@@ -71,7 +71,7 @@
 - Launch only `kind=audit` through `QProcess` with argv entries, project cwd, bounded log, cancel-file path and the existing CLI arguments.
 - Inject a confirmation handler/process factory only at an internal test boundary; production default must always use the human dialog.
 
-- [x] Test policy validation/plan preview, declined confirmation, bounded progress, cancel request, launch failure/retry and exit-zero-unapproved using deterministic local test processes.
+- [x] Test policy validation/plan preview, confirmed/rejected policy writes, declined audit confirmation, bounded progress, cancel request, launch failure/retry and exit-zero-unapproved using deterministic local test processes.
 - [x] Verify the start/cancel tests fail before implementation.
 - [x] Implement start, progress, cancel and terminal error/status handling with no provider calls.
 - [x] Run supervisor and integration tests.
