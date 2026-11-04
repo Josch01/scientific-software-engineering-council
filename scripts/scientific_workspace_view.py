@@ -825,6 +825,8 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
         raise ValueError("model state_names must contain each observed variable")
     if not isinstance(model["time_unit"], str) or not model["time_unit"] or len(model["time_unit"]) > 256:
         raise ValueError("model time_unit must be a non-empty string")
+    if model["time_unit"] != time_unit:
+        raise ValueError("model time unit must match observation evaluation time_unit")
     model_initial_state = _result_sequence(model["initial_state"], "model initial_state",
                                           maximum=MAX_SIMULATION_VIEW_STATES)
     if len(model_initial_state) != len(model_state_names):
@@ -834,9 +836,11 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
     model_units = model["variable_units"]
     if not isinstance(model_units, Mapping) or set(model_units) != set(variable_names):
         raise ValueError("model variable_units must match observation variables")
-    for unit in model_units.values():
+    for name, unit in model_units.items():
         if not isinstance(unit, str) or not unit or len(unit) > 256:
             raise ValueError("model variable units must be non-empty strings")
+        if unit != units[name]:
+            raise ValueError("model variable units must match observation variable_units")
     parameters = model["parameters"]
     if not isinstance(parameters, Mapping) or len(parameters) > MAX_SIMULATION_VIEW_PARAMETERS:
         raise ValueError("model parameters must be a bounded object")

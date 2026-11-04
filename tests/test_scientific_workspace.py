@@ -68,6 +68,16 @@ def valid_manifest():
 
 
 class WorkspaceManifestTests(unittest.TestCase):
+    def test_generic_template_includes_observation_evaluation_and_residual_view(self):
+        template_path = Path(__file__).resolve().parents[1] / "examples" / "scientific_workspace_template.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+
+        summary = scientific_workspace.validate_workspace_manifest(template)
+
+        self.assertIn("residual_plot", summary.component_types)
+        evaluation = next(item for item in template["resources"] if item["id"] == "evaluation")
+        self.assertEqual(evaluation["kind"], "observation_evaluation")
+
     def test_residual_plot_accepts_observation_evaluation_resource(self):
         manifest = valid_manifest()
         manifest["resources"].append(

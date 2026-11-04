@@ -6,6 +6,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
+from dataclasses import replace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -139,6 +140,26 @@ class ScientificWorkspaceQtResultViewsTests(unittest.TestCase):
         self.assertIsNotNone(provenance)
         self.assertIn("SHA-256", provenance.text())
 
+    def test_fit_residual_table_is_bounded_and_samples_endpoints(self):
+        component = next(
+            component for section in self.window.workspace_view_model.sections
+            for component in section.components if component.component_id == "fit-view"
+        )
+        residual_values = tuple(float(index) for index in range(10_000))
+        component = replace(
+            component, content=replace(component.content, residuals=residual_values)
+        )
+        host = QtWidgets.QWidget()
+        self.addCleanup(host.close)
+        layout = QtWidgets.QVBoxLayout(host)
+        self.window._render_fit_summary(layout, component)
+        residual_table = host.findChild(QtWidgets.QTableWidget, "fit-residuals-table")
+
+        self.assertEqual(residual_table.rowCount(), 200)
+        self.assertEqual(residual_table.item(0, 0).text(), "0")
+        self.assertEqual(residual_table.item(199, 0).text(), "9999")
+        self.assertIn("200 filas de 10000", residual_table.toolTip())
+
     def test_sensitivity_renderer_shows_axes_series_and_provenance(self):
         chart = self.window.findChild(QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0")
         self.assertIsNotNone(chart)
@@ -197,3 +218,24 @@ class ScientificWorkspaceQtResultViewsTests(unittest.TestCase):
         self.assertIn("NOT_ASSESSED / NOT_CALCULATED", status.text())
         self.assertNotIn("confidence band", status.text().lower())
         self.assertIsNotNone(self.window.findChild(QtWidgets.QPlainTextEdit, "data-uncertainty-view"))
+
+    def test_synthetic_demo_workspace_loads_all_three_scientific_views(self):
+        from scripts.scientific_workspace_qt import ScientificWorkspaceWindow
+
+        examples = Path(__file__).resolve().parents[1] / "examples"
+        window = ScientificWorkspaceWindow()
+        self.addCleanup(window.close)
+        with patch("scripts.scientific_workspace_qt_charts.WEBENGINE_AVAILABLE", False):
+            model = window.load_workspace(
+                examples, "scientific_workspace_science_views_demo/workspace.json"
+            )
+        window.show()
+        self.app.processEvents()
+
+        components = {item.component_type: item for item in model.sections[0].components}
+        self.assertEqual(components["fit_summary"].status, "ok")
+        self.assertEqual(components["sensitivity_plot"].status, "ok")
+        self.assertEqual(components["residual_plot"].status, "ok")
+        self.assertIsNotNone(window.findChild(QtWidgets.QTableWidget, "fit-parameters-table"))
+        self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0"))
+        self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-residual-view-observed-0"))

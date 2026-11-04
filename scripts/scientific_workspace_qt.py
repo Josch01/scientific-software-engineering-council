@@ -86,6 +86,9 @@ except ImportError:  # Direct execution from the scripts directory.
     )
 
 
+MAX_FIT_RESIDUAL_TABLE_ROWS = 200
+
+
 def _plain(value: object) -> object:
     """Convert bounded immutable view data to plain JSON-safe display values."""
     if is_dataclass(value) and not isinstance(value, type):
@@ -1411,14 +1414,29 @@ if QtWidgets is not None:
                                   QtWidgets.QTableWidgetItem(sanitize_display_text(value)))
             table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
             layout.addWidget(table)
-            residuals = QtWidgets.QTableWidget(len(content.residuals), 2)
+            residual_count = len(content.residuals)
+            if residual_count > MAX_FIT_RESIDUAL_TABLE_ROWS:
+                sampled_indexes = tuple(
+                    round(index * (residual_count - 1) / (MAX_FIT_RESIDUAL_TABLE_ROWS - 1))
+                    for index in range(MAX_FIT_RESIDUAL_TABLE_ROWS)
+                )
+            else:
+                sampled_indexes = tuple(range(residual_count))
+            residuals = QtWidgets.QTableWidget(len(sampled_indexes), 2)
             residuals.setObjectName("fit-residuals-table")
-            residuals.setHorizontalHeaderLabels(("Índice", "Residuo") )
+            residuals.setHorizontalHeaderLabels(("Índice", "Residuo"))
             residuals.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            for index, value in enumerate(content.residuals):
-                residuals.setItem(index, 0, QtWidgets.QTableWidgetItem(str(index)))
-                residuals.setItem(index, 1, QtWidgets.QTableWidgetItem(f"{value:.8g}"))
-            residuals.setMaximumHeight(min(300, 48 + 26 * len(content.residuals)))
+            for row_index, source_index in enumerate(sampled_indexes):
+                residuals.setItem(row_index, 0, QtWidgets.QTableWidgetItem(str(source_index)))
+                residuals.setItem(
+                    row_index, 1, QtWidgets.QTableWidgetItem(f"{content.residuals[source_index]:.8g}")
+                )
+            if residual_count > len(sampled_indexes):
+                residuals.setToolTip(
+                    f"Vista tabular limitada a {len(sampled_indexes)} filas de "
+                    f"{residual_count} residuales; se incluyen ambos extremos."
+                )
+            residuals.setMaximumHeight(min(300, 48 + 26 * len(sampled_indexes)))
             layout.addWidget(residuals)
             self._add_source_provenance(layout, component)
 

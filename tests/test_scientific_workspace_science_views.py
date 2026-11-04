@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import copy
 from pathlib import Path
 import tempfile
 import unittest
 
 from scripts.scientific_workspace_loader import load_scientific_workspace
+from scripts.scientific_core import (
+    ObservationDataset,
+    OdeProblem,
+    evaluate_observations,
+    fit_least_squares,
+    parameter_sensitivities,
+)
 
 
 def fit_payload():
@@ -200,3 +208,62 @@ class ScientificResultViewBuilderTests(unittest.TestCase):
         self.assertEqual(component.source_resources[0].sha256, digest)
         self.assertEqual(component.status, "ok")
         self.assertIn("identificabilidad", component.message.lower())
+
+    def test_actual_scientific_core_v1_results_map_to_the_display_contracts(self):
+        view = self._view()
+        problem = OdeProblem(
+            rhs=lambda _time, _state, parameters: (parameters["rate"],),
+            t_span=(0.0, 2.0), initial_state=(0.0,), parameters={"rate": 1.0},
+            state_names=("x",),
+        )
+        fit = fit_least_squares(
+            lambda parameters: (parameters["rate"] - 1.5,),
+            {"rate": 1.0}, {"rate": (0.0, 3.0)},
+        )
+        sensitivity = parameter_sensitivities(
+            problem, {"rate": 0.1}, max_step=0.2
+        )
+        dataset = ObservationDataset.from_dict({
+            "schema_version": 1, "time_unit": "day",
+            "variables": [{"name": "x", "unit": "person"}],
+            "observations": [
+                {"time": 0.0, "values": {"x": 0.0}},
+                {"time": 1.0, "values": {"x": 0.9}},
+                {"time": 2.0, "values": {"x": 1.8}},
+            ],
+            "provenance": {"source": "synthetic test fixture"},
+        })
+        evaluation = evaluate_observations(
+            problem, dataset, model_time_unit="day", model_variable_units={"x": "person"},
+            max_step=0.2,
+        )
+
+        fit_view = view.build_fit_summary_view(
+            fit.to_dict(), {"parameter_names": ["rate"]},
+            unit_context={"parameter_units": {"rate": "person/day"}},
+        )
+        sensitivity_view = view.build_sensitivity_plot_view(
+            sensitivity.to_dict(), {"state_names": ["x"], "parameter_names": ["rate"]},
+            unit_context={"time_unit": "day", "state_units": {"x": "person"},
+                          "parameter_units": {"rate": "person/day"}},
+        )
+        evaluation_view = view.build_observation_evaluation_view(evaluation.to_dict())
+
+        self.assertEqual(fit_view.parameters[0].unit, "person/day")
+        self.assertEqual(sensitivity_view.times, sensitivity.times)
+        self.assertEqual(sensitivity_view.series[0].values,
+                         tuple(row[0][0] for row in sensitivity.values))
+        for actual, expected in zip(evaluation_view.series[0].residuals, (0.0, 0.1, 0.2)):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_observation_evaluation_rejects_model_units_mismatched_with_observations(self):
+        view = self._view()
+        time_mismatch = copy.deepcopy(observation_evaluation_payload())
+        time_mismatch["model"]["time_unit"] = "week"
+        with self.assertRaisesRegex(ValueError, "model time unit must match"):
+            view.build_observation_evaluation_view(time_mismatch)
+
+        variable_mismatch = copy.deepcopy(observation_evaluation_payload())
+        variable_mismatch["model"]["variable_units"]["S"] = "case"
+        with self.assertRaisesRegex(ValueError, "model variable units must match"):
+            view.build_observation_evaluation_view(variable_mismatch)

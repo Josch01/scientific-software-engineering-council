@@ -5,13 +5,15 @@ import json
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import time
 import unittest
 from unittest.mock import patch
 
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:
     QtCore = None
+    QtGui = None
     QtWidgets = None
 
 from scripts import scientific_workspace_qt_charts as charts
@@ -74,7 +76,6 @@ class ScientificChartHtmlTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "point limit"):
                 charts.build_scientific_chart_html(chart_payload())
 
-
 @unittest.skipIf(QtWidgets is None, "PySide6 is not installed")
 class ScientificChartWidgetTests(unittest.TestCase):
     @classmethod
@@ -88,6 +89,15 @@ class ScientificChartWidgetTests(unittest.TestCase):
         self.addCleanup(widget.close)
         self.assertIsNotNone(widget.findChild(QtWidgets.QFrame, "scientificChartFallback"))
         self.assertIsNotNone(widget.findChild(QtWidgets.QTableWidget, "scientificChartDataTable"))
+
+    def test_widget_falls_back_when_valid_chart_html_exceeds_page_budget(self):
+        payload = chart_payload()
+        with patch.object(charts, "MAX_CHART_HTML_BYTES", 1024):
+            with patch.object(charts, "WEBENGINE_AVAILABLE", True):
+                widget = charts.ScientificChartWidget(payload)
+
+        self.addCleanup(widget.close)
+        self.assertIsNotNone(widget.findChild(QtWidgets.QFrame, "scientificChartFallback"))
 
     @unittest.skipUnless(charts.WEBENGINE_AVAILABLE, "Qt WebEngine is unavailable")
     def test_webengine_widget_uses_local_content_without_remote_file_access(self):
@@ -124,4 +134,85 @@ class ScientificChartWidgetTests(unittest.TestCase):
             charts.QWebEnginePage.NavigationType.NavigationTypeLinkClicked,
             True,
         ))
+
+    @unittest.skipUnless(charts.WEBENGINE_AVAILABLE, "Qt WebEngine is unavailable")
+    def test_webengine_renders_series_beyond_javascript_argument_limit(self):
+        point_count = 63_000
+        x_values = [float(index) for index in range(point_count)]
+        payload = chart_payload()
+        payload["series"] = [
+            {"name": "First", "x": x_values, "y": [1.0] * point_count},
+            {"name": "Second", "x": x_values, "y": [2.0] * point_count},
+        ]
+        self.assertLessEqual(
+            len(charts.build_scientific_chart_html(payload).encode("utf-8")),
+            charts.MAX_WEBENGINE_DATA_URL_BYTES,
+        )
+        widget = charts.ScientificChartWidget(payload)
+        self.addCleanup(widget.close)
+        view = widget.findChild(charts.QWebEngineView, "scientificChartWebEngine")
+        self.assertIsNotNone(view)
+
+        loop = QtCore.QEventLoop()
+        rendered_series = []
+
+        deadline = time.monotonic() + 10
+
+        def check_rendered_series(value):
+            if value == 2 or time.monotonic() >= deadline:
+                rendered_series.append(value)
+                loop.quit()
+            else:
+                QtCore.QTimer.singleShot(50, query_series)
+
+        def query_series():
+            view.page().runJavaScript(
+                "document.querySelectorAll('svg path[data-index]').length",
+                check_rendered_series,
+            )
+
+        query_series()
+        QtCore.QTimer.singleShot(10000, loop.quit)
+        loop.exec()
+
+        self.assertEqual(rendered_series, [2], "large local chart did not render both series")
+
+    @unittest.skipUnless(charts.WEBENGINE_AVAILABLE, "Qt WebEngine is unavailable")
+    def test_widget_falls_back_for_valid_payload_above_webengine_page_budget(self):
+        point_count = charts.MAX_CHART_POINTS
+        x_values = [float(index) for index in range(point_count)]
+        payload = chart_payload()
+        payload["series"] = [
+            {"name": "First", "x": x_values, "y": [1.0] * point_count},
+            {"name": "Second", "x": x_values, "y": [2.0] * point_count},
+        ]
+
+        widget = charts.ScientificChartWidget(payload)
+        self.addCleanup(widget.close)
+
+        self.assertIsNotNone(widget.findChild(QtWidgets.QFrame, "scientificChartFallback"))
+
+    def test_fallback_paints_the_y_axis_label(self):
+        def render(label):
+            payload = chart_payload()
+            payload["y_label"] = label
+            widget = charts._ChartPainter(payload)
+            widget.resize(700, 360)
+            widget.show()
+            self.app.processEvents()
+            image = QtGui.QImage(widget.size(), QtGui.QImage.Format.Format_ARGB32)
+            image.fill(QtGui.QColor("white"))
+            painter = QtGui.QPainter(image)
+            widget.render(painter, QtCore.QPoint())
+            painter.end()
+            widget.close()
+            return image
+
+        first = render("Unit alpha")
+        second = render("Unit beta")
+        differences = sum(
+            first.pixelColor(x, y) != second.pixelColor(x, y)
+            for y in range(first.height()) for x in range(first.width())
+        )
+        self.assertGreater(differences, 10, "changing y_label did not change the visible chart")
 

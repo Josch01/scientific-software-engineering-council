@@ -24,6 +24,7 @@ MAX_CHART_SERIES = 32
 MAX_CHART_POINTS = 100_000
 MAX_CHART_TOTAL_POINTS = 200_000
 MAX_CHART_HTML_BYTES = 4 * 1024 * 1024
+MAX_WEBENGINE_DATA_URL_BYTES = 2_000_000
 _COLORS = ("#176b87", "#c76732", "#3b7e58", "#7856a5", "#a14355", "#b28a18")
 WEBENGINE_AVAILABLE = all(
     item is not None for item in (QtCore, QtGui, QtWidgets, QWebEnginePage, QWebEngineSettings, QWebEngineView)
@@ -107,8 +108,10 @@ svg.setAttribute('viewBox','0 0 960 480');svg.setAttribute('role','img');
 svg.setAttribute('aria-label',data.title);host.appendChild(svg);
 const tip=document.createElement('div');tip.className='tooltip';tip.setAttribute('role','status');host.appendChild(tip);
 const ns='http://www.w3.org/2000/svg',L=82,R=20,T=24,B=72,W=960,H=480;
-const allX=data.series[0].x,allY=data.series.flatMap(s=>s.y);
-let xmin=Math.min(...allX),xmax=Math.max(...allX),ymin=Math.min(...allY),ymax=Math.max(...allY);
+const allX=data.series[0].x;
+let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+for(const x of allX){if(x<xmin)xmin=x;if(x>xmax)xmax=x;}
+for(const s of data.series)for(const y of s.y){if(y<ymin)ymin=y;if(y>ymax)ymax=y;}
 if(xmin===xmax){xmin-=0.5;xmax+=0.5;}if(ymin===ymax){const p=Math.max(Math.abs(ymin)*0.05,1);ymin-=p;ymax+=p;}
 else{const p=(ymax-ymin)*0.06;ymin-=p;ymax+=p;}
 const px=x=>L+(x-xmin)/(xmax-xmin)*(W-L-R),py=y=>H-B-(y-ymin)/(ymax-ymin)*(H-T-B);
@@ -119,7 +122,10 @@ for(const [y,label] of [[T,String(ymax)],[H-B,String(ymin)]])el('text',{x:L-10,y
 el('text',{x:(L+W-R)/2,y:H-16,'text-anchor':'middle',class:'axis'},data.x_label);
 const ylabel=el('text',{x:18,y:(T+H-B)/2,'text-anchor':'middle',class:'axis',transform:`rotate(-90 18 ${(T+H-B)/2})`},data.y_label);
 const colors=['#176b87','#c76732','#3b7e58','#7856a5','#a14355','#b28a18'];
-const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length];const d=s.x.map((x,j)=>`${j?'L':'M'}${px(x).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i});paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
+const stride=Math.max(1,Math.ceil(allX.length/2000)),renderedIndices=[];
+for(let j=0;j<allX.length;j+=stride)renderedIndices.push(j);
+if(renderedIndices[renderedIndices.length-1]!==allX.length-1)renderedIndices.push(allX.length-1);
+const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length];const d=renderedIndices.map((j,k)=>`${k?'L':'M'}${px(s.x[j]).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i});paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
 svg.addEventListener('mousemove',event=>{const point=svg.createSVGPoint();point.x=event.clientX;point.y=event.clientY;const p=point.matrixTransform(svg.getScreenCTM().inverse());if(p.x<L||p.x>W-R){tip.textContent='';return;}const ratio=(p.x-L)/(W-L-R),index=Math.max(0,Math.min(allX.length-1,Math.round(ratio*(allX.length-1))));const visible=data.series.map((s,i)=>paths[i].style.display==='none'?null:`${s.name}: ${s.y[index]}`).filter(Boolean);tip.textContent=`${data.x_label}: ${allX[index]} · ${visible.join(' · ')}`;});
 svg.addEventListener('mouseleave',()=>{tip.textContent='';});
 })();"""
@@ -169,7 +175,7 @@ if QtWidgets is not None:
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             painter.fillRect(self.rect(), QtGui.QColor("#ffffff"))
-            rect = self.rect().adjusted(64, 18, -18, -48)
+            rect = self.rect().adjusted(88, 20, -18, -54)
             series = self._data["series"]
             x_values = series[0]["x"]
             y_values = tuple(value for item in series for value in item["y"])
@@ -190,11 +196,21 @@ if QtWidgets is not None:
             painter.drawLine(rect.bottomLeft(), rect.bottomRight())
             painter.drawLine(rect.bottomLeft(), rect.topLeft())
             painter.setPen(QtGui.QColor("#536273"))
-            painter.drawText(4, rect.top() + 8, f"{y_max:.4g}")
-            painter.drawText(4, rect.bottom(), f"{y_min:.4g}")
+            painter.drawText(34, rect.top() + 8, 48, 18,
+                             QtCore.Qt.AlignmentFlag.AlignRight, f"{y_max:.4g}")
+            painter.drawText(34, rect.bottom() - 9, 48, 18,
+                             QtCore.Qt.AlignmentFlag.AlignRight, f"{y_min:.4g}")
             painter.drawText(rect.left(), rect.bottom() + 22, f"{x_min:.5g}")
             painter.drawText(rect.right() - 50, rect.bottom() + 22, f"{x_max:.5g}")
             painter.drawText(rect.left(), self.height() - 8, str(self._data["x_label"]))
+            painter.save()
+            painter.translate(13, rect.center().y())
+            painter.rotate(-90)
+            painter.drawText(
+                QtCore.QRectF(-rect.height() / 2, -10, rect.height(), 20),
+                QtCore.Qt.AlignmentFlag.AlignCenter, str(self._data["y_label"]),
+            )
+            painter.restore()
             for index, item in enumerate(series):
                 color = QtGui.QColor(_COLORS[index % len(_COLORS)])
                 painter.setPen(QtGui.QPen(color, 2))
@@ -282,7 +298,17 @@ if QtWidgets is not None:
                 f"Series: {', '.join(str(item['name']) for item in self._data['series'])}."
             )
             layout = QtWidgets.QVBoxLayout(self)
+            page_html = None
             if WEBENGINE_AVAILABLE and QWebEngineView is not None:
+                try:
+                    page_html = build_scientific_chart_html(self._data)
+                except ValueError as exc:
+                    if not str(exc).startswith("chart HTML exceeds the "):
+                        raise
+                if (page_html is not None
+                        and len(page_html.encode("utf-8")) > MAX_WEBENGINE_DATA_URL_BYTES):
+                    page_html = None
+            if page_html is not None:
                 view = QWebEngineView(self)
                 view.setObjectName("scientificChartWebEngine")
                 page = _ScientificChartPage(view)
@@ -293,7 +319,7 @@ if QtWidgets is not None:
                 settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
                 settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, False)
                 view.setMinimumHeight(360)
-                view.setHtml(build_scientific_chart_html(self._data), QtCore.QUrl("about:blank"))
+                view.setHtml(page_html, QtCore.QUrl("about:blank"))
                 layout.addWidget(view)
                 layout.addWidget(_data_table(self._data))
             else:

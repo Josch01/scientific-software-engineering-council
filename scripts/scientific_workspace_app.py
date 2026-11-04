@@ -480,6 +480,7 @@ COMPONENT_RENDERERS: Mapping[str, Callable] = {
     "simulation_plot": _render_simulation,
     "fit_summary": _render_json,
     "sensitivity_plot": _render_json,
+    "residual_plot": _render_json,
     "uncertainty_summary": _render_json,
     "audit_summary": _render_json,
     "artifact_browser": _render_artifact_browser,
