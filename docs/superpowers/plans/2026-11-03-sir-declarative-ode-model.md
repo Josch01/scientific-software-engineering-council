@@ -95,4 +95,4 @@
 - [x] **Step 2: Run the demo and compare literal output assertions** in a regression test.
 - [x] **Step 3: Run focused Windows tests, the full Docker/Linux suite, validation, compilation and diff checks.**
 - [x] **Step 4: Request one independent review**, fix reproducible important defects with TDD, and document remaining limits.
-- [ ] **Step 5: Commit and push a separate branch; open a draft PR based on P3.6 and record CI without merging.**
+- [x] **Step 5: Commit and push a separate branch; open a draft PR based on P3.6 and record CI without merging.** — PR draft [#29](https://github.com/Josch01/scientific-software-engineering-council/pull/29); corrected SHA `4f2b27cc41e20cf4ee48a4e8ec0393a9913fccea`; runs `41735442816` and `41735436247` passed 4/4 jobs each. Incremento de software cerrado; el SIR concreto del usuario sigue `NOT_RUN`.

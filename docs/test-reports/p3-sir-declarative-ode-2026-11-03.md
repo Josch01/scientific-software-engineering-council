@@ -26,7 +26,7 @@
 | Windows, Python 3.14.0 | `python examples/run_sir_model_demo.py` | PASS: `SIMULATED_FIXTURE`, 100 pasos, `scientific_validity=NOT_ASSESSED`, hash del modelo `a131a2b9e2e06544ef165419be769eb025f74529941171c1711b2f0803a38cef` |
 | Windows, Python 3.14.0 | `py_compile` de módulos/tests modificados y `git diff --check` | PASS |
 | Revisión independiente | Contrato, solver y enlace al workspace; alcance estático acotado | PASS: sin hallazgos críticos/importantes reproducibles; revisión no ejecutó Tk visible |
-| GitHub Actions de P3.7 | Requiere push/PR | `NOT_RUN` |
+| GitHub Actions del PR #29, SHA `4f2b27cc41e20cf4ee48a4e8ec0393a9913fccea` | Runs [41735442816](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41735442816) y [41735436247](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/41735436247) | PASS: 4/4 jobs success en cada run; Windows/Ubuntu × Python 3.11/3.12. |
 
 ## Defecto encontrado y corrección
 
@@ -38,8 +38,8 @@ Un checkout limpio de Windows con `core.autocrlf=true` transformó los JSON del 
 - `beta` y `gamma` no negativas, población constante y las fórmulas de frecuencia dependiente son supuestos de este contrato específico. No hay conversión de unidades ni análisis dimensional general; las unidades son etiquetas con una comprobación de tasa `1/<tiempo>`.
 - RK4 es fijo y no estima error local ni detecta rigidez. Una trayectoria que viole positividad o conservación se rechaza; el contrato no garantiza que el paso aceptado sea suficientemente preciso.
 - La salida aparece en memoria y no se persiste. Callbacks personalizados suministrados por un host siguen ejecutándose dentro del proceso y no están aislados; el workspace no puede registrar callbacks ni ejecutar Python generado.
-- Fit SIR integrado al workspace, incertidumbre, auditoría automatizada, selección de múltiples modelos y espacio configurado directamente por agentes siguen pendientes. CI del SHA corregido está pendiente.
+- Fit SIR integrado al workspace, incertidumbre, auditoría automatizada, selección de múltiples modelos y espacio configurado directamente por agentes siguen pendientes. CI del SHA corregido pasó en Windows/Ubuntu × Python 3.11/3.12 (4/4 jobs en cada uno de dos runs).
 
 ## Entrega Git
 
-Rama `codex/p3-sir-declarative-ode`, basada en `codex/p3-workspace-approved-simulation` (P3.6), commit original `45ad639` más corrección de portabilidad posterior. PR borrador #29; CI del SHA corregido pendiente. Sin merge ni release.
+Rama `codex/p3-sir-declarative-ode`, basada en `codex/p3-workspace-approved-simulation` (P3.6), commit original `45ad639` más corrección de portabilidad posterior. PR borrador #29; CI del SHA corregido PASS: runs 41735442816 y 41735436247, 4/4 jobs cada uno. Sin merge ni release.
