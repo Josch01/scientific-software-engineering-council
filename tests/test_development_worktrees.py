@@ -655,6 +655,75 @@ class WorktreeTests(unittest.TestCase):
             self.assertEqual(attempt["status"],"CANCELLED")
             self.assertIsNone(attempt["identity"])
 
+    def test_execute_persists_runtime_session_inventory(self):
+        task=task_with_checks()
+        state=initialize(task,POLICY,self.root,apply=True)
+        report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                       parallel=1,minutes=2,runtime_factory=lambda provider:LocalPythonRuntime())
+        _,metadata=load(self.root,task["task_id"])
+        inventory_path=metadata/"dev-logs"/report["run_id"]/"runtime-sessions.json"
+        inventory=json.loads(inventory_path.read_text(encoding="utf-8"))
+        self.assertEqual(inventory["schema_version"],1)
+        self.assertEqual(inventory["task_id"],task["task_id"])
+        self.assertEqual(inventory["task_revision"],state["task_revision"])
+        self.assertEqual(inventory["task_sha256"],state["task_sha256"])
+        self.assertEqual(inventory["base_commit"],state["base_commit"])
+        self.assertEqual(inventory["run_id"],report["run_id"])
+        self.assertEqual(inventory["run_status"],report["execution"])
+        self.assertEqual(inventory["implementation_sessions"],sorted(
+            inventory["implementation_sessions"],key=lambda item:item["role"]))
+        self.assertEqual(inventory["worker_review_sessions"],sorted(
+            inventory["worker_review_sessions"],key=lambda item:(item["worker_role"],item["reviewer_role"])))
+        self.assertEqual(len(inventory["implementation_sessions"]),len(state["workers"]))
+        observed_reviews=[item for item in report["review_evidence"]
+                          if isinstance(item.get("provider_session_id"),str) and item["provider_session_id"]]
+        self.assertEqual(len(inventory["worker_review_sessions"]),len(observed_reviews))
+        self.assertEqual(report["runtime_sessions_manifest_path"],inventory_path.relative_to(metadata).as_posix())
+        self.assertEqual(report["runtime_sessions_manifest_sha256"],
+                         hashlib.sha256(inventory_path.read_bytes()).hexdigest())
+
+    def test_execute_session_manifest_failure_keeps_review_incomplete(self):
+        task=task_with_checks()
+        initialize(task,POLICY,self.root,apply=True)
+        with patch("scripts.development_runner._persist_runtime_sessions",
+                   side_effect=OSError("fixture write failure")):
+            report=execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                           parallel=1,minutes=2,runtime_factory=lambda provider:LocalPythonRuntime())
+        self.assertEqual(report["review_status"],"REVIEW_INCOMPLETE")
+        self.assertEqual(report["execution"],"REVIEW_INCOMPLETE")
+        self.assertFalse(report.get("runtime_sessions_manifest_sha256"))
+        self.assertTrue(report.get("review_error"))
+
+    def test_execute_rejects_reparse_metadata_before_load_or_runtime(self):
+        task=task_with_checks()
+        initialize(task,POLICY,self.root,apply=True)
+        _,metadata=load(self.root,task["task_id"])
+        runtime_factory=Mock()
+        def report_reparse(path,info):
+            return Path(path)==metadata
+        with patch("scripts.check_runner._is_filesystem_link",side_effect=report_reparse), \
+             patch("scripts.development_runner.load",side_effect=AssertionError("load traversed metadata")) as loader:
+            with self.assertRaisesRegex(ValueError,"reparse|symlink"):
+                execute(self.root,task["task_id"],task,launch=True,cost_ack=True,
+                        runtime_factory=runtime_factory)
+        loader.assert_not_called()
+        runtime_factory.assert_not_called()
+
+    def test_runtime_session_inventory_refuses_existing_destination(self):
+        from scripts.development_runner import _persist_runtime_sessions
+        metadata=self.root/"metadata"
+        run_dir=metadata/"dev-logs"/"run-1"
+        run_dir.mkdir(parents=True)
+        destination=run_dir/"runtime-sessions.json"
+        destination.write_text("existing evidence\n",encoding="utf-8")
+        state={"task_id":"SSEC-TEST","task_revision":"revision-1",
+               "task_sha256":"a"*64,"base_commit":"base"}
+        report={"run_id":"run-1","execution":"DONE","process_execution":"DONE",
+                "check_status":"NOT_RUN","review_status":"NOT_RUN",
+                "results":[],"review_evidence":[]}
+        with self.assertRaises(FileExistsError):
+            _persist_runtime_sessions(metadata,state,report)
+        self.assertEqual(destination.read_text(encoding="utf-8"),"existing evidence\n")
     def test_offline_provider_fixture_cannot_be_counted_as_review_evidence(self):
         task=task_with_checks()
         state=initialize(task,POLICY,self.root,apply=True)

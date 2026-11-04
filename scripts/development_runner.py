@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -25,7 +26,7 @@ from scripts.agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeS
 from scripts.provider_runtimes import CodexRuntime, GeminiRuntime, create_runtime
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
 from scripts.check_runner import (run_checks, read_check_manifest, capture_snapshot,
-                                  snapshot_artifact_sha256)
+                                  snapshot_artifact_sha256, _ensure_no_symlink_path)
 from scripts.prepare_agents import provider_for
 from scripts.review_evidence import (parse_review_report, report_sha256,
                                      validate_review_attempt, validate_review_manifest)
@@ -47,6 +48,7 @@ def _sha256_bytes(value):
 
 
 def _sha256_file(path):
+    _ensure_no_symlink_path(Path(path))
     digest=hashlib.sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda:stream.read(1024*1024),b""):
@@ -56,6 +58,7 @@ def _sha256_file(path):
 
 def _write_review_json(path,data,*,replace_existing=False):
     path=Path(os.path.abspath(path))
+    _ensure_no_symlink_path(path)
     if path.is_symlink() or (path.exists() and not replace_existing):
         raise ValueError("review artifact already exists or is a symlink")
     if replace_existing and (not path.exists() or not path.is_file()):
@@ -66,6 +69,7 @@ def _write_review_json(path,data,*,replace_existing=False):
         if cursor.is_symlink():
             raise ValueError("review artifact path contains a symlink directory")
     path.parent.mkdir(parents=True,exist_ok=True)
+    _ensure_no_symlink_path(path)
     cursor=Path(path.anchor)
     for part in path.parts[1:-1]:
         cursor=cursor/part
@@ -111,6 +115,8 @@ def _persist_review_artifacts(attempt,attempt_path,manifest,manifest_path,metada
 
 def _relative_metadata_path(path,metadata):
     path=Path(os.path.abspath(path))
+    _ensure_no_symlink_path(Path(metadata))
+    _ensure_no_symlink_path(path)
     root=Path(metadata).resolve(strict=True)
     cursor=Path(path.anchor)
     for part in path.parts[1:]:
@@ -321,7 +327,10 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         if preparation_status is not None:
             raise ValueError("reviewer cancelled or deadline elapsed before preparation")
         # Resolve and verify the worker's latest passing check manifest.
+        _ensure_no_symlink_path(metadata)
+        _ensure_no_symlink_path(review_dir)
         check_path=Path(worker["_check_manifest_path"])
+        _ensure_no_symlink_path(check_path)
         check_manifest=read_check_manifest(check_path,metadata)
         check_hash=_sha256_file(check_path)
         expected_tree=check_manifest["candidate_tree_sha256"]
@@ -339,7 +348,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         prompt_text=_review_prompt(task,worker,reviewer_role,identity,diff,check_manifest)
         if len(prompt_text.encode("utf-8"))>_MAX_REVIEW_DIFF_BYTES+128*1024:
             raise ValueError("review input exceeds the bounded prompt size")
+        _ensure_no_symlink_path(request_path)
         request_path.parent.mkdir(parents=True,exist_ok=True)
+        _ensure_no_symlink_path(request_path)
         request_data={"schema_version":1,"identity":identity,"reviewer_role":reviewer_role,
                       "requested_provider":provider,"prompt":prompt_text,"diff":diff}
         _write_review_json(request_path,request_data)
@@ -369,6 +380,9 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
             timeout_seconds=remaining,writable=False,cost_acknowledged=cost_ack,
             launch_control=stop if isinstance(stop,RuntimeLaunchControl)
                            else RuntimeLaunchControl(stop,deadline))
+        _ensure_no_symlink_path(review_dir)
+        _ensure_no_symlink_path(stdout)
+        _ensure_no_symlink_path(stderr)
         handle=runtime.launch(request)
         while True:
             if stop.is_set():
@@ -411,6 +425,8 @@ def _review_one(task,state,worker,reviewer_role,metadata,logs,deadline,stop,
         observed_sessions.add(session_key)
         if observed.status is not RuntimeStatus.SUCCEEDED:
             raise ValueError(observed.error or "reviewer process did not finish successfully")
+        _ensure_no_symlink_path(stdout)
+        _ensure_no_symlink_path(stderr)
         if stdout.is_symlink() or stderr.is_symlink() or not stdout.is_file() or not stderr.is_file():
             status="FAILED"
             raise ValueError("successful reviewer runtime did not leave regular output logs")
@@ -696,8 +712,62 @@ def _worker_check_evidence(task,state,worker,metadata,result,specs,required_ids,
                 "missing_spec_ids":sorted(missing_spec_ids),
                 "pending_evidence_ids":sorted(pending_evidence_ids),"error":str(exc)}
 
+def _reject_reparse_path(path):
+    """Reject symlinks and Windows reparse points before resolving or using metadata paths."""
+    _ensure_no_symlink_path(Path(path))
+
+def _persist_runtime_sessions(meta,state,report):
+    """Create a compact, create-only runtime-session inventory for one execution."""
+    _reject_reparse_path(meta)
+    run_id=report["run_id"]
+    run_dir=Path(meta)/"dev-logs"/run_id
+    _reject_reparse_path(run_dir)
+    implementation=[]
+    for item in report.get("results",[]):
+        session=item.get("provider_session_id")
+        if isinstance(session,str) and session:
+            implementation.append({"role":item.get("role"),"provider":item.get("provider"),
+                "provider_session_id":session,"outcome":item.get("status")})
+    reviews=[]
+    for item in report.get("review_evidence",[]):
+        session=item.get("provider_session_id")
+        if isinstance(session,str) and session:
+            reviews.append({"worker_role":item.get("worker_role"),
+                "reviewer_role":item.get("reviewer_role"),"provider":item.get("provider"),
+                "provider_session_id":session,"outcome":item.get("status")})
+    implementation.sort(key=lambda item:(item["role"] or "",item["provider"] or "",item["provider_session_id"]))
+    reviews.sort(key=lambda item:(item["worker_role"] or "",item["reviewer_role"] or ""))
+    inventory={"schema_version":1,"task_id":state["task_id"],
+        "task_revision":state["task_revision"],"task_sha256":state["task_sha256"],
+        "base_commit":state["base_commit"],"run_id":run_id,
+        "run_status":report.get("execution"),"process_execution":report.get("process_execution"),
+        "check_status":report.get("check_status"),"review_status":report.get("review_status"),
+        "implementation_sessions":implementation,"worker_review_sessions":reviews}
+    encoded=(json.dumps(inventory,ensure_ascii=False,sort_keys=True,separators=(",",":"))+"\n").encode("utf-8")
+    destination=run_dir/"runtime-sessions.json"
+    fd,temp_name=tempfile.mkstemp(prefix=".runtime-sessions-",suffix=".tmp",dir=run_dir)
+    try:
+        with os.fdopen(fd,"wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _reject_reparse_path(destination)
+        # Hard-link publication is atomic and fails if a destination already exists.
+        os.link(temp_name,destination)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+    return destination,hashlib.sha256(encoded).hexdigest()
+
 def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minutes=60,
             runtime_factory=None):
+    # Guard the task metadata path before load()/directory() can traverse it.
+    project_root=Path(git(project,"rev-parse","--show-toplevel")).resolve()
+    metadata_candidate=(project_root.parent/("."+project_root.name+"-ssec-worktrees")/
+                        ".ssec-state"/task_id)
+    _reject_reparse_path(metadata_candidate)
     state,meta=load(project,task_id)
     if task.get("task_id")!=task_id or canonical_task_sha256(task)!=state["task_sha256"]:
         raise ValueError("task id or canonical packet digest differs from initialized task")
@@ -721,6 +791,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
             "run_id":None,"execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
             "check_status":"NOT_RUN","check_evidence":[],
             "review_status":"NOT_RUN","review_evidence":[],
+            "runtime_sessions_manifest_path":None,"runtime_sessions_manifest_sha256":None,
             "missing_spec_ids":sorted(missing_spec_ids),
             "pending_evidence_ids":sorted(pending_evidence_ids),
             "evidence_verified":False,"release_status":"NOT_APPROVED","results":[],
@@ -730,8 +801,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     if not cost_ack:
         raise ValueError("--accept-unmetered-cost required")
     log_root=meta/"dev-logs"
-    if log_root.is_symlink():
-        raise ValueError("symlink logs forbidden")
+    _reject_reparse_path(log_root)
     log_root.mkdir(parents=True,exist_ok=True)
     logs=log_root/uuid.uuid4().hex
     logs.mkdir(exist_ok=False)
@@ -838,6 +908,16 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
             elif review_results:
                 report["review_status"]="REVIEW_INCOMPLETE"
                 report["execution"]="REVIEW_INCOMPLETE"
+    try:
+        inventory_path,inventory_sha256=_persist_runtime_sessions(meta,state,report)
+        report["runtime_sessions_manifest_path"]=_relative_metadata_path(inventory_path,meta)
+        report["runtime_sessions_manifest_sha256"]=inventory_sha256
+    except (OSError,ValueError,TypeError,KeyError) as exc:
+        report["runtime_sessions_error"]=str(exc)
+        report["review_error"]="runtime session inventory could not be persisted: "+str(exc)
+        if report.get("review_status")!="NOT_RUN":
+            report["review_status"]="REVIEW_INCOMPLETE"
+            report["execution"]="REVIEW_INCOMPLETE"
     return report
 
 

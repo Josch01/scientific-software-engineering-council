@@ -118,7 +118,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                     reviewer_role=reviewer, reviewer_provider="gemini", runtime_run_id="fixture-run",
                     runtime_adapter_type="scripts.provider_runtimes.GeminiRuntime",
                     review_independence="UNVERIFIED_WITHOUT_PROVIDER_E2E", observed_provider="gemini",
-                    provider_session_id="fixture-session", verdict="PASS", review_report=report,
+                    provider_session_id="fixture-" + worker["role"] + "-" + reviewer, verdict="PASS", review_report=report,
                     review_report_sha256=report_sha256(report),
                     snapshot_path=snapshot.snapshot_path.relative_to(self.meta).as_posix(),
                     snapshot_logical_modes=[{"path": path, "executable": executable}
@@ -139,6 +139,395 @@ class IntegrationCandidateTests(unittest.TestCase):
     def build(self, run_id=None):
         from scripts.integration_candidate import build_integration_candidate
         return build_integration_candidate(self.root, self.task["task_id"], run_id or self.run_id)
+
+    def integrated_fixture(self):
+        from scripts.development_runner import _persist_runtime_sessions
+        self.evidence()
+        report = dict(run_id=self.run_id, execution="REVIEWED_WORKER_CANDIDATES_AWAITING_INTEGRATION",
+                      process_execution="PROCESSES_FINISHED_UNREVIEWED",
+                      check_status="CHECKS_VERIFIED_AWAITING_REVIEW",
+                      review_status="WORKER_REVIEWS_COMPLETE_AWAITING_INTEGRATION", results=[], review_evidence=[])
+        for worker in self.state["workers"]:
+            session = "implementation-" + worker["role"]
+            report["results"].append(dict(role=worker["role"], provider=worker["provider"],
+                                         provider_session_id=session, status="SUCCEEDED"))
+            event = (dict(type="thread.started", thread_id=session) if worker["provider"] == "codex"
+                     else dict(type="init", session_id=session))
+            terminal = (dict(type="turn.completed", usage={}) if worker["provider"] == "codex"
+                        else dict(type="result", status="success", stats={}))
+            (self.meta / "dev-logs" / self.run_id / (worker["role"] + ".stdout")).write_text(
+                json.dumps(event) + "\n" + json.dumps(terminal) + "\n", encoding="utf-8")
+        for path in self.reviews:
+            item = json.loads(path.read_text())
+            report["review_evidence"].append(dict(worker_role=item["worker_role"],
+                reviewer_role=item["reviewer_role"], provider="gemini",
+                provider_session_id=item["provider_session_id"], status="REVIEW_REPORT_VALID"))
+        _persist_runtime_sessions(self.meta, self.state, report)
+        return self.build()
+
+    def integrated_review(self, result, *, session=None, verdict="PASS"):
+        """Concrete Gemini adapter with only discovery/argv replaced by local Python."""
+        from scripts.agent_runtime import RuntimeCapabilities, RuntimeCapabilityStatus
+        from scripts.provider_runtimes import GeminiRuntime
+        from scripts.integration_review import run_integration_review
+        requests = []
+        def argv(runtime, request):
+            self.assertFalse(request.writable)
+            requests.append(request)
+            identity = json.loads(request.prompt.split("Exact evidence identity to echo: ")[1].splitlines()[0])
+            report = dict(schema_version=1, **identity, verdict=verdict, summary="Local fixture", findings=[])
+            if verdict == "REQUEST_CHANGES":
+                report["findings"] = [dict(id="F-1", severity="HIGH", path="baseline.txt", line=1,
+                    evidence="Local fixture finding requires a change", recommendation="Revise and review again")]
+            lines = [dict(type="init", session_id=session or request.run_id),
+                     dict(type="message", role="assistant", content=json.dumps(report)),
+                     dict(type="result", status="success", stats={})]
+            code = "import json; lines=" + repr(lines) + "; [print(json.dumps(x)) for x in lines]"
+            return (sys.executable, "-c", code)
+        def discover(runtime):
+            runtime._command = (sys.executable,)
+            return RuntimeCapabilities("gemini", True, None, (), None, RuntimeCapabilityStatus.UNKNOWN)
+        with patch.object(GeminiRuntime, "discover_capabilities", discover), patch.object(GeminiRuntime, "build_argv", argv):
+            report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                launch=True, cost_ack=True, runtime_factory=lambda provider: GeminiRuntime())
+        return report, requests
+
+    def decision_fixture(self, *, verdict="PASS"):
+        from scripts.worktree_coordinator import message
+        for worker in self.state["workers"]:
+            edited = Path(worker["path"]) / worker["role"] / "edit.txt"
+            edited.write_bytes(("changed " + worker["role"] + "\n").encode())
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result, verdict=verdict)
+        for worker in self.state["workers"]:
+            message(self.root, self.task["task_id"], worker["role"], "WORKER_RESULT", "Local fixture handoff")
+        return result, self.meta / report["bundle_path"]
+
+    def decide(self, result, bundle, **changes):
+        from scripts.integration_review import record_human_decision
+        args = dict(expected_bundle_sha256=digest(bundle), decision="APPROVE_FOR_MANUAL_INTEGRATION",
+                    operator="Declared local operator", reason="Consider this exact candidate manually")
+        args.update(changes)
+        return record_human_decision(self.root, self.task["task_id"], result.integration_id, **args)
+
+    def test_gate_needs_human_after_valid_integrated_review(self):
+        result, bundle = self.decision_fixture()
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "NEEDS_HUMAN", value)
+        self.assertTrue(value["integrated_review_verified"])
+        self.assertEqual(value["integrated_review_bundle_sha256"], digest(bundle))
+        self.assertEqual(value["integrated_review_status"], "PASSED")
+        self.assertFalse(value["human_decision_verified"])
+        # An interrupted creation can leave the review-attempts root empty.
+        saved = bundle.parent.parent.parent / "saved-review"
+        bundle.parent.rename(saved)
+        try:
+            value = gate(self.root, self.task["task_id"])
+            self.assertEqual(value["status"], "BLOCKED")
+            self.assertFalse(value["human_decision_verified"])
+        finally:
+            saved.rename(bundle.parent)
+
+    def test_decision_requires_exact_current_bundle_digest(self):
+        result, bundle = self.decision_fixture()
+        for bad in (None, "", digest(bundle)[:12], "f" * 64, digest(bundle).upper()):
+            with self.subTest(digest=bad), self.assertRaises(ValueError):
+                self.decide(result, bundle, expected_bundle_sha256=bad)
+        for changes in (dict(decision="APPROVE"), dict(operator=" "), dict(reason="")):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.decide(result, bundle, **changes)
+        record = self.decide(result, bundle)
+        path = self.meta / "integrations" / result.integration_id / "human-decision.json"
+        self.assertEqual(json.loads(path.read_text()), record)
+        before = path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle, decision="REJECT")
+        self.assertEqual(path.read_bytes(), before)
+        bundle.write_bytes(bundle.read_bytes() + b" ")
+        value = gate(self.root, self.task["task_id"])
+        self.assertFalse(value["human_decision_verified"])
+        self.assertEqual(value["status"], "BLOCKED")
+
+    def test_candidate_drift_invalidates_human_decision(self):
+        result, bundle = self.decision_fixture()
+        self.decide(result, bundle)
+        self.assertEqual(gate(self.root, self.task["task_id"])["status"], "APPROVED_FOR_MANUAL_INTEGRATION")
+        (Path(result.candidate_worktree_path) / "baseline.txt").write_bytes(b"drift\n")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "BLOCKED")
+        self.assertFalse(value["human_decision_verified"])
+
+    def test_new_integration_invalidates_old_human_decision(self):
+        result, bundle = self.decision_fixture()
+        self.decide(result, bundle)
+        newer = self.build()
+        self.assertNotEqual(newer.integration_id, result.integration_id)
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "BLOCKED")
+        self.assertFalse(value["human_decision_verified"])
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+
+    def test_reject_current_changes_requested_bundle(self):
+        result, bundle = self.decision_fixture(verdict="REQUEST_CHANGES")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "CHANGES_REQUESTED", value)
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+        record = self.decide(result, bundle, decision="REJECT", reason="The current findings require rework")
+        self.assertEqual(record["decision"], "REJECT")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "REJECTED_BY_HUMAN", value)
+        self.assertTrue(value["human_decision_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
+
+    def incomplete_review_decision_fixture(self):
+        from scripts.execution_evidence import canonical_task_sha256
+        reviewers = ["software_auditor", "independent_reviewer"]
+        self.state["audit_level"] = "standard"
+        self.state["review_roles"] = reviewers
+        self.state["required_evidence"].append("independent_review")
+        for item in self.state["task_packet"]["work_items"]:
+            item["required_reviewers"] = reviewers
+        self.task = self.state["task_packet"]
+        self.state["task_sha256"] = canonical_task_sha256(self.task)
+        (self.meta / "state.json").write_text(json.dumps(self.state), encoding="utf-8")
+        result, path = self.decision_fixture(verdict="REQUEST_CHANGES")
+        bundle = json.loads(path.read_text())
+        manifests = [json.loads((self.meta / item["manifest_path"]).read_text()) for item in bundle["reviewers"]]
+        return result, path, bundle, manifests
+
+    def incomplete_review_results(self, path, original_bundle, original_manifests, statuses):
+        bundle = json.loads(json.dumps(original_bundle))
+        for item, original, status in zip(bundle["reviewers"], original_manifests, statuses):
+            manifest = dict(original)
+            if status != "REQUEST_CHANGES":
+                manifest.update(status=status, verdict=None, review_report=None,
+                    review_report_sha256=None, error="Local fixture reviewer did not complete a valid report")
+            manifest_path = self.meta / item["manifest_path"]
+            validate_review_manifest(manifest, self.meta)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            item.update(status=manifest["status"], verdict=manifest["verdict"], manifest_sha256=digest(manifest_path))
+        bundle["status"] = "BLOCKED"
+        path.write_text(json.dumps(bundle), encoding="utf-8")
+
+    def test_decision_rejects_incomplete_reviewer_results(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result, bundle, original, manifests = self.incomplete_review_decision_fixture()
+        integration = json.loads(Path(result.integration_manifest_path).read_text())
+        check = read_check_manifest(Path(result.check_manifest_path), self.meta)
+        decision_path = bundle.parent.parent.parent / "human-decision.json"
+        for statuses in (("BLOCKED", "BLOCKED"), ("FAILED", "FAILED"),
+                         ("REQUEST_CHANGES", "BLOCKED"), ("REQUEST_CHANGES", "FAILED")):
+            self.incomplete_review_results(bundle, original, manifests, statuses)
+            # These remain integrity-valid terminal failure journals, not completed reviews.
+            validate_integration_review_bundle(bundle, self.meta, self.state, integration, check)
+            try:
+                with self.subTest(statuses=statuses):
+                    with self.assertRaises(ValueError):
+                        self.decide(result, bundle, decision="REJECT")
+                    self.assertFalse(decision_path.exists())
+            finally:
+                decision_path.unlink(missing_ok=True)
+
+    def test_gate_rejects_decision_bound_to_incomplete_reviewer_results(self):
+        result, bundle, original, manifests = self.incomplete_review_decision_fixture()
+        decision = self.decide(result, bundle, decision="REJECT")
+        decision_path = bundle.parent.parent.parent / "human-decision.json"
+        for statuses in (("BLOCKED", "BLOCKED"), ("FAILED", "FAILED"),
+                         ("REQUEST_CHANGES", "BLOCKED"), ("REQUEST_CHANGES", "FAILED")):
+            self.incomplete_review_results(bundle, original, manifests, statuses)
+            # Rebind a local stored attestation to the CURRENT digest so stale-digest
+            # rejection cannot mask missing per-reviewer completion validation.
+            decision["review_bundle_sha256"] = digest(bundle)
+            decision_path.write_text(json.dumps(decision), encoding="utf-8")
+            with self.subTest(statuses=statuses):
+                value = gate(self.root, self.task["task_id"])
+                self.assertEqual(value["status"], "BLOCKED", value)
+                self.assertFalse(value["human_decision_verified"])
+                self.assertFalse(value["automatic_merge"])
+                self.assertEqual(value["release_status"], "NOT_APPROVED")
+
+    def test_approval_never_enables_merge_or_release(self):
+        result, bundle = self.decision_fixture()
+        head = git(self.root, "rev-parse", "HEAD")
+        mailbox = self.meta / "mailbox.jsonl"
+        handoffs = mailbox.read_bytes()
+        mailbox.write_bytes(b"")
+        with self.assertRaises(ValueError):
+            self.decide(result, bundle)
+        mailbox.write_bytes(handoffs)
+        self.decide(result, bundle)
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "APPROVED_FOR_MANUAL_INTEGRATION", value)
+        self.assertTrue(value["human_decision_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), head)
+
+    def test_integrated_review_preview_makes_no_provider_call(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        before = sorted(str(p) for p in self.meta.rglob("*"))
+        def forbidden(provider):
+            self.fail("preview called runtime factory")
+        report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                        runtime_factory=forbidden)
+        self.assertEqual(report["status"], "PREVIEW_NOT_STARTED")
+        self.assertEqual(report["review_roles"], self.state["review_roles"])
+        self.assertEqual(before, sorted(str(p) for p in self.meta.rglob("*")))
+
+    def test_integrated_review_rejects_incomplete_implementation_history(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        path = self.meta / "dev-logs" / self.run_id / "runtime-sessions.json"
+        original = json.loads(path.read_text())
+        for entries in ([], original["implementation_sessions"][:-1],
+                        [dict(item, provider_session_id="omitted-real-session-" + item["role"])
+                         for item in original["implementation_sessions"]]):
+            path.write_text(json.dumps(dict(original, implementation_sessions=entries)), encoding="utf-8")
+            with self.subTest(entries=entries), self.assertRaisesRegex(ValueError, "implementation"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id)
+        path.write_text(json.dumps(original), encoding="utf-8")
+        (path.parent / (self.state["workers"][0]["role"] + ".stdout")).unlink()
+        with self.assertRaisesRegex(ValueError, "implementation"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id)
+
+    def test_integrated_review_rejects_interrupted_launch_without_manifest(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result)
+        bundle_path = self.meta / report["bundle_path"]
+        bundle = json.loads(bundle_path.read_text())
+        reviewer_manifest = self.meta / bundle["reviewers"][0]["manifest_path"]
+        self.assertIn("session_id", (reviewer_manifest.parent / "stdout.jsonl").read_text())
+        reviewer_manifest.unlink()
+        for interrupted in (bundle, dict(bundle, terminal=False, status="RUNNING", reviewers=[])):
+            bundle_path.write_text(json.dumps(interrupted), encoding="utf-8")
+            with self.subTest(status=interrupted["status"]), self.assertRaisesRegex(ValueError, "historical.*incomplete|historical.*manifest"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id)
+
+    def interrupted_worker_review_history(self, *, missing_manifest):
+        from scripts.integration_review import run_integration_review, validate_integration_review_bundle
+        result, bundle = self.decision_fixture()
+        self.assertEqual(gate(self.root, self.task["task_id"])["status"], "NEEDS_HUMAN")
+        prior = self.meta / "dev-logs" / "earlier-interrupted-run"
+        prior.mkdir()
+        inventory = json.loads((self.meta / "dev-logs" / self.run_id / "runtime-sessions.json").read_text())
+        inventory.update(run_id=prior.name, run_status="REVIEW_INCOMPLETE", review_status="REVIEW_INCOMPLETE",
+                         worker_review_sessions=[])
+        for item in inventory["implementation_sessions"]:
+            item["provider_session_id"] = "prior-" + item["role"]
+            event = (dict(type="thread.started", thread_id=item["provider_session_id"])
+                     if item["provider"] == "codex" else dict(type="init", session_id=item["provider_session_id"]))
+            (prior / (item["role"] + ".stdout")).write_text(json.dumps(event) + "\n", encoding="utf-8")
+        (prior / "runtime-sessions.json").write_text(json.dumps(inventory), encoding="utf-8")
+        review = json.loads(self.reviews[0].read_text())
+        directory = prior / "reviews" / review["worker_role"] / review["reviewer_role"]
+        directory.mkdir(parents=True)
+        stdout = directory / "stdout.jsonl"
+        stdout.write_text(json.dumps(dict(type="init", session_id="unrecorded-interrupted-worker-review")) + "\n",
+                          encoding="utf-8")
+        if not missing_manifest:
+            review.update(status="FAILED", observed_provider=None, provider_session_id=None,
+                          verdict=None, review_report=None, review_report_sha256=None, exit_code=None,
+                          error="collection interrupted after output", stdout_path=stdout.relative_to(self.meta).as_posix(),
+                          stdout_sha256=digest(stdout))
+            validate_review_manifest(review, self.meta)
+            (directory / "manifest.json").write_text(json.dumps(review), encoding="utf-8")
+        with self.subTest(consumer="gate"):
+            value = gate(self.root, self.task["task_id"])
+            self.assertEqual(value["status"], "BLOCKED", value)
+            self.assertFalse(value["integrated_review_verified"])
+        with self.subTest(consumer="bundle"), self.assertRaisesRegex(ValueError, "worker review"):
+            validate_integration_review_bundle(bundle, self.meta, self.state,
+                json.loads(Path(result.integration_manifest_path).read_text()),
+                read_check_manifest(result.check_manifest_path, self.meta))
+        calls = []
+        def forbidden(provider):
+            calls.append(provider)
+            raise AssertionError("incomplete worker history reached runtime factory")
+        for launch in (False, True):
+            with self.subTest(consumer="launch" if launch else "preview"), self.assertRaisesRegex(ValueError, "worker review"):
+                run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                       launch=launch, cost_ack=True, runtime_factory=forbidden)
+        self.assertEqual(calls, [])
+
+    def test_prior_worker_review_missing_manifest_blocks_later_valid_candidate(self):
+        self.interrupted_worker_review_history(missing_manifest=True)
+
+    def test_prior_worker_review_null_session_with_output_blocks_later_valid_candidate(self):
+        self.interrupted_worker_review_history(missing_manifest=False)
+
+    def test_integrated_review_requires_latest_checked_candidate(self):
+        from scripts.integration_review import run_integration_review
+        first = self.integrated_fixture()
+        latest = self.build()
+        with self.assertRaisesRegex(ValueError, "latest"):
+            run_integration_review(self.root, self.task["task_id"], first.integration_id)
+        inventory_path = self.meta / "dev-logs" / self.run_id / "runtime-sessions.json"
+        inventory = json.loads(inventory_path.read_text())
+        for changes in (dict(run_status="RUNNING"), dict(run_id="wrong-execution"),
+                        dict(worker_review_sessions=inventory["worker_review_sessions"] * 2)):
+            inventory_path.write_text(json.dumps(dict(inventory, **changes)), encoding="utf-8")
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                run_integration_review(self.root, self.task["task_id"], latest.integration_id)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        orphan = self.meta / "dev-logs" / "older-execution" / "reviews" / self.state["workers"][0]["role"]
+        orphan.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "historical.*inventory"):
+            run_integration_review(self.root, self.task["task_id"], latest.integration_id)
+
+    def test_integrated_review_rejects_reused_runtime_session(self):
+        result = self.integrated_fixture()
+        session = json.loads(self.reviews[0].read_text())["provider_session_id"]
+        report, requests = self.integrated_review(result, session=session)
+        self.assertEqual(len(requests), len(self.state["review_roles"]))
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertTrue(all(r["status"] == "UNVERIFIED_SESSION_REUSE" for r in report["review_results"]))
+
+    def test_review_bundle_rejects_incomplete_or_misbound_roster(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result = self.integrated_fixture()
+        report, requests = self.integrated_review(result)
+        self.assertEqual(report["status"], "PASSED", report)
+        self.assertEqual(len(requests), len(self.state["review_roles"]))
+        path = self.meta / report["bundle_path"]
+        integration = json.loads(Path(result.integration_manifest_path).read_text())
+        check = read_check_manifest(result.check_manifest_path, self.meta)
+        valid = json.loads(path.read_text())
+        validate_integration_review_bundle(path, self.meta, self.state, integration, check)
+        for change in (dict(review_roles=[]), dict(check_manifest_sha256="0" * 64),
+                       dict(reviewers=valid["reviewers"][:-1]), dict(reviewers=[None])):
+            path.write_text(json.dumps(dict(valid, **change)), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                validate_integration_review_bundle(path, self.meta, self.state, integration, check)
+
+    def test_latest_incomplete_review_does_not_reuse_previous_pass(self):
+        from scripts.integration_review import validate_integration_review_bundle
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result)
+        self.assertEqual(report["status"], "PASSED", report)
+        path = self.meta / report["bundle_path"]
+        (path.parent.parent / ("v2-" + "9" * 20 + "-" + "f" * 32)).mkdir()
+        with self.assertRaisesRegex(ValueError, "latest"):
+            validate_integration_review_bundle(path, self.meta, self.state,
+                json.loads(Path(result.integration_manifest_path).read_text()),
+                read_check_manifest(result.check_manifest_path, self.meta))
+
+    def test_integrated_review_rejects_metadata_reparse_path(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        original = Path.lstat
+        def reparse(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path == self.meta:
+                from types import SimpleNamespace
+                return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+            return info
+        with patch.object(Path, "lstat", reparse), patch.object(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, create=True), self.assertRaisesRegex(ValueError, "reparse"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id)
 
     def add_integration_probe(self, code, *, timeout=20):
         """Add a real Python check that is meaningful on the composed candidate."""

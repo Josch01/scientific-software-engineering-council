@@ -346,6 +346,13 @@ def _manifest_matches_task(path,metadata,state,worker,current_tree,specs):
     return manifest
 
 def gate(project,task_id):
+    if __package__:
+        from .check_runner import _ensure_no_symlink_path
+    else:
+        from check_runner import _ensure_no_symlink_path
+    _ensure_no_symlink_path(Path(os.path.abspath(project)))
+    _ensure_no_symlink_path(directory(project,task_id))
+    _ensure_no_symlink_path(directory(project,task_id)/"state.json")
     state,metadata=load(project,task_id)
     status=inspect(project,task_id)
     errors=[]
@@ -512,15 +519,51 @@ def gate(project,task_id):
     if not seen: errors.append("no candidate changes")
     if not checks_verified:
         errors.append("deterministic check evidence is missing, incomplete, or invalid")
-    # Deterministic checks cannot replace an independent review or authorize release.
-    errors.append("coordinator requires independent integrated review and human approval; release remains blocked")
     events=status["events"]
     for w in state["workers"]:
         if not any(e["sender"]==w["role"] and e["kind"]=="WORKER_RESULT" for e in events):
             errors.append("no handoff: "+w["role"])
     if any(e["kind"] in {"BLOCKED","REQUEST_CHANGES"} for e in events):
         errors.append("unresolved objections")
-    return {"status":"BLOCKED","blockers":errors,"collisions":overlaps,
+    integrated_review_verified=False
+    integrated_review_status=None
+    integrated_review_bundle_sha256=None
+    human_decision_verified=False
+    human_decision_status=None
+    if integrated_checks_verified:
+        try:
+            if __package__:
+                from .integration_review import current_integration_review, validate_human_decision
+            else:
+                from scripts.integration_review import current_integration_review, validate_human_decision
+            bundle_path,bundle,integrated_review_bundle_sha256=current_integration_review(
+                metadata,state,latest_data,latest_check)
+            integrated_review_status=bundle["status"]
+            integrated_review_verified=integrated_review_status=="PASSED"
+            decision_path=metadata/"integrations"/latest_data["integration_id"]/"human-decision.json"
+            _ensure_no_symlink_path(decision_path)
+            if decision_path.exists():
+                decision=validate_human_decision(decision_path,metadata,state,latest_data,latest_check)
+                human_decision_verified=True
+                human_decision_status=decision["decision"]
+        except (OSError,ValueError,TypeError,KeyError,UnicodeError,RecursionError) as exc:
+            errors.append("integrated review or human decision invalid: "+str(exc))
+    gate_status="BLOCKED"
+    if not errors:
+        if human_decision_verified and human_decision_status=="REJECT":
+            gate_status="REJECTED_BY_HUMAN"
+        elif integrated_review_status=="CHANGES_REQUESTED":
+            gate_status="CHANGES_REQUESTED"
+        elif integrated_review_verified:
+            gate_status=("APPROVED_FOR_MANUAL_INTEGRATION" if human_decision_status=="APPROVE_FOR_MANUAL_INTEGRATION"
+                         else "REJECTED_BY_HUMAN" if human_decision_status=="REJECT" else "NEEDS_HUMAN")
+    if human_decision_verified and human_decision_status=="REJECT":
+        errors.append("current integrated candidate rejected by declared human operator")
+    elif not integrated_review_verified:
+        errors.append("coordinator requires independent integrated review and human approval; release remains blocked")
+    elif not human_decision_verified:
+        errors.append("explicit human approval for the current integrated review is required")
+    return {"status":gate_status,"blockers":errors,"collisions":overlaps,
             "automatic_merge":False,"checks_verified":checks_verified,
             "verified_process_check_ids":verified,"missing_process_checks":missing,
             "pending_evidence_ids":sorted(pending_evidence),
@@ -529,8 +572,14 @@ def gate(project,task_id):
             "integrated_check_status":integrated_check_status,
             "integrated_check_evidence":integrated_check_evidence,
             "invalid_integration_manifests":invalid_integration_manifests,
-            "evidence_verified":False,"release_status":"NOT_APPROVED",
-            "note":"Integrated checks apply only to the disposable combined candidate; independent integrated review and human approval are still required."}
+            "integrated_review_verified":integrated_review_verified,
+            "integrated_review_status":integrated_review_status,
+            "integrated_review_bundle_sha256":integrated_review_bundle_sha256,
+            "human_decision_verified":human_decision_verified,
+            "human_decision_status":human_decision_status,
+            "evidence_verified":checks_verified and integrated_checks_verified and integrated_review_verified and gate_status!="BLOCKED",
+            "release_status":"NOT_APPROVED",
+            "note":"Local evidence and declared operator text do not authenticate a person or establish scientific validity. Approval authorizes consideration for manual integration only."}
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)

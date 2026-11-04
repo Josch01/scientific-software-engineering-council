@@ -16,11 +16,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 
 try:
-    from .check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest
+    from .check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest, _ensure_no_symlink_path, _is_filesystem_link
     from .execution_evidence import _CandidateTreeEntry, _hash_candidate_entries
     from .reviewer_output import extract_final_response
 except ImportError:  # Support direct imports from the scripts directory.
-    from check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest
+    from check_runner import _snapshot_artifact_sha256, _walk_snapshot, read_check_manifest, _ensure_no_symlink_path, _is_filesystem_link
     from execution_evidence import _CandidateTreeEntry, _hash_candidate_entries
     from reviewer_output import extract_final_response
 
@@ -291,6 +291,7 @@ def validate_review_attempt(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _metadata_root(metadata_root: Path) -> Path:
+    _ensure_no_symlink_path(Path(metadata_root))
     argument = Path(metadata_root)
     absolute = argument.absolute()
     cursor = Path(absolute.anchor)
@@ -320,12 +321,13 @@ def _metadata_relative_path(root: Path, value: Any, *, directory: bool) -> Path:
             posix.as_posix() != value or any(part in {"", ".", ".."} for part in parts)):
         raise ValueError("review artifact path must be normalized and contained under metadata")
     path = root.joinpath(*parts)
+    _ensure_no_symlink_path(path)
     cursor = root
     try:
         for index, part in enumerate(parts):
             cursor = cursor / part
             info = cursor.lstat()
-            if stat.S_ISLNK(info.st_mode):
+            if _is_filesystem_link(cursor, info):
                 raise ValueError(f"review artifact path contains a symlink: {value!r}")
             if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
                 raise ValueError(f"review artifact parent is not a directory: {value!r}")
@@ -342,6 +344,7 @@ def _metadata_relative_path(root: Path, value: Any, *, directory: bool) -> Path:
 
 
 def _hash_evidence_file(path: Path) -> str:
+    _ensure_no_symlink_path(path)
     try:
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode):
