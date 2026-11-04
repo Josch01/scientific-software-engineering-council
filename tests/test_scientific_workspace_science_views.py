@@ -284,6 +284,24 @@ class ScientificResultViewBuilderTests(unittest.TestCase):
         )
         self.assertTrue(all(source.sha256 for component in result for source in component.source_resources))
 
+    def test_profiled_parameter_units_are_derived_from_model_resource(self):
+        view = self._view()
+        from scripts.build_sir_analysis_demo import build_demo
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_demo(root, scenario="profiled")
+            workspace = load_scientific_workspace(root, "workspace.json")
+            components = view.build_workspace_view_model(workspace).sections[1].components
+
+        fit_view, sensitivity_view = components[1:3]
+        self.assertEqual(
+            [(parameter.name, parameter.unit) for parameter in fit_view.content.parameters],
+            [("beta_knot_1", "1/day"), ("gamma", "1/day")],
+        )
+        self.assertEqual(sensitivity_view.content.series[0].unit, "person / 1/day")
+        self.assertIn("beta_knot_1", sensitivity_view.content.series[0].label)
+
     def test_non_sir_or_invalid_model_context_leaves_analysis_units_unspecified(self):
         view = self._view()
         fit_content = json.dumps(fit_payload()).encode()

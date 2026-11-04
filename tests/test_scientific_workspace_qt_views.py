@@ -317,3 +317,41 @@ class ScientificWorkspaceQtResultViewsTests(unittest.TestCase):
                 QtWidgets.QLabel, "source-provenance-trajectory"
             )
             self.assertGreaterEqual(len(simulation_sources), 2)
+
+    def test_qt_fit_and_sensitivity_views_render_profiled_rate_units(self):
+        from scripts.build_sir_analysis_demo import build_demo
+        from scripts.scientific_workspace_qt import ScientificWorkspaceWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_demo(root, scenario="profiled")
+            window = ScientificWorkspaceWindow()
+            self.addCleanup(window.close)
+            with patch("scripts.scientific_workspace_qt_charts.WEBENGINE_AVAILABLE", False):
+                model = window.load_workspace(root, "workspace.json")
+            window.show()
+            self.app.processEvents()
+
+            fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+            sensitivity_chart = window.findChild(
+                QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0"
+            )
+            self.assertIsNotNone(fit_table)
+            self.assertIsNotNone(sensitivity_chart)
+            self.assertEqual(fit_table.item(0, 0).text(), "beta_knot_1")
+            self.assertEqual(fit_table.item(0, 5).text(), "1/day")
+            self.assertEqual(fit_table.item(1, 0).text(), "gamma")
+            self.assertEqual(fit_table.item(1, 5).text(), "1/day")
+            self.assertIn("person / 1/day", sensitivity_chart.accessibleDescription())
+            chart_fallback = sensitivity_chart.findChild(
+                QtWidgets.QFrame, "scientificChartFallback"
+            )
+            chart_table = chart_fallback.findChild(
+                QtWidgets.QTableWidget, "scientificChartDataTable"
+            )
+            self.assertEqual(chart_table.horizontalHeaderItem(1).text(),
+                             "S ∂/∂beta_knot_1")
+            components = {item.component_id: item for section in model.sections
+                          for item in section.components}
+            self.assertEqual(components["fit-view"].status, "ok")
+            self.assertEqual(components["sensitivity-view"].status, "ok")

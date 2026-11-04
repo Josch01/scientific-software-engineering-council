@@ -105,6 +105,10 @@ class ControlCenterShellTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         cls.app.setQuitOnLastWindowClosed(False)
         cls.examples = Path(__file__).resolve().parents[1] / "examples" / "sir_analysis_workspace_demo"
+        cls.profiled_examples = (
+            Path(__file__).resolve().parents[1]
+            / "examples" / "sir_profiled_analysis_workspace_demo"
+        )
 
     def _window(self):
         from scripts.scientific_control_center_qt import ControlCenterWindow
@@ -130,6 +134,29 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertIs(window.pages["agents"], window.agent_supervisor)
         self.assertIn(str(self.examples.resolve()), window.active_project_label.text())
         self.assertTrue(window.workspace_audit_button.isEnabled())
+
+    def test_profiled_sir_results_open_in_integrated_center_with_shared_supervisor_project(self):
+        root = self.profiled_examples
+        window = self._window()
+        model = window.load_project(root, "workspace.json")
+        window.navigate("agents")
+        self.app.processEvents()
+        self.assertIs(window.page_stack.currentWidget(), window.agent_supervisor)
+        self.assertEqual(window.agent_supervisor.project_root, root.resolve())
+
+        window.navigate("results")
+        window.show()
+        self.app.processEvents()
+        fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+        self.assertIsNotNone(fit_table)
+        self.assertEqual(fit_table.item(0, 0).text(), "beta_knot_1")
+        self.assertEqual(fit_table.item(0, 5).text(), "1/day")
+        self.assertEqual(window.current_project_root, root.resolve())
+        self.assertEqual(window.workspace_window.workspace_view_model, model)
+        self.assertTrue(window.workspace_audit_button.isEnabled())
+        self.assertEqual(
+            window.workspace_value.text().split(" · ")[-1], model.verification_status
+        )
 
     def test_failed_load_preserves_the_current_project_and_workspace(self):
         window = self._window()
