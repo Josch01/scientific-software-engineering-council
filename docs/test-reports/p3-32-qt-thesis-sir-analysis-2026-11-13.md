@@ -8,6 +8,7 @@
 - `PASS` — aceptación ejecuta el motor P3.31 en `QThread`, bloquea duplicados y cambio de proyecto, crea un directorio nuevo y abre el workspace en la ruta de resultados de la misma aplicación.
 - `PASS` — las vistas de simulación, ajuste, sensibilidad y residuales consumen resultados reales del motor; el workspace también incluye configuración, bitácora con tiempos del worker, digests del código y observaciones seleccionadas. La revisión humana queda `PENDING`.
 - `PASS` — fallo inyectado no carga resultados ni reutiliza la corrida previa; el JSON fuente permanece byte por byte idéntico.
+- `PASS` — revisión visual del diálogo en escritorio Qt nativo de Windows con valores sintéticos; se ocultaron índices de fila y se localizó la botonera al español. La captura no ejecuta análisis: [ver diálogo](assets/p3-32-thesis-fit-configuration.png).
 - Incertidumbre `NOT_CALCULATED`; validez e identificabilidad `NOT_ASSESSED`.
 
 ## Verificación Windows
@@ -16,7 +17,7 @@
 - `PASS` — suites Qt de página SIR y Centro de Control juntas: 48 pruebas.
 - `PASS` — `py_compile` y `git diff --check`.
 - Una ejecución inicial dio una aserción interna intermitente de Chromium (`CalledOnValidBrowserThread`) porque los fixtures cerraban, pero no destruían, páginas WebEngine pendientes. El teardown ahora destruye las páginas en el hilo Qt y procesa `DeferredDelete`; la suite combinada completa pasa.
-- Render visual nuevo del diálogo `NOT_RUN`: el backend Qt offscreen disponible dibujó tofu para todas las fuentes; esta captura no es evidencia visual válida. La interfaz base conserva la revisión de escritorio Windows 1440×920 de P3.29. QA visual Linux `NOT_RUN`.
+- `PASS` — captura del diálogo con backend nativo Windows y fuentes legibles. QA visual Qt Linux `NOT_RUN`; la interfaz base también conserva la revisión de escritorio Windows 1440×920 de P3.29.
 
 ## Alcance científico y pendientes
 

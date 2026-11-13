@@ -710,6 +710,7 @@ if QtWidgets is not None:
                                   (5, 110), (6, 110), (7, 115)):
                 table.setColumnWidth(column, width)
             table.horizontalHeader().setStretchLastSection(False)
+            table.verticalHeader().setVisible(False)
             table.setWordWrap(True)
             for row, (name, value, unit, domain) in enumerate(rows):
                 include = QtWidgets.QTableWidgetItem()
@@ -738,6 +739,12 @@ if QtWidgets is not None:
                 QtWidgets.QDialogButtonBox.StandardButton.Save
                 | QtWidgets.QDialogButtonBox.StandardButton.Cancel
             )
+            save_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save)
+            cancel_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            save_button.setText("Guardar selección")
+            cancel_button.setText("Cancelar")
+            save_button.setObjectName("saveThesisSirFitConfigurationButton")
+            cancel_button.setObjectName("cancelThesisSirFitConfigurationButton")
             buttons.accepted.connect(dialog.accept)
             buttons.rejected.connect(dialog.reject)
             layout.addWidget(buttons)
