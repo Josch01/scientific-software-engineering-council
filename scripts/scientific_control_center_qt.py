@@ -30,6 +30,7 @@ try:
     from .scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
     from .scientific_run_history import list_sir_analysis_runs, read_sir_analysis_run
     from .scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
+    from .thesis_sir_qt import ThesisSIRPage
 except ImportError:  # Support direct execution from scripts/.
     from configuration import (
         AUDIT_LEVELS, DEFAULT_CONFIG, PERMISSIONS, PROVIDERS, config_path,
@@ -43,6 +44,7 @@ except ImportError:  # Support direct execution from scripts/.
     from scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
     from scientific_run_history import list_sir_analysis_runs, read_sir_analysis_run
     from scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
+    from thesis_sir_qt import ThesisSIRPage
 
 
 _WORKSPACE_CATEGORY_COMPONENT_TYPES = {
@@ -744,6 +746,7 @@ else:
 
         ROUTES = (
             ("projects", "Proyectos"),
+            ("thesis-sir", "SIR de tesis"),
             ("agents", "Agentes"),
             ("experiments", "Experimentos"),
             ("audits", "Auditorías"),
@@ -812,19 +815,27 @@ else:
             self.statusBar().showMessage("Listo")
 
             self.project_page = self._build_project_page()
+            self.thesis_sir_page = ThesisSIRPage(self)
             self.agent_page = self._build_agent_page()
             self.agent_supervisor = self.agent_page
             self.workspace_page = self._build_workspace_page()
             self.audit_page = self._build_audit_page()
             self.pages = {
                 "projects": self.project_page,
+                "thesis-sir": self.thesis_sir_page,
                 "agents": self.agent_page,
                 "audits": self.audit_page,
                 "experiments": self.workspace_page,
                 "code": self.workspace_page,
                 "results": self.workspace_page,
             }
-            for page in (self.project_page, self.agent_page, self.audit_page, self.workspace_page):
+            for page in (
+                self.project_page,
+                self.thesis_sir_page,
+                self.agent_page,
+                self.audit_page,
+                self.workspace_page,
+            ):
                 self.page_stack.addWidget(page)
 
         def _build_project_page(self):

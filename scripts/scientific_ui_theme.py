@@ -71,6 +71,27 @@ def qt_stylesheet() -> str:
         QLabel#workspaceDigestStatus, QLabel[state="success"] {{ background: #253b37; color: {c['success']}; border: 1px solid #42695f; border-radius: 6px; padding: 8px; font-weight: 600; }}
         QLabel#scientificNotice, QLabel[state="warning"] {{ color: {c['warning']}; background: #39342a; border: 1px solid #71603d; border-radius: 6px; padding: 8px; }}
         QLabel#scientificActionWarning {{ color: {c['danger']}; }}
+        QFrame#thesisSirHeroCard, QFrame#thesisSirSetupPanel, QFrame#thesisSirResultsPanel {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 11px; }}
+        QFrame#thesisSirFactCard {{ background: {c['surface_raised']}; border: 1px solid {c['border']}; border-radius: 8px; }}
+        QLabel#thesisSirPageTitle {{ color: {c['text']}; font-size: 23px; font-weight: 700; }}
+        QLabel#thesisSirKicker {{ color: {c['accent_hover']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; }}
+        QLabel#thesisSirEquationSummary {{ background: {c['background']}; color: {c['text']}; border-left: 3px solid {c['accent']}; border-radius: 5px; padding: 10px 12px; font-size: 14px; }}
+        QLabel#thesisSirModelProvenance, QLabel#thesisSirDataDigest {{ color: {c['muted']}; font-size: 11px; }}
+        QLabel#thesisSirFactLabel {{ color: {c['muted']}; font-size: 10px; font-weight: 700; }}
+        QLabel#thesisSirFactValue {{ color: {c['text']}; font-size: 12px; font-weight: 600; }}
+        QLabel#thesisSirPanelTitle {{ color: {c['text']}; font-size: 17px; font-weight: 650; }}
+        QLabel#thesisSirHelperText {{ color: {c['muted']}; font-size: 11px; }}
+        QLabel#thesisSirDataStatus {{ color: {c['muted']}; font-weight: 650; }}
+        QLabel#thesisSirDataStatus[state="info"], QLabel#thesisSirRunStatus[state="info"] {{ color: {c['success']}; background: #253b37; border: 1px solid #42695f; border-radius: 7px; padding: 8px; }}
+        QLabel#thesisSirRunStatus {{ color: {c['muted']}; background: {c['surface_raised']}; border: 1px solid {c['border']}; border-radius: 7px; padding: 9px; }}
+        QLabel#thesisSirRunStatus[state="warning"] {{ color: {c['warning']}; background: #39342a; border-color: #71603d; }}
+        QLabel#thesisSirRunStatus[state="active"] {{ color: {c['accent_hover']}; background: {c['surface_raised']}; border-color: {c['accent']}; }}
+        QLabel#thesisSirRunStatus[state="computed"] {{ color: {c['accent_hover']}; background: #312b3d; border-color: {c['accent']}; }}
+        QLabel#thesisSirRunStatus[state="error"] {{ color: {c['danger']}; background: #3a292e; border-color: #80535b; }}
+        QLabel#thesisSirEmptyState {{ color: {c['muted']}; background: {c['surface_raised']}; border: 1px dashed {c['border']}; border-radius: 9px; padding: 24px; line-height: 1.45; }}
+        QSplitter#thesisSirWorkspaceSplitter::handle {{ background: {c['background']}; }}
+        QSplitter#thesisSirWorkspaceSplitter::handle:horizontal {{ width: 8px; }}
+        QSplitter#thesisSirWorkspaceSplitter::handle:vertical {{ height: 8px; }}
         QToolTip {{ background: {c['surface_raised']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 5px; }}
         QPushButton:focus, QListWidget:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus {{ border: 2px solid {c['focus']}; }}
     """

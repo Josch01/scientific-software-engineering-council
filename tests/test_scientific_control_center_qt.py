@@ -139,6 +139,17 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertIn("#202027", window.workspace_window.styleSheet().lower())
         self.assertIn("#aa8bf2", window.workspace_window.styleSheet().lower())
 
+    def test_thesis_sir_workspace_is_integrated_as_a_control_center_route(self):
+        from scripts.thesis_sir_qt import ThesisSIRPage
+
+        window = self._window()
+        window.navigate("thesis-sir")
+        self.app.processEvents()
+
+        self.assertIsInstance(window.pages["thesis-sir"], ThesisSIRPage)
+        self.assertIs(window.page_stack.currentWidget(), window.thesis_sir_page)
+        self.assertEqual(window.page_heading.text(), "SIR de tesis")
+
     def test_route_transition_respects_reduced_motion_preference(self):
         window = self._window()
 
@@ -638,7 +649,7 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertEqual(window.current_route, "results")
         self.assertEqual(window.workspace_window.tabs.currentIndex(), section_index)
 
-    def test_all_six_control_center_destinations_are_available(self):
+    def test_all_control_center_destinations_are_available(self):
         window = self._window()
 
         routes = tuple(
@@ -648,7 +659,10 @@ class ControlCenterShellTests(unittest.TestCase):
 
         self.assertEqual(
             routes,
-            ("projects", "agents", "experiments", "audits", "code", "results"),
+            (
+                "projects", "thesis-sir", "agents", "experiments", "audits",
+                "code", "results",
+            ),
         )
         window.navigate("audits")
         self.assertIs(window.page_stack.currentWidget(), window.audit_page)
