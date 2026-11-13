@@ -61,8 +61,8 @@ class IntegrationCandidateTests(unittest.TestCase):
             required_reviewers=reviewers, tests=["unit_tests", "static_analysis"]) for role in roles]
         for role in roles:
             (self.root / role).mkdir()
-            (self.root / role / "old.txt").write_text("old\n", encoding="utf-8")
-            (self.root / role / "edit.txt").write_text("original\n", encoding="utf-8")
+            (self.root / role / "old.txt").write_bytes(b"old\n")
+            (self.root / role / "edit.txt").write_bytes(b"original\n")
         git(self.root, "add", ".")
         git(self.root, "commit", "-m", "base")
         self.state = initialize(self.task, policy, self.root, apply=True)
@@ -73,10 +73,10 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.checks = []
         for worker in self.state["workers"]:
             folder = Path(worker["path"]) / worker["role"]
-            (folder / "edit.txt").write_text("changed " + worker["role"] + "\n", encoding="utf-8")
+            (folder / "edit.txt").write_bytes(("changed " + worker["role"] + "\n").encode())
             (folder / "old.txt").unlink()
-            (folder / "new.txt").write_text("new\n", encoding="utf-8")
-            (folder / "skip.ignored").write_text("ignored\n", encoding="utf-8")
+            (folder / "new.txt").write_bytes(b"new\n")
+            (folder / "skip.ignored").write_bytes(b"ignored\n")
 
     def evidence(self, *, check_transform=None, distinct_reviewer_checks=False):
         """Run real local checks, then create untrusted review-schema fixtures."""
@@ -118,7 +118,8 @@ class IntegrationCandidateTests(unittest.TestCase):
                     reviewer_role=reviewer, reviewer_provider="gemini", runtime_run_id="fixture-run",
                     runtime_adapter_type="scripts.provider_runtimes.GeminiRuntime",
                     review_independence="UNVERIFIED_WITHOUT_PROVIDER_E2E", observed_provider="gemini",
-                    provider_session_id="fixture-" + worker["role"] + "-" + reviewer, verdict="PASS", review_report=report,
+                    provider_session_id="fixture-" + self.run_id + "-" + worker["role"] + "-" + reviewer,
+                    verdict="PASS", review_report=report,
                     review_report_sha256=report_sha256(report),
                     snapshot_path=snapshot.snapshot_path.relative_to(self.meta).as_posix(),
                     snapshot_logical_modes=[{"path": path, "executable": executable}
@@ -140,7 +141,7 @@ class IntegrationCandidateTests(unittest.TestCase):
         from scripts.integration_candidate import build_integration_candidate
         return build_integration_candidate(self.root, self.task["task_id"], run_id or self.run_id)
 
-    def integrated_fixture(self):
+    def integrated_fixture(self, *, rework_packet=None):
         from scripts.development_runner import _persist_runtime_sessions
         self.evidence()
         report = dict(run_id=self.run_id, execution="REVIEWED_WORKER_CANDIDATES_AWAITING_INTEGRATION",
@@ -148,7 +149,7 @@ class IntegrationCandidateTests(unittest.TestCase):
                       check_status="CHECKS_VERIFIED_AWAITING_REVIEW",
                       review_status="WORKER_REVIEWS_COMPLETE_AWAITING_INTEGRATION", results=[], review_evidence=[])
         for worker in self.state["workers"]:
-            session = "implementation-" + worker["role"]
+            session = "implementation-" + self.run_id + "-" + worker["role"]
             report["results"].append(dict(role=worker["role"], provider=worker["provider"],
                                          provider_session_id=session, status="SUCCEEDED"))
             event = (dict(type="thread.started", thread_id=session) if worker["provider"] == "codex"
@@ -162,6 +163,15 @@ class IntegrationCandidateTests(unittest.TestCase):
             report["review_evidence"].append(dict(worker_role=item["worker_role"],
                 reviewer_role=item["reviewer_role"], provider="gemini",
                 provider_session_id=item["provider_session_id"], status="REVIEW_REPORT_VALID"))
+        if rework_packet is not None:
+            context_path = self.meta / "dev-logs" / self.run_id / "rework-context.json"
+            context_path.write_text(json.dumps(rework_packet), encoding="utf-8")
+            report.update(
+                rework_context_path=context_path.relative_to(self.meta).as_posix(),
+                rework_packet_sha256=digest(context_path),
+                rework_source_integration_id=rework_packet["source_integration_id"],
+                rework_source_review_bundle_sha256=rework_packet["source_review_bundle_sha256"],
+            )
         _persist_runtime_sessions(self.meta, self.state, report)
         return self.build()
 
@@ -191,6 +201,27 @@ class IntegrationCandidateTests(unittest.TestCase):
             report = run_integration_review(self.root, self.task["task_id"], result.integration_id,
                 launch=True, cost_ack=True, runtime_factory=lambda provider: GeminiRuntime())
         return report, requests
+
+    def test_worker_prompt_accepts_rework_context_as_untrusted_evidence(self):
+        import inspect
+        from scripts.development_runner import prompt
+
+        self.assertIn("rework_packet", inspect.signature(prompt).parameters)
+        packet = {"source_integration_id": "integration-1",
+                  "source_review_bundle_sha256": "a" * 64,
+                  "operator_instruction": "Fix only the review findings.", "findings": [
+            {"id": "F-1", "evidence": "finding-token"},
+        ]}
+        rendered = prompt({"role": "numerical_methods"}, {"request": "Original task"},
+                          rework_packet=packet)
+        self.assertIn("untrusted", rendered.lower())
+        self.assertIn("finding-token", rendered)
+        self.assertIn("Original task", rendered)
+
+    def test_integrated_review_exposes_bound_rework_packet_builder(self):
+        from scripts import integration_review
+
+        self.assertTrue(callable(getattr(integration_review, "prepare_rework_packet", None)))
 
     def decision_fixture(self, *, verdict="PASS"):
         from scripts.worktree_coordinator import message
@@ -522,6 +553,68 @@ class IntegrationCandidateTests(unittest.TestCase):
         orphan.mkdir(parents=True)
         with self.assertRaisesRegex(ValueError, "historical.*inventory"):
             run_integration_review(self.root, self.task["task_id"], latest.integration_id)
+
+    def test_changes_requested_integration_cannot_be_re_reviewed_without_rework(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result, verdict="REQUEST_CHANGES")
+        self.assertEqual(report["status"], "CHANGES_REQUESTED")
+        from scripts.integration_review import prepare_rework_packet, validate_rework_packet
+        bundle_path = self.meta / report["bundle_path"]
+        packet = prepare_rework_packet(self.root, self.task["task_id"], result.integration_id,
+                                       "Address only the validated findings.")
+        self.assertEqual(packet["source_review_bundle_sha256"], digest(bundle_path))
+        self.assertEqual(packet["source_candidate_tree_sha256"],
+                         json.loads(Path(result.integration_manifest_path).read_text())["candidate_tree_sha256"])
+        self.assertEqual(packet["findings"][0]["id"], "F-1")
+        self.assertEqual(len(validate_rework_packet(self.root, self.task["task_id"], packet)), 64)
+        tampered = json.loads(json.dumps(packet))
+        tampered["findings"][0]["evidence"] = "altered after review"
+        with self.assertRaisesRegex(ValueError, "stale, altered"):
+            validate_rework_packet(self.root, self.task["task_id"], tampered)
+        rebuild = self.build()
+        self.assertEqual(rebuild.status, "BLOCKED")
+        self.assertTrue(any("rework" in blocker.lower() for blocker in rebuild.blockers))
+        attempts = self.meta / "integrations" / result.integration_id / "review-attempts"
+        before = sorted(path.name for path in attempts.iterdir())
+        calls = []
+
+        def forbidden(provider):
+            calls.append(provider)
+            raise AssertionError("a changes-requested candidate must not reach a provider")
+
+        with self.assertRaisesRegex(ValueError, "rework"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                  launch=True, cost_ack=True, runtime_factory=forbidden)
+        self.assertEqual(calls, [])
+        self.assertEqual(sorted(path.name for path in attempts.iterdir()), before)
+
+        worker = self.state["workers"][0]
+        edit = Path(worker["path"]) / worker["role"] / "edit.txt"
+        edit.write_bytes(b"corrected after exact finding\n")
+        self.assertEqual(len(validate_rework_packet(self.root, self.task["task_id"], packet)), 64,
+                         "the source findings packet must remain verifiable after worker rework")
+        self.run_id = "rework-run-2"
+        self.reviews = []
+        self.checks = []
+        corrected = self.integrated_fixture(rework_packet=packet)
+        self.assertEqual(corrected.status, "CHECKED_AWAITING_INTEGRATED_REVIEW", corrected.blockers)
+        corrected_manifest = json.loads(Path(corrected.integration_manifest_path).read_text())
+        self.assertNotEqual(corrected_manifest["candidate_tree_sha256"],
+                            packet["source_candidate_tree_sha256"])
+        self.assertTrue(any(item["kind"] == "rework"
+                            for item in corrected_manifest["input_manifests"]))
+        corrected_review, _ = self.integrated_review(corrected, verdict="PASS")
+        self.assertEqual(corrected_review["status"], "PASSED")
+        from scripts.worktree_coordinator import gate, message
+        for role_worker in self.state["workers"]:
+            message(self.root, self.task["task_id"], role_worker["role"],
+                    "WORKER_RESULT", "Local rework fixture")
+        value = gate(self.root, self.task["task_id"])
+        self.assertEqual(value["status"], "NEEDS_HUMAN", value)
+        self.assertFalse(value["human_decision_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
 
     def test_integrated_review_rejects_reused_runtime_session(self):
         result = self.integrated_fixture()

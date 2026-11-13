@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 import uuid
@@ -46,6 +47,47 @@ def _session(item):
     if provider not in {"codex", "gemini", "agy"} or type(session) is not str or not session or "\x00" in session:
         raise ValueError("invalid historical runtime session identity")
     return provider, session
+
+
+def _validate_rework_runtime_record(metadata, state, run, record):
+    """Validate the persisted packet link without recursively reviewing its source."""
+    expected_fields = {"path", "sha256", "source_integration_id",
+                       "source_review_bundle_sha256"}
+    if type(record) is not dict or set(record) != expected_fields:
+        raise ValueError("runtime rework context fields are invalid")
+    expected_path = f"dev-logs/{run.name}/rework-context.json"
+    if (record["path"] != expected_path or type(record["sha256"]) is not str or
+            not re.fullmatch(r"[0-9a-f]{64}", record["sha256"])):
+        raise ValueError("runtime rework context path or digest is invalid")
+    packet_path = _resolve_evidence_path(metadata, expected_path, directory=False)
+    if _sha256(packet_path) != record["sha256"]:
+        raise ValueError("runtime rework context digest mismatch")
+    packet = _json_file(packet_path)
+    if (type(packet) is not dict or set(packet) != _REWORK_PACKET_FIELDS or
+            packet.get("schema_version") != 1 or
+            any(packet.get(key) != state[key] for key in _IDENTITY) or
+            packet.get("source_integration_id") != record["source_integration_id"] or
+            packet.get("source_review_bundle_sha256") != record["source_review_bundle_sha256"] or
+            packet.get("worker_roles") != sorted(worker["role"] for worker in state["workers"]) or
+            type(packet.get("findings")) is not list or not packet["findings"] or
+            type(packet.get("operator_instruction")) is not str):
+        raise ValueError("runtime rework packet identity or shape is invalid")
+    integration_id = packet["source_integration_id"]
+    if type(integration_id) is not str or not _INTEGRATION_ID_RE.fullmatch(integration_id):
+        raise ValueError("runtime rework source integration id is invalid")
+    manifest = metadata / "integrations" / integration_id / "manifest.json"
+    _ensure_no_symlink_path(manifest)
+    if _sha256(manifest) != packet["source_integration_manifest_sha256"]:
+        raise ValueError("runtime rework source integration digest mismatch")
+    bundle_rel = packet["source_review_bundle_path"]
+    bundle_parts = Path(bundle_rel).parts if type(bundle_rel) is str else ()
+    if (len(bundle_parts) != 5 or bundle_parts[:3] !=
+            ("integrations", integration_id, "review-attempts") or
+            not _INTEGRATION_ID_RE.fullmatch(bundle_parts[3]) or bundle_parts[4] != "bundle.json"):
+        raise ValueError("runtime rework source bundle path is invalid")
+    bundle_path = _resolve_evidence_path(metadata, bundle_rel, directory=False)
+    if _sha256(bundle_path) != packet["source_review_bundle_sha256"]:
+        raise ValueError("runtime rework source bundle digest mismatch")
 
 
 def _corroborate_implementation_sessions(run, entries, state, *, successful):
@@ -120,14 +162,18 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
                         raise ValueError("historical worker review is missing a runtime session inventory")
             continue
         data = _json_file(path)
-        fields = {"schema_version", *_IDENTITY, "run_id", "run_status", "process_execution",
-                  "check_status", "review_status", "implementation_sessions", "worker_review_sessions"}
-        if (type(data) is not dict or set(data) != fields or type(data["schema_version"]) is not int or
-                data["schema_version"] != 1 or data["run_id"] != run.name or
+        base_fields = {"schema_version", *_IDENTITY, "run_id", "run_status", "process_execution",
+                       "check_status", "review_status", "implementation_sessions", "worker_review_sessions"}
+        schema_version = data.get("schema_version") if type(data) is dict else None
+        fields = base_fields if schema_version == 1 else base_fields | {"rework_context"}
+        if (type(data) is not dict or set(data) != fields or type(schema_version) is not int or
+                schema_version not in {1, 2} or data["run_id"] != run.name or
                 any(data[key] != state[key] for key in _IDENTITY) or
                 any(type(data[key]) is not str or not data[key] for key in
                     ("run_status", "process_execution", "check_status", "review_status"))):
             raise ValueError("runtime session inventory identity/status mismatch")
+        if schema_version == 2:
+            _validate_rework_runtime_record(metadata, state, run, data["rework_context"])
         if data["run_status"] not in {
                 "NOT_RUN", "CHECKS_FAILED_NOT_REVIEWED", "CHECKS_VERIFIED_AWAITING_REVIEW",
                 "REVIEW_BLOCKED_NO_CONFIGURED_REVIEWER", "REVIEW_BLOCKED_INVOCATION_LIMIT",
@@ -262,7 +308,7 @@ def _historical_sessions(metadata, state, integration, *, exclude=None):
     return sessions
 
 
-def _context(project, task_id, integration_id):
+def _context(project, task_id, integration_id, *, require_latest=True, require_current_workers=True):
     project = Path(os.path.abspath(project))
     _ensure_no_symlink_path(project)
     metadata = directory(project, task_id)
@@ -270,15 +316,19 @@ def _context(project, task_id, integration_id):
     state, metadata = load(project, task_id)
     _ensure_no_symlink_path(metadata)
     metadata = metadata.resolve(strict=True)
-    _latest(metadata / "integrations", integration_id)
+    if require_latest:
+        _latest(metadata / "integrations", integration_id)
     path = metadata / "integrations" / integration_id / "manifest.json"
-    integration, check = validate_integration_manifest(path, metadata, state, validate_check_specs(state["task_packet"]))
+    integration, check = validate_integration_manifest(
+        path, metadata, state, validate_check_specs(state["task_packet"]),
+        require_current_workers=require_current_workers)
     if integration["status"] != "CHECKED_AWAITING_INTEGRATED_REVIEW" or check is None or check["status"] != "PASSED":
         raise ValueError("integrated review requires the latest checked PASSED candidate")
     return state, metadata, integration, check
 
 
-def validate_integration_review_bundle(path, metadata, state, integration, check_manifest):
+def validate_integration_review_bundle(path, metadata, state, integration, check_manifest, *,
+                                       require_latest=True, require_current_workers=True):
     """Validate only the latest complete, bound roster, including persisted reports."""
     metadata, path = Path(metadata), Path(path)
     _ensure_no_symlink_path(metadata)
@@ -287,10 +337,13 @@ def validate_integration_review_bundle(path, metadata, state, integration, check
     if (len(parts) != 5 or parts[0] != "integrations" or parts[1] != integration["integration_id"] or
             parts[2] != "review-attempts" or not _INTEGRATION_ID_RE.fullmatch(parts[3]) or parts[4] != "bundle.json"):
         raise ValueError("review bundle is outside canonical layout")
-    _latest(metadata / "integrations", integration["integration_id"])
+    if require_latest:
+        _latest(metadata / "integrations", integration["integration_id"])
     _latest(path.parent.parent, path.parent.name)
     manifest = metadata / "integrations" / integration["integration_id"] / "manifest.json"
-    current, checked = validate_integration_manifest(manifest, metadata, state, validate_check_specs(state["task_packet"]))
+    current, checked = validate_integration_manifest(
+        manifest, metadata, state, validate_check_specs(state["task_packet"]),
+        require_current_workers=require_current_workers)
     if current != integration or checked != check_manifest or checked is None or checked["status"] != "PASSED":
         raise ValueError("integration/check evidence changed")
     before = _sha256(path)
@@ -349,11 +402,34 @@ def _aggregate(statuses):
     return "CHANGES_REQUESTED" if "REQUEST_CHANGES" in statuses else "PASSED"
 
 
+def _reject_changes_requested_replay(metadata, state, integration, check):
+    """Do not let another review replace a current request for code changes."""
+    attempts = Path(metadata) / "integrations" / integration["integration_id"] / "review-attempts"
+    _ensure_no_symlink_path(attempts)
+    entries = sorted(attempts.iterdir(), key=lambda item: item.name) if attempts.is_dir() else []
+    if not entries:
+        return
+    latest = entries[-1]
+    _ensure_no_symlink_path(latest)
+    if not latest.is_dir() or not _INTEGRATION_ID_RE.fullmatch(latest.name):
+        raise ValueError("latest integrated review attempt path is invalid")
+    path = latest / "bundle.json"
+    _ensure_no_symlink_path(path)
+    if not path.is_file():
+        return
+    bundle = validate_integration_review_bundle(path, metadata, state, integration, check)
+    if bundle["status"] == "CHANGES_REQUESTED":
+        raise ValueError(
+            "CHANGES_REQUESTED requires rework and a fresh integration; this candidate cannot be re-reviewed"
+        )
+
+
 def run_integration_review(project, task_id, integration_id, *, launch=False, cost_ack=False,
                            minutes=30, runtime_factory=None):
     if type(minutes) not in (int, float) or not math.isfinite(minutes) or minutes <= 0:
         raise ValueError("max minutes must be positive and finite")
     state, metadata, integration, check = _context(project, task_id, integration_id)
+    _reject_changes_requested_replay(metadata, state, integration, check)
     roster = state["review_roles"]
     if not roster or len(roster) > _MAX_REVIEW_INVOCATIONS:
         raise ValueError("integrated review requires a bounded configured reviewer roster")
@@ -419,7 +495,8 @@ _DECISION_FIELDS = {"schema_version", "decision_id", "integration_id", "review_b
                     "decision", "operator", "reason", "created_at_utc", *_IDENTITY}
 
 
-def current_integration_review(metadata, state, integration, check):
+def current_integration_review(metadata, state, integration, check, *, require_latest=True,
+                               require_current_workers=True):
     """Return the exact latest canonical bundle after rederiving all bindings."""
     attempts = metadata / "integrations" / integration["integration_id"] / "review-attempts"
     _ensure_no_symlink_path(attempts)
@@ -429,10 +506,80 @@ def current_integration_review(metadata, state, integration, check):
         raise ValueError("independent integrated review and human approval are required: review bundle missing")
     path = latest / "bundle.json"
     before = _sha256(path)
-    bundle = validate_integration_review_bundle(path, metadata, state, integration, check)
+    bundle = validate_integration_review_bundle(path, metadata, state, integration, check,
+                                                require_latest=require_latest,
+                                                require_current_workers=require_current_workers)
     if _sha256(path) != before:
         raise ValueError("review bundle changed during validation")
     return path, bundle, before
+
+
+_REWORK_PACKET_FIELDS = {
+    "schema_version", *_IDENTITY, "source_integration_id",
+    "source_integration_manifest_sha256", "source_candidate_tree_sha256",
+    "source_review_bundle_path", "source_review_bundle_sha256", "worker_roles",
+    "operator_instruction", "findings",
+}
+_MAX_REWORK_PACKET_BYTES = 128 * 1024
+
+
+def prepare_rework_packet(project, task_id, integration_id, operator_instruction, *,
+                          require_latest=True):
+    """Build a bounded packet from the exact current CHANGES_REQUESTED bundle."""
+    if (type(operator_instruction) is not str or not operator_instruction.strip() or
+            len(operator_instruction) > 4000 or "\x00" in operator_instruction):
+        raise ValueError("rework instruction must be non-empty, bounded text")
+    state, metadata, integration, check = _context(
+        project, task_id, integration_id, require_latest=require_latest,
+        require_current_workers=False)
+    bundle_path, bundle, bundle_hash = current_integration_review(
+        metadata, state, integration, check, require_latest=require_latest,
+        require_current_workers=False)
+    if bundle["status"] != "CHANGES_REQUESTED":
+        raise ValueError("rework requires the current CHANGES_REQUESTED review bundle")
+    findings = []
+    for item in bundle["reviewers"]:
+        review_path = _resolve_evidence_path(metadata, item["manifest_path"], directory=False)
+        review = validate_review_manifest(_json_file(review_path), metadata)
+        report = review.get("review_report")
+        if type(report) is not dict or type(report.get("findings")) is not list:
+            raise ValueError("changes-requested reviewer has no validated findings list")
+        for finding in report["findings"]:
+            findings.append({"reviewer_role": item["reviewer_role"], **finding})
+    if not findings:
+        raise ValueError("CHANGES_REQUESTED bundle contains no actionable findings")
+    manifest_path = metadata / "integrations" / integration_id / "manifest.json"
+    packet = {
+        "schema_version": 1,
+        **{key: state[key] for key in _IDENTITY},
+        "source_integration_id": integration_id,
+        "source_integration_manifest_sha256": _sha256(manifest_path),
+        "source_candidate_tree_sha256": integration["candidate_tree_sha256"],
+        "source_review_bundle_path": bundle_path.relative_to(metadata).as_posix(),
+        "source_review_bundle_sha256": bundle_hash,
+        "worker_roles": sorted(worker["role"] for worker in state["workers"]),
+        "operator_instruction": operator_instruction.strip(),
+        "findings": findings,
+    }
+    encoded = json.dumps(packet, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) > _MAX_REWORK_PACKET_BYTES:
+        raise ValueError("rework findings exceed the bounded packet size")
+    return packet
+
+
+def validate_rework_packet(project, task_id, packet, *, require_latest=True):
+    """Recompute packet contents from persisted review evidence and compare exactly."""
+    if type(packet) is not dict or set(packet) != _REWORK_PACKET_FIELDS or packet.get("schema_version") != 1:
+        raise ValueError("rework packet fields or schema version are invalid")
+    expected = prepare_rework_packet(
+        project, task_id, packet.get("source_integration_id"),
+        packet.get("operator_instruction"), require_latest=require_latest)
+    encoded = json.dumps(packet, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) > _MAX_REWORK_PACKET_BYTES or packet != expected:
+        raise ValueError("rework packet is stale, altered, or bound to different review evidence")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _decision_text(value):
