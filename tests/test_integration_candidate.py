@@ -32,6 +32,9 @@ def digest(path):
 
 class IntegrationCandidateTests(unittest.TestCase):
     def setUp(self):
+        self._setup_fixture(domains=["general"])
+
+    def _setup_fixture(self, *, domains):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "repo"
@@ -48,7 +51,7 @@ class IntegrationCandidateTests(unittest.TestCase):
             "import unittest\nclass Base(unittest.TestCase):\n def test_true(self): self.assertTrue(True)\n",
             encoding="utf-8")
         self.task = dict(task_id="integration-test", kind="build", request="Implement changes",
-                         domains=["general"], languages=["python"], interfaces=["cli"],
+                         domains=domains, languages=["python"], interfaces=["cli"],
                          targets=["linux"], risk="R1", runtime={}, check_specs=[
             dict(check_id="unit_tests", argv=[sys.executable, "-P", "-m", "unittest", "discover",
                                              "-s", "tests", "-t", "."], cwd=".",
@@ -256,6 +259,20 @@ class IntegrationCandidateTests(unittest.TestCase):
         value = gate(self.root, self.task["task_id"])
         self.assertEqual(value["status"], "BLOCKED")
         self.assertFalse(value["human_decision_verified"])
+
+    def test_science_validation_stays_pending_after_software_manual_approval(self):
+        self._setup_fixture(domains=["dynamics"])
+        result, bundle = self.decision_fixture()
+        self.decide(result, bundle)
+
+        value = gate(self.root, self.task["task_id"])
+
+        self.assertEqual(value["status"], "APPROVED_FOR_MANUAL_INTEGRATION")
+        self.assertIn("scientific_validation", value["pending_evidence_ids"])
+        self.assertTrue(value["evidence_verified"])
+        self.assertFalse(value["automatic_merge"])
+        self.assertEqual(value["release_status"], "NOT_APPROVED")
+        self.assertIn("do not authenticate a person or establish scientific validity", value["note"])
 
     def test_new_integration_invalidates_old_human_decision(self):
         result, bundle = self.decision_fixture()
