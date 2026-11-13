@@ -16,12 +16,12 @@ En Linux, instalar `python3-tk` cuando el Python local no tenga Tkinter. Se nece
 
 1. Selecciona el directorio local de tu proyecto (existente).
 2. Selecciona el Task Packet JSON de trabajo (hay un ejemplo SEIR).
-3. Elige proveedor: `gemini`, `codex` o `both`.
+3. Elige proveedor: `gemini`, `codex`, `both` o `agy`.
 4. Fija el **máximo simultáneo** de subagentes (1–12). No elimina expertos obligatorios: los organiza por tandas (`waves`) y los auditores quedan después de implementación.
 5. Elige permisos **solicitados**: `read_only`, `propose_patches` o `request_write_approval`.
 6. Especifica presupuesto **orientativo**: minutos y coste estimado en USD.
 7. Auditoría `basic`, `standard` o `strict`: con R2/R3 nunca se elimina la revisión científica/seguridad indispensable; strict añade revisión de seguridad e independencia aun para riesgo bajo.
-8. **Previsualizar** sin cambiar archivos; **Guardar configuración** escribe `.ssec/config.json` solo al confirmarlo; **Preparar perfiles** genera `.gemini/agents/`, `.codex/agents/` y `.ssec/tasks/` según el modo. Cada acción tiene su confirmación cuando corresponde.
+8. **Previsualizar** sin cambiar archivos; **Guardar configuración** escribe `.ssec/config.json` solo al confirmarlo; **Preparar perfiles** genera perfiles del proveedor y `.ssec/tasks/` según el modo. Cada acción tiene su confirmación cuando corresponde.
 
 Si un perfil o packet existe y difiere, se detiene sin sobreescribir. Usa un `task_id` nuevo para una misión nueva o retira manualmente perfiles viejos tras auditarlos; no se eliminan automáticamente.
 
@@ -36,7 +36,8 @@ Si se pasa `--mode` y `--config`, deben coincidir.
 
 ## Alcance real: seguridad y presupuesto
 
-- El **máximo paralelo** determina *tandas del plan*, NO limita hilos reales de Codex/Gemini. El coordinador futuro deberá aplicar límites nativos de cada proveedor y registrar ejecuciones.
+- El modo `agy` usa AGY para workers y Codex para reviewers; sus perfiles de worker solo permiten herramientas de archivo. Las propuestas de workspace no usan AGY.
+- El **máximo paralelo** determina *tandas del plan*, NO limita hilos reales de Codex/Gemini/AGY. El coordinador futuro deberá aplicar límites nativos de cada proveedor y registrar ejecuciones.
 - Los **permisos del panel son instrucciones**, no permisos efectivos del SO ni del CLI. En Codex los subagentes heredan la política del agente principal. La política deberá implementarse en la raíz/sandbox.
 - El coste y tiempo son **presupuestos indicativos**: sin integración con métricas reales ni mecanismo para detener procesos, no hay garantías de límite de consumo.
 - `PREPARED_NOT_EXECUTED` es intencional: un archivo creado no significa que haya corrido un agente, auditoría o prueba científica.

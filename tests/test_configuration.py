@@ -19,6 +19,10 @@ class ConfigTests(unittest.TestCase):
     def test_defaults_valid(self):
         self.assertEqual(validate_config(DEFAULT_CONFIG), DEFAULT_CONFIG)
 
+    def test_agy_provider_mode_validates_explicitly(self):
+        self.assertEqual(validate_config(dict(DEFAULT_CONFIG, provider_mode="agy"))["provider_mode"],
+                         "agy")
+
     def test_reject_unknown_fields(self):
         with self.assertRaises(ValueError):
             validate_config(dict(DEFAULT_CONFIG, allow_shell=True))

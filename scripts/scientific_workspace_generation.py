@@ -90,6 +90,8 @@ def configured_proposal_providers(config: Mapping[str, object]) -> tuple[str, ..
         return ("gemini",)
     if policy["provider_mode"] == "gemini":
         return ("gemini",)
+    # AGY's current adapter is restricted to file-only implementation agents;
+    # it has no SSEC proposal policy that can be enforced for this workflow.
     return ()
 
 
@@ -477,8 +479,9 @@ def generate_workspace_proposal(
         if not provider_candidates:
             result = _status_summary(
                 "PROVIDER_UNAVAILABLE", run_id, provider,
-                error=("Codex CLI has no enforceable no-execution proposal mode; "
-                       "configure Gemini plan mode or import a JSON proposal manually."),
+                error=("No configured CLI has an enforceable no-execution proposal mode; "
+                       "configure Gemini plan mode or import a JSON proposal manually. "
+                       "Codex and AGY remain unavailable for workspace proposals."),
             )
             _write_summary(run_dir, result)
             return result

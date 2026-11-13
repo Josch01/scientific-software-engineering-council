@@ -90,10 +90,28 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(x["status"],"PREVIEW_NOT_STARTED")
         self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
 
+    def test_agy_worker_gets_scoped_profile_in_its_own_worktree(self):
+        state=initialize(TASK,dict(POLICY,provider_mode="agy"),self.root,apply=True)
+        worker=state["workers"][0]
+        loaded,_=load(self.root,TASK["task_id"])
+        agent_name="ssec-"+worker["role"].replace("_","-")
+        profile=Path(worker["path"])/".agents"/"agents"/(agent_name+".md")
+        self.assertEqual(worker["provider"],"agy")
+        self.assertEqual(loaded["mode"],"agy")
+        self.assertTrue(profile.is_file())
+        content=profile.read_text(encoding="utf-8")
+        self.assertIn("commandExecutionPolicy: off",content)
+        self.assertNotIn("run_command",content)
+        self.assertIn(".agents/agents/"+agent_name+".md",
+                      git(Path(worker["path"]),"status","--porcelain","--untracked-files=all"))
+        self.assertEqual(git(self.root,"status","--porcelain"),"")
+
     def test_plan_rejects_junction_at_worktree_storage_root(self):
-        base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
+        # plan() resolves the Git checkout root before deriving this location.
+        base=self.root.resolve().parent/("."+self.root.name+"-ssec-worktrees")
         base.mkdir()
-        with patch.object(Path,"is_junction",new=lambda path:path==base,create=True):
+        with patch.object(Path,"is_junction",
+                          new=lambda path:Path(path).resolve()==base.resolve(),create=True):
             with self.assertRaisesRegex(ValueError,"junction|reparse|symlink"):
                 plan(TASK,POLICY,self.root)
 
@@ -121,12 +139,13 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn(r'cwd="safe\n\u001b[2J\u202e"',output.getvalue())
 
     def test_plan_rejects_windows_reparse_attribute_without_junction_api(self):
-        base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
+        # Match the canonical root used by plan(), even when %TEMP% has aliases.
+        base=self.root.resolve().parent/("."+self.root.name+"-ssec-worktrees")
         base.mkdir()
         original_lstat=Path.lstat
         def lstat_with_reparse(path,*args,**kwargs):
             info=original_lstat(path,*args,**kwargs)
-            if path==base:
+            if Path(path).resolve()==base.resolve():
                 return Mock(st_mode=info.st_mode,st_file_attributes=0x400)
             return info
         with patch.object(stat,"FILE_ATTRIBUTE_REPARSE_POINT",0x400,create=True), \

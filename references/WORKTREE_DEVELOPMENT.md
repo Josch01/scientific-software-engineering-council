@@ -1,6 +1,6 @@
 # SSEC worktree development (experimental v0.2-dev.4)
 
-This feature is separate from the existing read-only audit runner. It prepares actual linked Git worktrees, may launch real Gemini or Codex CLI processes when explicitly requested, and runs task-declared deterministic checks against each worker's separate candidate snapshot. **It does not do automated review, merges, pushes, commits, releases, authentication or scientific certification.**
+This feature is separate from the existing read-only audit runner. It prepares actual linked Git worktrees, may launch real Gemini, Codex, or AGY CLI processes when explicitly requested, and runs task-declared deterministic checks against each worker's separate candidate snapshot. **It does not merge, push, commit, release, authenticate, or certify science.**
 
 ## Safety
 
@@ -33,7 +33,7 @@ Task metadata, mailbox and CLI stdout/stderr are stored in a sibling folder name
 ## Runtime adapters (P1 increment; P1 remains pending)
 
 Development execution now uses the typed `AgentRuntime` contract. Each persisted
-`worker.provider` selects only its Codex or Gemini adapter; a missing or unsupported
+`worker.provider` selects only its Codex, Gemini, or AGY adapter; a missing or unsupported
 provider is unavailable/failed and never falls back to another CLI. Preview does
 not construct, discover or launch a runtime. Execution still requires explicit
 unmetered-cost acknowledgement before runtime activity.
@@ -45,7 +45,11 @@ Windows Gemini npm batch shims are resolved to native Node plus the installed JS
 entry point, or reported unavailable; no batch shim is passed to subprocess.
 Help/version discovery is bounded and does not inspect credentials or start a
 model session. Sandbox effectiveness and native-subagent capability remain
-**UNVERIFIED**. Real Codex, Gemini and cross-provider E2E remain **NOT_RUN**.
+**UNVERIFIED**. In AGY mode, workers use a per-worktree custom agent restricted
+to file tools, with shell commands and nested subagents disabled; Codex handles
+independent reviews. AGY is not used for read-only proposal generation because
+its adapter cannot consume the external no-execution policy. Real Codex,
+Gemini, AGY, and cross-provider E2E remain **NOT_RUN**.
 
 Each execute call gets a fresh `dev-logs/<execution-id>/` directory. Adapters
 reject existing/aliased/owned output paths and create logs exclusively. Their

@@ -207,6 +207,12 @@ class WorkspaceProposalGenerationBehaviorTests(unittest.TestCase):
             ),
             ("gemini",),
         )
+        self.assertEqual(
+            generation.configured_proposal_providers(
+                dict(DEFAULT_CONFIG, provider_mode="agy")
+            ),
+            (),
+        )
 
     def test_standard_gemini_admin_policies_disable_supplemental_proposal_policy(self):
         with tempfile.TemporaryDirectory() as system_policies:

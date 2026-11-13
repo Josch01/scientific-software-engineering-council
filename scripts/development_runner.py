@@ -23,7 +23,7 @@ if not __package__:
     # with the adapters' package imports as well as module-based invocation.
     sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from scripts.agent_runtime import RuntimeLaunchControl, RuntimeRequest, RuntimeStatus
-from scripts.provider_runtimes import CodexRuntime, GeminiRuntime, create_runtime
+from scripts.provider_runtimes import AgyRuntime, CodexRuntime, GeminiRuntime, create_runtime
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
 from scripts.check_runner import (run_checks, read_check_manifest, capture_snapshot,
                                   snapshot_artifact_sha256, _ensure_no_symlink_path)
@@ -596,7 +596,7 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
             raise ValueError("missing worktree")
         if git(folder,"symbolic-ref","--short","HEAD")!=worker["branch"]:
             raise ValueError("wrong branch")
-        if worker["provider"] not in ("codex","gemini"):
+        if worker["provider"] not in ("codex","gemini","agy"):
             result["status"]="UNAVAILABLE"
             raise ValueError("unsupported provider: "+str(worker["provider"]))
         if stop.is_set():
@@ -609,6 +609,9 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
             return result
         try:
             runtime=runtime_factory(worker["provider"])
+            if worker["provider"]=="agy" and type(runtime) is not AgyRuntime:
+                result["status"]="UNVERIFIED_RUNTIME_ADAPTER"
+                raise ValueError("AGY worker requires the concrete AgyRuntime adapter")
             capabilities=runtime.discover_capabilities()
         except (OSError,ValueError) as exc:
             result["status"]="UNAVAILABLE"
@@ -887,7 +890,7 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
             check_by_role={item["role"]:item for item in check_evidence}
             observed_sessions={(item.get("provider"),item.get("provider_session_id"))
                                for item in report["results"]
-                               if item.get("provider") in {"codex","gemini"} and
+                               if item.get("provider") in {"codex","gemini","agy"} and
                                isinstance(item.get("provider_session_id"),str)}
             review_results=[]
             for worker in state["workers"]:

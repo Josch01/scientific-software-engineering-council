@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare scoped native Gemini/Codex agent profiles. Never launches AI processes."""
+"""Prepare scoped native Gemini/Codex/AGY agent profiles. Never launches AI processes."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,7 @@ else:
     from configuration import DEFAULT_CONFIG, load_config, validate_config
     from route_task import route
 
-MODES = ("gemini", "codex", "both")
+MODES = ("gemini", "codex", "both", "agy")
 REVIEWERS = {"software_auditor", "security_reviewer", "independent_reviewer", "release_engineer"}
 ROLE_TASKS = {
     "software_architect": "Analizar diseño modular, contratos y dependencias; proponer ADR.",
@@ -37,6 +37,10 @@ ROLE_TASKS = {
 def provider_for(role: str, mode: str) -> str:
     if mode == "both":
         return "gemini" if role in REVIEWERS or role == "gui_engineer" else "codex"
+    if mode == "agy":
+        # AGY workers write only through their generated tool allowlist;
+        # reviewers stay on the existing independently dispatched Codex path.
+        return "codex" if role in REVIEWERS else "agy"
     return mode
 
 
@@ -72,6 +76,17 @@ def profile(role: str, provider: str, policy: dict) -> str:
     name = agent_name(role)
     description = "SSEC " + role.replace("_", " ") + " - " + ROLE_TASKS[role]
     instr = agent_instruction(role, policy)
+    if provider == "agy":
+        # AGY's CLI runs a non-interactive task, so the generated primary agent
+        # intentionally has file tools only and cannot execute shell commands
+        # or launch nested agents. Test commands are delegated to SSEC's check gate.
+        return ("---\n" + f"name: {name}\n"
+                + f"description: {json.dumps(description, ensure_ascii=False)}\n"
+                + "mainAgent: true\nsubagent: false\n"
+                + "tools:\n  - view_file\n  - grep_search\n"
+                + "  - replace_file_content\n  - write_to_file\n"
+                + "commandExecutionPolicy: off\n---\n\n"
+                + instr + "\n")
     if provider == "gemini":
         return ("---\n" + f"name: {name}\ndescription: {description}\nkind: local\n" +
                 ("tools:\n  - read_file\n  - grep_search\n" if role in REVIEWERS else "") +
@@ -135,8 +150,9 @@ def make_files(task: dict, mode: str, config: dict | None = None) -> tuple[dict,
     for role in primary + reviews:
         provider = provider_for(role, mode)
         name = agent_name(role)
-        target = (f".gemini/agents/{name}.md" if provider == "gemini"
-                  else f".codex/agents/{name}.toml")
+        target = (f".gemini/agents/{name}.md" if provider == "gemini" else
+                  f".agents/agents/{name}.md" if provider == "agy" else
+                  f".codex/agents/{name}.toml")
         packet = f"{folder}/{name}.md"
         files[target] = profile(role, provider, policy)
         files[packet] = (
