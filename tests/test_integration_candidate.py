@@ -523,6 +523,28 @@ class IntegrationCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "historical.*inventory"):
             run_integration_review(self.root, self.task["task_id"], latest.integration_id)
 
+    def test_changes_requested_integration_cannot_be_re_reviewed_without_rework(self):
+        from scripts.integration_review import run_integration_review
+        result = self.integrated_fixture()
+        report, _ = self.integrated_review(result, verdict="REQUEST_CHANGES")
+        self.assertEqual(report["status"], "CHANGES_REQUESTED")
+        rebuild = self.build()
+        self.assertEqual(rebuild.status, "BLOCKED")
+        self.assertTrue(any("rework" in blocker.lower() for blocker in rebuild.blockers))
+        attempts = self.meta / "integrations" / result.integration_id / "review-attempts"
+        before = sorted(path.name for path in attempts.iterdir())
+        calls = []
+
+        def forbidden(provider):
+            calls.append(provider)
+            raise AssertionError("a changes-requested candidate must not reach a provider")
+
+        with self.assertRaisesRegex(ValueError, "rework"):
+            run_integration_review(self.root, self.task["task_id"], result.integration_id,
+                                  launch=True, cost_ack=True, runtime_factory=forbidden)
+        self.assertEqual(calls, [])
+        self.assertEqual(sorted(path.name for path in attempts.iterdir()), before)
+
     def test_integrated_review_rejects_reused_runtime_session(self):
         result = self.integrated_fixture()
         session = json.loads(self.reviews[0].read_text())["provider_session_id"]

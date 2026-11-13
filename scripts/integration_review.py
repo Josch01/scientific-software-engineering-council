@@ -349,11 +349,34 @@ def _aggregate(statuses):
     return "CHANGES_REQUESTED" if "REQUEST_CHANGES" in statuses else "PASSED"
 
 
+def _reject_changes_requested_replay(metadata, state, integration, check):
+    """Do not let another review replace a current request for code changes."""
+    attempts = Path(metadata) / "integrations" / integration["integration_id"] / "review-attempts"
+    _ensure_no_symlink_path(attempts)
+    entries = sorted(attempts.iterdir(), key=lambda item: item.name) if attempts.is_dir() else []
+    if not entries:
+        return
+    latest = entries[-1]
+    _ensure_no_symlink_path(latest)
+    if not latest.is_dir() or not _INTEGRATION_ID_RE.fullmatch(latest.name):
+        raise ValueError("latest integrated review attempt path is invalid")
+    path = latest / "bundle.json"
+    _ensure_no_symlink_path(path)
+    if not path.is_file():
+        return
+    bundle = validate_integration_review_bundle(path, metadata, state, integration, check)
+    if bundle["status"] == "CHANGES_REQUESTED":
+        raise ValueError(
+            "CHANGES_REQUESTED requires rework and a fresh integration; this candidate cannot be re-reviewed"
+        )
+
+
 def run_integration_review(project, task_id, integration_id, *, launch=False, cost_ack=False,
                            minutes=30, runtime_factory=None):
     if type(minutes) not in (int, float) or not math.isfinite(minutes) or minutes <= 0:
         raise ValueError("max minutes must be positive and finite")
     state, metadata, integration, check = _context(project, task_id, integration_id)
+    _reject_changes_requested_replay(metadata, state, integration, check)
     roster = state["review_roles"]
     if not roster or len(roster) > _MAX_REVIEW_INVOCATIONS:
         raise ValueError("integrated review requires a bounded configured reviewer roster")

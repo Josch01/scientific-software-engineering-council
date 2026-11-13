@@ -591,6 +591,37 @@ def _check_run_identity(result, metadata, state, branch, candidate_hash, specs):
     return path, before_hash, data
 
 
+def _latest_changes_requested(metadata, state, specs):
+    """Return the verified latest findings bundle, if rework is required."""
+    root = Path(metadata) / "integrations"
+    _ensure_no_symlink_path(root)
+    attempts = sorted(root.iterdir(), key=lambda item: item.name) if root.is_dir() else []
+    if not attempts:
+        return None
+    latest = attempts[-1]
+    _ensure_no_symlink_path(latest)
+    if not latest.is_dir() or not _INTEGRATION_ID_RE.fullmatch(latest.name):
+        raise ValueError("latest integration attempt path is invalid")
+    from .integration_review import _latest, current_integration_review
+    _latest(root, latest.name)
+    manifest = latest / "manifest.json"
+    _ensure_no_symlink_path(manifest)
+    if not manifest.is_file():
+        return None
+    integration, check = validate_integration_manifest(manifest, metadata, state, specs)
+    if (integration["status"] != "CHECKED_AWAITING_INTEGRATED_REVIEW" or
+            check is None or check["status"] != "PASSED"):
+        return None
+    review_attempts = latest / "review-attempts"
+    _ensure_no_symlink_path(review_attempts)
+    if not review_attempts.is_dir() or not any(review_attempts.iterdir()):
+        return None
+    path, bundle, digest = current_integration_review(metadata, state, integration, check)
+    if bundle["status"] == "CHANGES_REQUESTED":
+        return integration, path, bundle, digest
+    return None
+
+
 def _publish_integration_manifest(pending_path, manifest_path, data, candidate,
                                   candidate_hash, *, check_path=None, check_hash=None,
                                   metadata=None, state=None, branch=None, specs=()):
@@ -647,6 +678,13 @@ def build_integration_candidate(project, task_id, execution_id, *, stop_event=No
             raise ValueError("initialized workflow is not ready")
         task = state["task_packet"]
         specs = validate_check_specs(task)
+        pending_rework = _latest_changes_requested(metadata, state, specs)
+        if pending_rework is not None:
+            source = pending_rework[0]
+            raise ValueError(
+                "latest integration has CHANGES_REQUESTED; rework must change worker evidence "
+                "before a new integration can be built: " + source["integration_id"]
+            )
         contracts = validate_work_items(task, [w["role"] for w in state["workers"]],
                                         state["review_roles"], [spec.check_id for spec in specs])
         root = _source_identity(state)
