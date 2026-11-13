@@ -1,0 +1,8 @@
+# P4 — Verificación local Windows
+
+- Commit evaluado: `6d10967301073be4faa45af3142fef01ac081288`.
+- `PASS`: `python scripts/validate_skill.py` at the evaluated base; `git diff --check` on the P4.2 patch.
+- `PASS` Linux/Docker: 21 tests; `test_provider_modes.py` (8/8) and `test_configuration.py` (13/13) with local `python:3.14.0-bookworm`, no image pull or package install. Both symlink checks execute and pass on Linux.
+- `INTERRUPTED` (`pytest -q`, 21%): primera falla observada `ConfigTests.test_symlink_refusal`, porque el host devuelve `WinError 1314` al crear el fixture. No se obtuvo resumen agregado; suite completa local `NOT_RUN`.
+- Tras el guardado de entorno, las dos regresiones focalizadas devuelven `SKIPPED` (`2 skipped`) para ese mismo `WinError 1314`; otros errores siguen fallando.
+- CI de PR #59–#63 para el commit previo `PASS`; CI del cambio de guardado queda pendiente en PR #64. No se ejecutó el SIR de tesis ni proveedores.

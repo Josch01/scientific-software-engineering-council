@@ -59,6 +59,15 @@ class TestModes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             (p / "elsewhere").mkdir()
-            (p / ".gemini").symlink_to(p / "elsewhere", target_is_directory=True)
+            try:
+                (p / ".gemini").symlink_to(
+                    p / "elsewhere", target_is_directory=True
+                )
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 1314:
+                    self.skipTest(
+                        "Windows host does not grant symlink creation privilege"
+                    )
+                raise
             with self.assertRaises(ValueError):
                 prepare(TASK, "gemini", p, apply=True)
