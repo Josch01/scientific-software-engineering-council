@@ -375,10 +375,11 @@ def _manifest_matches_task(path,metadata,state,worker,current_tree,specs):
         ("base_commit",state["base_commit"]),
         ("worker_role",worker["role"]),
         ("worker_branch",worker["branch"]),
-        ("candidate_tree_sha256",current_tree),
     ):
         if manifest[field]!=expected:
             raise ValueError(f"manifest {field} does not match initialized candidate")
+    if current_tree is not None and manifest["candidate_tree_sha256"]!=current_tree:
+        raise ValueError("manifest candidate_tree_sha256 does not match initialized candidate")
     prefix=f"check-runs/{parts[1]}/{worker['role']}/"
     if manifest["snapshot"] is None or manifest["snapshot"]["path"]!=prefix+"snapshot":
         raise ValueError("manifest snapshot is outside its worker run directory")
@@ -446,12 +447,16 @@ def gate(project,task_id):
             invalid_manifests.append({"path":f"worker:{role}","role":role,
                                       "error":f"candidate tree invalid: {exc}"})
         worker_valid=[]
-        for path,_manifest in parsed:
+        for path,source_manifest in parsed:
             if path.parent.name!=role:
                 continue
             try:
-                manifest=_manifest_matches_task(path,metadata,state,worker,current_tree,specs)
-                if manifest["status"]=="PASSED":
+                current_candidate=(current_tree is not None and
+                                   source_manifest["candidate_tree_sha256"]==current_tree)
+                manifest=_manifest_matches_task(
+                    path,metadata,state,worker,
+                    current_tree if current_candidate else None,specs)
+                if current_candidate and manifest["status"]=="PASSED":
                     worker_valid.append((manifest,sorted(item["check_id"] for item in manifest["checks"])))
             except (OSError,ValueError,TypeError,KeyError) as exc:
                 invalid_manifests.append({"path":path.relative_to(metadata).as_posix(),
@@ -520,7 +525,9 @@ def gate(project,task_id):
                     from .integration_candidate import validate_integration_manifest
                 else:
                     from integration_candidate import validate_integration_manifest
-                manifest,checked=validate_integration_manifest(manifest_path,metadata,state,specs)
+                manifest,checked=validate_integration_manifest(
+                    manifest_path,metadata,state,specs,
+                    require_current_workers=(attempt==latest))
                 if attempt==latest:
                     latest_data,latest_check=manifest,checked
                     latest_attempt_invalid=False

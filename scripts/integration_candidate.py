@@ -118,17 +118,24 @@ def _worker_identity(worker, state):
     return candidate_tree_sha256(root)
 
 
-def _evidence(state, metadata, execution_id, contracts, specs):
+def _evidence(state, metadata, execution_id, contracts, specs, *, worker_tree_hashes=None):
     """Select exact persisted reviewer paths and their bound check manifests."""
     if not state["review_roles"]:
         raise ValueError("integration requires configured reviewers")
+    roles = {worker["role"] for worker in state["workers"]}
+    if worker_tree_hashes is not None and (
+            type(worker_tree_hashes) is not dict or set(worker_tree_hashes) != roles or
+            any(type(value) is not str or not _SHA256_RE.fullmatch(value)
+                for value in worker_tree_hashes.values())):
+        raise ValueError("historical worker tree hashes are invalid")
     required, _, unsupported = check_requirements(state["task_packet"], state["required_evidence"])
     if not specs or unsupported or not required <= {spec.check_id for spec in specs}:
         raise ValueError("missing or unsupported declared process checks")
     workers, inputs = {}, {}
     for worker in sorted(state["workers"], key=lambda item: item["role"]):
         role = worker["role"]
-        tree = _worker_identity(worker, state)
+        tree = (_worker_identity(worker, state) if worker_tree_hashes is None
+                else worker_tree_hashes[role])
         workers[role] = tree
         expected = {field: state[field] for field in ("task_id", "task_revision", "task_sha256", "base_commit")}
         expected.update(worker_role=role, candidate_tree_sha256=tree)
@@ -138,11 +145,18 @@ def _evidence(state, metadata, execution_id, contracts, specs):
             path = _resolve_evidence_path(metadata, relative, directory=False)
             before = _sha256(path)
             review = validate_review_manifest(_json_file(path), metadata)
-            if (review["status"] != "PASSED" or review["verdict"] != "PASS" or
-                    any(review[field] != value for field, value in expected.items()) or
-                    review["reviewer_role"] != reviewer or
-                    review["reviewer_provider"] != provider_for(reviewer, state["mode"])):
-                raise ValueError("review evidence identity/status mismatch: " + role + "/" + reviewer)
+            mismatches = [field for field, value in expected.items() if review[field] != value]
+            if review["status"] != "PASSED":
+                mismatches.append("status=" + str(review["status"]))
+            if review["verdict"] != "PASS":
+                mismatches.append("verdict=" + str(review["verdict"]))
+            if review["reviewer_role"] != reviewer:
+                mismatches.append("reviewer_role")
+            if review["reviewer_provider"] != provider_for(reviewer, state["mode"]):
+                mismatches.append("reviewer_provider")
+            if mismatches:
+                raise ValueError("review evidence identity/status mismatch: " + role + "/" + reviewer +
+                                 " (" + ", ".join(mismatches) + ")")
             if _sha256(path) != before:
                 raise ValueError("review manifest changed during validation")
             inputs[relative] = dict(path=relative, sha256=before, kind="review", role=role,
@@ -169,6 +183,19 @@ def _evidence(state, metadata, execution_id, contracts, specs):
                         check["timeout_seconds"] != spec.timeout_seconds):
                     raise ValueError("check command/spec mismatch: " + role + "/" + spec.check_id)
             inputs[check_relative] = dict(path=check_relative, sha256=check_hash, kind="check", role=role)
+    rework_path = metadata / "dev-logs" / execution_id / "rework-context.json"
+    _ensure_no_symlink_path(rework_path)
+    if rework_path.is_file():
+        from .integration_review import validate_rework_packet
+        before = _sha256(rework_path)
+        packet = _json_file(rework_path)
+        validate_rework_packet(Path(state["project_root"]), state["task_id"], packet,
+                               require_latest=False)
+        if _sha256(rework_path) != before:
+            raise ValueError("rework packet changed during integration preflight")
+        relative = rework_path.relative_to(metadata).as_posix()
+        inputs[relative] = dict(path=relative, sha256=before, kind="rework",
+                                role="integration_candidate")
     return workers, sorted(inputs.values(), key=lambda item: item["path"])
 
 
@@ -341,8 +368,10 @@ def _integration_manifest_data(state, execution_id, integration_id, candidate, b
     )
 
 
-def validate_integration_manifest(manifest_path, metadata, state, specs):
+def validate_integration_manifest(manifest_path, metadata, state, specs, *, require_current_workers=True):
     """Validate the latest integration record and its exact persisted check evidence."""
+    if type(require_current_workers) is not bool:
+        raise ValueError("require_current_workers must be boolean")
     metadata = Path(metadata)
     _ensure_no_symlink_path(metadata)
     metadata = metadata.resolve(strict=True)
@@ -421,7 +450,8 @@ def validate_integration_manifest(manifest_path, metadata, state, specs):
     contracts = validate_work_items(state["task_packet"], [worker["role"] for worker in state["workers"]],
                                     state["review_roles"], [spec.check_id for spec in specs])
     expected_worker_hashes, expected_inputs = _evidence(
-        state, metadata, data["execution_id"], contracts, specs)
+        state, metadata, data["execution_id"], contracts, specs,
+        worker_tree_hashes=None if require_current_workers else worker_hashes)
     if worker_hashes != expected_worker_hashes:
         raise ValueError("integration worker tree hashes do not match persisted worker evidence")
     if data["input_manifests"] != expected_inputs:
@@ -434,7 +464,9 @@ def validate_integration_manifest(manifest_path, metadata, state, specs):
             raise ValueError("integration input manifest record is invalid")
         if (type(item["path"]) is not str or item["path"] in seen_inputs or
                 type(item["sha256"]) is not str or not _SHA256_RE.fullmatch(item["sha256"]) or
-                item["kind"] not in ("check", "review") or item["role"] not in worker_roles):
+                item["kind"] not in ("check", "review", "rework") or
+                (item["kind"] == "rework" and item["role"] != "integration_candidate") or
+                (item["kind"] != "rework" and item["role"] not in worker_roles)):
             raise ValueError("integration input manifest identity is invalid")
         seen_inputs.add(item["path"])
         input_path = _resolve_evidence_path(metadata, item["path"], directory=False)
@@ -608,7 +640,11 @@ def _latest_changes_requested(metadata, state, specs):
     _ensure_no_symlink_path(manifest)
     if not manifest.is_file():
         return None
-    integration, check = validate_integration_manifest(manifest, metadata, state, specs)
+    # The original worker trees are historical evidence here: a valid rework
+    # necessarily changes at least one of them. Re-derive the persisted checks
+    # and reviews against their stored hashes, not the current worker contents.
+    integration, check = validate_integration_manifest(
+        manifest, metadata, state, specs, require_current_workers=False)
     if (integration["status"] != "CHECKED_AWAITING_INTEGRATED_REVIEW" or
             check is None or check["status"] != "PASSED"):
         return None
@@ -616,7 +652,8 @@ def _latest_changes_requested(metadata, state, specs):
     _ensure_no_symlink_path(review_attempts)
     if not review_attempts.is_dir() or not any(review_attempts.iterdir()):
         return None
-    path, bundle, digest = current_integration_review(metadata, state, integration, check)
+    path, bundle, digest = current_integration_review(
+        metadata, state, integration, check, require_current_workers=False)
     if bundle["status"] == "CHANGES_REQUESTED":
         return integration, path, bundle, digest
     return None
@@ -679,17 +716,27 @@ def build_integration_candidate(project, task_id, execution_id, *, stop_event=No
         task = state["task_packet"]
         specs = validate_check_specs(task)
         pending_rework = _latest_changes_requested(metadata, state, specs)
+        rework_path = metadata / "dev-logs" / execution_id / "rework-context.json"
+        _ensure_no_symlink_path(rework_path)
+        rework_packet = _json_file(rework_path) if rework_path.is_file() else None
         if pending_rework is not None:
-            source = pending_rework[0]
-            raise ValueError(
-                "latest integration has CHANGES_REQUESTED; rework must change worker evidence "
-                "before a new integration can be built: " + source["integration_id"]
-            )
+            source, _bundle_path, _bundle, bundle_sha256 = pending_rework
+            if rework_packet is None:
+                raise ValueError("latest CHANGES_REQUESTED integration requires a fresh rework packet")
+            from .integration_review import validate_rework_packet
+            validate_rework_packet(Path(state["project_root"]), task_id, rework_packet)
+            if (rework_packet["source_integration_id"] != source["integration_id"] or
+                    rework_packet["source_review_bundle_sha256"] != bundle_sha256):
+                raise ValueError("rework packet does not bind the latest integrated findings")
+        elif rework_packet is not None:
+            raise ValueError("rework packet is stale because no latest CHANGES_REQUESTED integration exists")
         contracts = validate_work_items(task, [w["role"] for w in state["workers"]],
                                         state["review_roles"], [spec.check_id for spec in specs])
         root = _source_identity(state)
         source_tree = candidate_tree_sha256(root)
         workers, inputs = _evidence(state, metadata, execution_id, contracts, specs)
+        if pending_rework is not None and workers == pending_rework[0]["worker_tree_hashes"]:
+            raise ValueError("rework must change at least one worker tree before integration")
         base = _base_entries(root, state["base_commit"])
         operations, contents = _operations(state, contracts, base)
         # Detect worker/evidence drift during preflight before candidate allocation.
@@ -708,6 +755,9 @@ def build_integration_candidate(project, task_id, execution_id, *, stop_event=No
         _materialize_base(candidate, base, state["base_commit"])
         _overlay(candidate, operations, contents)
         candidate_hash = candidate_tree_sha256(candidate)
+        if (pending_rework is not None and
+                candidate_hash == pending_rework[0]["candidate_tree_sha256"]):
+            raise ValueError("rework candidate tree is unchanged from the findings source")
         if _evidence(state, metadata, execution_id, contracts, specs) != (workers, inputs):
             raise ValueError("worker evidence changed during candidate composition")
         _source_identity(state)

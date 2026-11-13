@@ -13,8 +13,8 @@
 ## Tasks
 
 - [x] Add a regression test that a `CHANGES_REQUESTED` integration cannot be reviewed again without a fresh rework integration.
-- [ ] Add rework packet validation and fresh-tree binding; pass only validated findings to workers as untrusted context.
-- [ ] Add one explicit CLI path for rework → checks → new integration → independent review; preserve human-only decision.
-- [ ] Add deterministic local E2E coverage for correction, stale packets, failure/cancellation, and no false approval.
-- [ ] Write a short phase report; run focused regression tests and one final P1 suite appropriate to runtime/time limits.
+- [x] Add rework packet validation and fresh-tree binding; pass only validated findings to workers as untrusted context.
+- [x] Add one explicit CLI path for rework → checks → new integration → independent review; preserve human-only decision.
+- [x] Add deterministic local E2E coverage for correction, stale packets, failure/cancellation, and no false approval.
+- [x] Write a short phase report; run focused regression tests and one final P1 suite appropriate to runtime/time limits. Provider-backed rework remains `NOT_RUN`.
 
