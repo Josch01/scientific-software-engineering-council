@@ -160,6 +160,42 @@ class ThesisSirQtPageTests(unittest.TestCase):
         self.assertIsNone(self.page.result_payload)
         self.assertEqual(self.page.state, "READY")
 
+    def test_user_can_reduce_rk4_step_for_valid_high_transmission_parameters(self):
+        self.page.load_data_file(self.source)
+        page = self.page
+        self.assertEqual(page.max_step_combo.currentData(), 0.01)
+        page.harmonic_count.setCurrentIndex(page.harmonic_count.findData(1))
+        for name, value in {
+            "d0": "2.0",
+            "gamma": "0.05",
+            "log10_initial_infectious": "2.0",
+            "susceptible_fraction": "0.999",
+            "ascertainment_fraction": "0.5",
+        }.items():
+            page.parameter_fields[name].setText(value)
+        page.harmonic_table.item(0, 0).setText("2.0")
+        page.harmonic_table.item(0, 1).setText("2.0")
+        page.harmonic_table.item(0, 2).setText("2.2")
+        page.delay_days.setCurrentIndex(page.delay_days.findData(0.0))
+        page.max_step_combo.setCurrentIndex(page.max_step_combo.findData(0.01))
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ) as confirm:
+            page.start_simulation()
+            self._wait_for_run()
+
+        self.assertIn("Δt=0.01 semanas", confirm.call_args.args[2])
+        self.assertEqual(page.state, "COMPUTED")
+        self.assertAlmostEqual(
+            page.result_payload["integrator"]["max_step_week"], 0.01
+        )
+        page.max_step_combo.setCurrentIndex(page.max_step_combo.findData(0.02))
+        self.assertIsNone(page.result_payload)
+        self.assertEqual(page.state, "READY")
+
     def test_audit_action_requires_a_current_computed_result(self):
         self.assertFalse(self.page.audit_button.isEnabled())
         self.page.load_data_file(self.source)

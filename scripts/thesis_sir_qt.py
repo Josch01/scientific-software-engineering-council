@@ -48,8 +48,9 @@ except ImportError:
     from thesis_sir_audit_workspace import write_thesis_sir_audit_workspace
 
 
-MAX_STEPS_PER_INTERVAL = 20
-MAX_STEP_WEEKS = 0.1
+MAX_STEPS_PER_INTERVAL = 1000
+DEFAULT_MAX_STEP_WEEKS = 0.01
+RK4_STEP_CHOICES_WEEKS = (0.1, 0.05, 0.02, 0.01, 0.005, 0.001)
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
@@ -138,18 +139,22 @@ if QtWidgets is not None:
         succeeded = QtCore.Signal(object)
         failed = QtCore.Signal(str)
 
-        def __init__(self, parameters, observations, parent=None):
+        def __init__(
+            self, parameters, observations, max_step, max_steps_per_interval, parent=None
+        ):
             super().__init__(parent)
             self._parameters = parameters
             self._observations = observations
+            self._max_step = max_step
+            self._max_steps_per_interval = max_steps_per_interval
 
         def run(self) -> None:
             try:
                 result = evaluate_thesis_sir_weekly_counts(
                     self._parameters,
                     self._observations,
-                    max_step=MAX_STEP_WEEKS,
-                    max_steps_per_interval=MAX_STEPS_PER_INTERVAL,
+                    max_step=self._max_step,
+                    max_steps_per_interval=self._max_steps_per_interval,
                 )
                 self.succeeded.emit(result.to_dict())
             except Exception as exc:
@@ -222,7 +227,7 @@ if QtWidgets is not None:
             model_facts.setSpacing(8)
             for title, value in (
                 ("POBLACIÓN FIJA", "129,960,600 personas"),
-                ("INTEGRADOR", "RK4 · paso máximo 0.1 semanas"),
+                ("INTEGRADOR", "RK4 fijo · paso configurable"),
                 ("AJUSTE", "No automático"),
             ):
                 fact = QtWidgets.QFrame(hero)
@@ -358,6 +363,21 @@ if QtWidgets is not None:
                 self.delay_days.addItem(f"{delay:g} días", delay)
             self.delay_days.currentIndexChanged.connect(self._invalidate_result)
             form.addRow("Retardo declarado", self.delay_days)
+
+            self.max_step_combo = QtWidgets.QComboBox()
+            self.max_step_combo.setObjectName("thesisSirMaxStep")
+            self.max_step_combo.setAccessibleName("Paso máximo del integrador RK4 en semanas")
+            self.max_step_combo.setToolTip(
+                "Paso fijo de integración. Reducirlo aumenta el número de pasos; "
+                "no es una medida de incertidumbre ni garantiza validez científica."
+            )
+            for max_step in RK4_STEP_CHOICES_WEEKS:
+                self.max_step_combo.addItem(f"{max_step:g} semanas", max_step)
+            self.max_step_combo.setCurrentIndex(
+                self.max_step_combo.findData(DEFAULT_MAX_STEP_WEEKS)
+            )
+            self.max_step_combo.currentIndexChanged.connect(self._invalidate_result)
+            form.addRow("Paso máximo RK4", self.max_step_combo)
             parameter_layout.addLayout(form)
             model_bounds = QtWidgets.QLabel(
                 "γ se expresa en 1/semana. Introduce todos los valores; SSEC no asigna "
@@ -599,7 +619,7 @@ if QtWidgets is not None:
                 f"Serie: {self.observations.series_id} · {len(self.observations.counts)} semanas\n"
                 f"SHA-256: {self.observations.source_sha256}\n"
                 f"Parámetros explícitos: {parameter_values}\n"
-                f"Integrador: RK4 fijo · Δt={MAX_STEP_WEEKS:g} semanas · "
+                f"Integrador: RK4 fijo · Δt={self.max_step_combo.currentData():g} semanas · "
                 f"máx. {MAX_STEPS_PER_INTERVAL} pasos/intervalo\n\n"
                 "Se calculará en memoria con el motor científico incluido en SSEC. "
                 "El archivo de datos no se modificará. ¿Confirmas la ejecución?"
@@ -684,8 +704,14 @@ if QtWidgets is not None:
             self.run_button.setEnabled(False)
             self.load_data_button.setEnabled(False)
             self.progress_bar.show()
-            self._set_run_status("Cálculo en curso · RK4 fijo · progreso no estimado", "active")
-            worker = _ThesisSIRWorker(parameters, self.observations, self)
+            max_step = float(self.max_step_combo.currentData())
+            self._set_run_status(
+                f"Cálculo en curso · RK4 fijo · Δt={max_step:g} semanas · progreso no estimado",
+                "active",
+            )
+            worker = _ThesisSIRWorker(
+                parameters, self.observations, max_step, MAX_STEPS_PER_INTERVAL, self
+            )
             worker.succeeded.connect(self._on_worker_success)
             worker.failed.connect(self._on_worker_failure)
             worker.finished.connect(self._on_worker_finished)
