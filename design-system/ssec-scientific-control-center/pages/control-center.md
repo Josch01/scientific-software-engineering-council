@@ -19,8 +19,8 @@ workspace, and chart renderers.
 
 - Put the chart title, axis labels, units, readable endpoint ticks, series
   legend, and provenance in or beside the plot.
-- Palette: `#b89bff` violet, `#61d6c1` teal, `#ff9b81` coral, `#79c7ff` sky,
-  `#f4c96d` amber, and `#ed94c6` pink. Use line style and labels in addition
+- Palette: `#c6a7ff` violet, `#66dec6` teal, `#ffa48e` coral, `#7dd3fc` sky,
+  `#ffd166` amber, and `#f29bcb` pink. Use line style and labels in addition
   to hue where series overlap.
 - Use a low-contrast grid, high-contrast axis labels, tabular tooltip values,
   and keyboard-operable legend toggles.

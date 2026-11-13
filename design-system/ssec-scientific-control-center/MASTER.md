@@ -6,13 +6,14 @@ from this presentation layer.
 
 ## Visual direction
 
-- Charcoal surfaces: background `#202027`, sidebar `#24232b`, cards `#292830`,
-  raised controls `#32313b`.
-- Soft violet is the primary action and focus color: `#aa8bf2`; use `#5b487d`
-  for selected navigation and `#bea5ff` for hover emphasis.
-- Primary text `#f2eef7`; secondary text `#c2bdcc`. Keep text readable against
+- Charcoal surfaces: background `#27262e`, sidebar `#2d2b35`, cards `#34323d`,
+  raised controls `#3d3b47`, hover surface `#484550`, and border `#585561`.
+- Soft violet is the primary action and focus color: `#b99aff`; use `#69558f`
+  for selected navigation and `#d0baff` for hover emphasis.
+- Primary text `#f5f2fa`; secondary text `#cdc8d5`. Keep text readable against
   every surface; use color and a written status together.
-- Scientific series use violet, teal, coral, sky, amber, and pink. Keep series
+- Scientific series use `#c6a7ff` violet, `#66dec6` teal, `#ffa48e` coral,
+  `#7dd3fc` sky, `#ffd166` amber, and `#f29bcb` pink. Keep series
   names and units visible; never encode scientific meaning by color alone.
 - Use system UI fonts, 8 px spacing increments, 8–10 px card corners, and
   tabular numerals in result tables.

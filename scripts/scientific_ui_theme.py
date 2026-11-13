@@ -106,5 +106,6 @@ def qt_stylesheet() -> str:
         QSplitter#thesisSirWorkspaceSplitter::handle:horizontal {{ width: 8px; }}
         QSplitter#thesisSirWorkspaceSplitter::handle:vertical {{ height: 8px; }}
         QToolTip {{ background: {c['surface_raised']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 5px; }}
-        QPushButton:focus, QListWidget:focus, QListWidget::item:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {c['focus']}; }}
+        QListWidget:focus {{ border-right: 1px solid {c['border']}; }}
+        QPushButton:focus, QListWidget::item:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {c['focus']}; }}
     """

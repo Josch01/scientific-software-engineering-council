@@ -51,6 +51,8 @@ class ScientificUiThemeTests(unittest.TestCase):
         self.assertIn("QPushButton:pressed", style)
         self.assertIn("QPushButton:disabled", style)
         self.assertIn("QListWidget::item:selected", style)
+        self.assertIn("QListWidget::item:focus", style)
+        self.assertIn("QListWidget:focus { border-right:", style)
 
     def test_reduced_motion_setting_disables_qt_transitions(self):
         with patch.dict(os.environ, {"SSEC_REDUCED_MOTION": "1"}):
