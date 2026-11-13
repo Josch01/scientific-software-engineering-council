@@ -816,6 +816,9 @@ else:
 
             self.project_page = self._build_project_page()
             self.thesis_sir_page = ThesisSIRPage(self)
+            self.thesis_sir_page.audit_workspace_ready.connect(
+                self._open_thesis_sir_audit_workspace
+            )
             self.agent_page = self._build_agent_page()
             self.agent_supervisor = self.agent_page
             self.workspace_page = self._build_workspace_page()
@@ -1414,6 +1417,24 @@ else:
                 f"Proyecto cargado · {model.verification_status}", 8_000
             )
             return model
+
+        def _open_thesis_sir_audit_workspace(self, workspace_path: str) -> None:
+            """Load the verified SIR bundle and open, but do not submit, its audit request."""
+            root = Path(workspace_path)
+            try:
+                self.load_project(root, "workspace.json")
+            except (OSError, TypeError, ValueError, RecursionError) as exc:
+                self.thesis_sir_page._set_run_status(
+                    f"Bundle creado pero no se pudo abrir en el Centro de Control · {str(exc)[:600]}",
+                    "error",
+                )
+                return
+            self.navigate("audits")
+            self.statusBar().showMessage(
+                "Bundle SIR verificado; revisa recursos y confirma por separado el envío.", 10_000
+            )
+            self.workspace_audit_button.click()
+
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

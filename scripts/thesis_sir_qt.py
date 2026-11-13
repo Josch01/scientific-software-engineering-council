@@ -19,6 +19,8 @@ try:
     from .thesis_sir_data import MAX_RECONSTRUCTION_BYTES, parse_dge_reconstruction_json
     from .thesis_sir_model import (
         HarmonicTerm,
+        THESIS_PDF_SHA256,
+        THESIS_SOURCE_REFERENCE,
         THESIS_SIR_EQUATION_SET,
         THESIS_SIR_POPULATION,
         ThesisSIRParameters,
@@ -31,6 +33,8 @@ except ImportError:  # Support direct execution from scripts/.
     from thesis_sir_data import MAX_RECONSTRUCTION_BYTES, parse_dge_reconstruction_json
     from thesis_sir_model import (
         HarmonicTerm,
+        THESIS_PDF_SHA256,
+        THESIS_SOURCE_REFERENCE,
         THESIS_SIR_EQUATION_SET,
         THESIS_SIR_POPULATION,
         ThesisSIRParameters,
@@ -38,12 +42,15 @@ except ImportError:  # Support direct execution from scripts/.
         evaluate_thesis_sir_weekly_counts,
     )
 
+try:
+    from .thesis_sir_audit_workspace import write_thesis_sir_audit_workspace
+except ImportError:
+    from thesis_sir_audit_workspace import write_thesis_sir_audit_workspace
+
 
 MAX_STEPS_PER_INTERVAL = 20
 MAX_STEP_WEEKS = 0.1
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-THESIS_SOURCE_REFERENCE = "Capítulo 3 · ecuaciones 3.1–3.8 · pp. impresas 9–11"
-THESIS_PDF_SHA256 = "aa8ecad90a2d52942081b40fd78849d2dc4b280bbcb4b5bd828e4812dfec5486"
 
 
 def _read_selected_file(path: str | os.PathLike[str]) -> bytes:
@@ -151,6 +158,8 @@ if QtWidgets is not None:
 
     class ThesisSIRPage(QtWidgets.QWidget):
         """Project-independent UI for read-only DGE import and thesis SIR runs."""
+
+        audit_workspace_ready = QtCore.Signal(str)
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -387,6 +396,22 @@ if QtWidgets is not None:
             self.save_button.clicked.connect(self.export_result_dialog)
             actions.addWidget(self.save_button, 1)
             results_layout.addLayout(actions)
+            self.audit_button = QtWidgets.QPushButton("Preparar bundle de auditoría…")
+            self.audit_button.setObjectName("prepareThesisSirAuditButton")
+            self.audit_button.setAccessibleDescription(
+                "Crea una copia de auditoría con los datos seleccionados, el modelo, el resultado "
+                "y el código exacto; el envío a especialistas requiere otra confirmación."
+            )
+            self.audit_button.setMinimumHeight(40)
+            self.audit_button.setEnabled(False)
+            self.audit_button.clicked.connect(self.prepare_audit_workspace_dialog)
+            results_layout.addWidget(self.audit_button)
+            audit_hint = QtWidgets.QLabel(
+                "Preparar el bundle no invoca proveedores. El envío a especialistas se confirma después."
+            )
+            audit_hint.setObjectName("thesisSirHelperText")
+            audit_hint.setWordWrap(True)
+            results_layout.addWidget(audit_hint)
             self.progress_bar = QtWidgets.QProgressBar()
             self.progress_bar.setObjectName("thesisSirProgress")
             self.progress_bar.setRange(0, 0)
@@ -462,6 +487,7 @@ if QtWidgets is not None:
             )
             self.result_payload = None
             self.save_button.setEnabled(False)
+            self.audit_button.setEnabled(False)
             if self.observations is None:
                 self.state = "EMPTY"
                 return
@@ -488,6 +514,7 @@ if QtWidgets is not None:
             self.result_payload = None
             self.run_button.setEnabled(False)
             self.save_button.setEnabled(False)
+            self.audit_button.setEnabled(False)
             self._clear_content()
             self.state = "EMPTY"
             self.data_status.setText("Validando archivo local…")
@@ -578,6 +605,54 @@ if QtWidgets is not None:
                 "El archivo de datos no se modificará. ¿Confirmas la ejecución?"
             )
 
+        def prepare_audit_workspace_dialog(self) -> None:
+            if self.run_in_progress or self.observations is None or self.result_payload is None:
+                self._set_run_status("Se requiere una simulación vigente para preparar la auditoría.", "warning")
+                return
+            initial = str(self.source_path.parent) if self.source_path is not None else str(Path.home())
+            parent = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "Seleccionar carpeta para el bundle de auditoría", initial
+            )
+            if not parent:
+                return
+            try:
+                parameters = self._collect_parameters()
+            except (TypeError, ValueError, OverflowError) as exc:
+                self._set_run_status(f"Parámetros inválidos; no se preparó bundle: {str(exc)[:400]}", "warning")
+                return
+            confirmation = (
+                f"Crear una subcarpeta nueva dentro de:\n{Path(parent).expanduser()}\n\n"
+                "Incluirá solo la serie DGE seleccionada, el modelo y parámetros, el resultado "
+                "calculado y el código fuente exacto del motor/adaptador. El JSON original y la "
+                "tesis no se copiarán ni modificarán.\n\n"
+                "Esta acción es local y no invoca especialistas. Después podrás revisar y elegir "
+                "recursos; enviarlos al CLI puede consumir cuota y requiere una confirmación separada.\n\n"
+                "¿Preparar el bundle?"
+            )
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Preparar workspace para auditoría",
+                confirmation,
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                self._set_run_status("Bundle de auditoría no creado · confirmación rechazada", "warning")
+                return
+            try:
+                workspace_root = write_thesis_sir_audit_workspace(
+                    parent, self.observations, parameters, self.result_payload
+                )
+            except (OSError, TypeError, ValueError, RuntimeError) as exc:
+                self._set_run_status(f"No se preparó el workspace de auditoría · {str(exc)[:700]}", "error")
+                return
+            self._set_run_status(
+                "Audit workspace preparado · selecciona recursos y confirma el envío por separado",
+                "info",
+            )
+            self.audit_workspace_ready.emit(str(workspace_root))
+
         def start_simulation(self) -> None:
             if self._worker is not None:
                 return
@@ -628,12 +703,14 @@ if QtWidgets is not None:
                 "incertidumbre estadística: NOT_ASSESSED", "computed"
             )
             self.save_button.setEnabled(True)
+            self.audit_button.setEnabled(True)
             self._show_result_charts(payload)
 
         def _on_worker_failure(self, message: str) -> None:
             self.result_payload = None
             self.state = "FAILED"
             self.save_button.setEnabled(False)
+            self.audit_button.setEnabled(False)
             self._clear_content()
             self._set_run_status(f"Fallo de simulación · {str(message)[:1000]}", "error")
 

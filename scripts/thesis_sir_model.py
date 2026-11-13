@@ -13,6 +13,8 @@ except ImportError:  # Support direct execution/import from the scripts director
 
 THESIS_SIR_POPULATION = 129_960_600.0
 THESIS_SIR_EQUATION_SET = "thesis_sir_harmonic_weekly_v1"
+THESIS_SOURCE_REFERENCE = "Capítulo 3 · ecuaciones 3.1–3.8 · pp. impresas 9–11"
+THESIS_PDF_SHA256 = "aa8ecad90a2d52942081b40fd78849d2dc4b280bbcb4b5bd828e4812dfec5486"
 _THESIS_DELAY_SCENARIOS = (0.0, 3.5, 4.3, 6.5)
 _MAX_WEEKLY_OBSERVATIONS = 10_000
 _MAX_TOTAL_RK4_STEPS = 1_000_000
