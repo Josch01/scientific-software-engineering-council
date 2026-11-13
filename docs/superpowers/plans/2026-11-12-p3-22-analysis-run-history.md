@@ -41,4 +41,4 @@
 - [x] Implementar el lector con límites locales documentados y reutilizar load_scientific_workspace; ejecutar solo el módulo de pruebas nuevo y guardar salida en log con resumen corto.
 - [x] Escribir prueba Qt roja para abrir una corrida anterior; implementar lista/acción, confirmar que una corrida FAILED o corrupta no se abre y que el resultado queda marcado como histórico.
 - [x] Ejecutar módulos de historial, Qt y loader; guardar log completo fuera del contexto, escribir reporte breve PASS/NOT_RUN, actualizar matriz y ejecutar compileall + git diff --check.
-- [ ] Revisar el diff, solicitar una revisión independiente focalizada en lectura segura y estados históricos, corregir solo defectos reproducibles, y crear un PR borrador apilado sobre P3.21.
+- [x] Revisar el diff, solicitar una revisión independiente focalizada en lectura segura y estados históricos, corregir solo defectos reproducibles, y crear un PR borrador apilado sobre P3.21.
