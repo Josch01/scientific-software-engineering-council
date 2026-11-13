@@ -48,7 +48,16 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "elsewhere").mkdir()
-            (root / ".ssec").symlink_to(root / "elsewhere", target_is_directory=True)
+            try:
+                (root / ".ssec").symlink_to(
+                    root / "elsewhere", target_is_directory=True
+                )
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 1314:
+                    self.skipTest(
+                        "Windows host does not grant symlink creation privilege"
+                    )
+                raise
             with self.assertRaises(ValueError):
                 save_config(root, DEFAULT_CONFIG)
 
