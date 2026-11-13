@@ -43,6 +43,33 @@ class RoutingTests(unittest.TestCase):
         self.assertNotIn("scientific_validation", plan["required_evidence"])
         self.assertNotIn("independent_reviewer", plan["review_roles"])
         self.assertIn("implementation_engineer", plan["implementation_or_domain_roles"])
+        self.assertFalse(set(plan["implementation_or_domain_roles"]) & {
+            "differential_algebra_specialist", "dynamical_systems_specialist",
+            "identifiability_specialist",
+        })
+
+    def test_science_claim_domains_route_specific_experts_and_validation_at_r1(self):
+        cases = (
+            ("identifiability", "identifiability_specialist",
+             {"dynamical_systems_specialist", "differential_algebra_specialist"}),
+            ("dynamics", "dynamical_systems_specialist",
+             {"identifiability_specialist", "differential_algebra_specialist"}),
+            ("differential_algebra", "differential_algebra_specialist",
+             {"identifiability_specialist", "dynamical_systems_specialist"}),
+            ("symbolic", "differential_algebra_specialist",
+             {"identifiability_specialist", "dynamical_systems_specialist"}),
+        )
+        for domain, expected, excluded in cases:
+            with self.subTest(domain=domain):
+                task = copy.deepcopy(self.task)
+                task.update(kind="build", domains=[domain], interfaces=["cli"],
+                            targets=["linux"], risk="R1")
+                plan = route(task)
+                roles = set(plan["implementation_or_domain_roles"])
+                self.assertIn(expected, roles)
+                self.assertFalse(roles & excluded)
+                self.assertIn("scientific_validation", plan["required_evidence"])
+                self.assertEqual(plan["scientific_bridge"], "REQUIRES_EXTERNAL_SCIENTIFIC_REVIEW")
 
     def test_check_specs_are_validated_as_part_of_task_validation(self):
         task = copy.deepcopy(self.task)

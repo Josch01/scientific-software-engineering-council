@@ -15,6 +15,11 @@ LANGUAGES = {"python", "idl", "cpp", "rust", "julia", "other"}
 RISKS = {"R0", "R1", "R2", "R3"}
 SCIENCE_CLAIM_DOMAINS = {"identifiability", "dynamics", "differential_algebra", "symbolic"}
 NUMERICAL_DOMAINS = {"numerical", "identifiability", "dynamics", "optimization", "ml"}
+DOMAIN_SPECIALISTS = (
+    ({"identifiability"}, "identifiability_specialist"),
+    ({"dynamics"}, "dynamical_systems_specialist"),
+    ({"differential_algebra", "symbolic"}, "differential_algebra_specialist"),
+)
 
 
 def _validate_task_fields(task: dict[str, Any]) -> None:
@@ -46,6 +51,8 @@ def _required_checks_for_valid_task(task: dict[str, Any]) -> list[str]:
         result.append("regression")
     if task["risk"] in {"R2", "R3"}:
         result.extend(["scientific_validation", "independent_review", "security_audit"])
+    elif set(task["domains"]) & SCIENCE_CLAIM_DOMAINS:
+        result.append("scientific_validation")
     if "desktop_gui" in task["interfaces"]:
         result.append("gui_smoke")
     if {"windows", "linux"}.issubset(task["targets"]):
@@ -85,6 +92,9 @@ def route(task: dict[str, Any]) -> dict[str, Any]:
         ("idl" in l, "idl_engineer"),
     ):
         if need:
+            primary.append(role)
+    for domains, role in DOMAIN_SPECIALISTS:
+        if d & domains:
             primary.append(role)
     reviewers = ["software_auditor"]
     if task["risk"] in {"R2", "R3"}:

@@ -7,6 +7,7 @@
 **Incremento P1.2:** etapa experimental de reviewer por snapshot de worker, parser de respuesta y manifiestos enlazados a checks/logs; el diff y los intentos fallidos quedan acotados y persistidos. No revisa la integración final ni implementa el fix loop.
 **Incremento P1.4:** revisión del candidato integrado y decisión humana local ligadas a evidencia; verificación offline Windows, provider E2E `NOT_RUN` y Linux local `BLOCKED`. Véase el [informe P1.4](../test-reports/p1-integrated-review-human-decision-2026-11-03.md).
 **Incremento P1.5:** adaptador offline AGY 1.5.0, parser de su contrato NDJSON y perfiles de worker sin comandos; Codex conserva revisiones. El E2E real AGY sigue `NOT_RUN`. Véase el [informe de compatibilidad AGY](../test-reports/p1-agy-runtime-adapter-2026-11-13.md).
+**Incremento P2.6:** perfiles explícitos de álgebra diferencial, dinámica e identificabilidad; los dominios de claims científicos requieren `scientific_validation` desde R0/R1. Obligación planificada ≠ evidencia ejecutada. Véase el [informe P2.6](../test-reports/p2-6-explicit-scientific-specialists-2026-11-13.md).
 **Incremento P3.3:** app Tkinter opcional para vistas científicas desde manifiestos y artefactos cargados con digest; véase el [informe P3.3](../test-reports/p3-dynamic-workspace-ui-2026-11-03.md).
 **Estados:** `IMPLEMENTED | VERIFIED | EXPERIMENTAL | NOT_RUN | UNVERIFIED | BLOCKED | PLANNED`.
 
@@ -15,7 +16,8 @@
 | Capacidad | Estado | Evidencia disponible | Límite / siguiente paso |
 |---|---|---|---|
 | Validador estructural de la skill | `VERIFIED` | Windows, Python 3.14.0; `python scripts/validate_skill.py`, exit 0. | Verifica estructura documental únicamente. No valida software o ciencia. |
-| Router por tarea/riesgo/proveedor | `VERIFIED` | Tests de routing y smoke `python scripts/route_task.py examples/seir_desktop_audit.json`, exit 0. | Plan determinista; no DAG ejecutado, subagente ni gate de claim científico general. |
+| Router por tarea/riesgo/proveedor | `VERIFIED` | Tests de routing y smoke `python scripts/route_task.py examples/seir_desktop_audit.json`, exit 0. | Plan determinista; no DAG ejecutado ni subagente. El router exige evidencia para claims, pero no ejecuta ni certifica la validación científica. |
+| Perfiles científicos especializados P2.6 | `EXPERIMENTAL` | Tests seleccionan perfiles diferenciados para álgebra diferencial/simbólica, dinámica e identificabilidad; pruebas R1 exigen `scientific_validation`; se generan packets nativos. | Solo expresa obligaciones planificadas. No ejecuta agentes ni demuestra un claim; continúa `NOT_RUN` la evaluación científica real del SIR del usuario. |
 | Perfiles y packets Gemini/Codex/AGY | `VERIFIED` | Tests generan los formatos nativos para cada modo; el modo AGY limita workers a herramientas de archivo y deja revisores en Codex. | Preparar un perfil no invoca agentes; el límite de herramientas depende de AGY y permanece sin E2E. |
 | Configuración JSON/panel headless | `VERIFIED` | Tests de configuración disponibles pasaron excepto caso symlink; `python scripts/config_panel.py --check`, exit 0. | Valores de presupuesto/permisos son solicitados; el check no abre ventana. |
 | Protección symlink del guardado de config/perfiles en este Windows | `BLOCKED` | `test_symlink_refusal` y `test_symlink` terminan en `WinError 1314` al crear el fixture. | Reejecutar con privilegio apropiado o en runner Windows con symlink habilitado; no reportar PASS hasta que llegue a la aserción. |
