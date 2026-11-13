@@ -822,6 +822,12 @@ else:
             self.thesis_sir_page.audit_workspace_ready.connect(
                 self._open_thesis_sir_audit_workspace
             )
+            self.thesis_sir_page.analysis_workspace_ready.connect(
+                self._open_thesis_sir_analysis_workspace
+            )
+            self.thesis_sir_page.activity_finished.connect(
+                self._update_sir_analysis_controls
+            )
             self.agent_page = self._build_agent_page()
             self.agent_supervisor = self.agent_page
             self.workspace_page = self._build_workspace_page()
@@ -971,7 +977,9 @@ else:
 
         @property
         def analysis_running(self) -> bool:
-            return self._sir_analysis_thread is not None
+            thesis_busy = getattr(self, "thesis_sir_page", None)
+            return (self._sir_analysis_thread is not None
+                    or (thesis_busy is not None and thesis_busy.run_in_progress))
 
         def _sir_analysis_resources(self):
             loaded = self.workspace_window._loaded_workspace
@@ -1448,6 +1456,28 @@ else:
                 "Bundle SIR verificado; revisa recursos y confirma por separado el envío.", 10_000
             )
             self.workspace_audit_button.click()
+
+        def _open_thesis_sir_analysis_workspace(self, workspace_path: str) -> None:
+            """Open a digest-verified P3.31 analysis workspace in the current window."""
+            root = Path(workspace_path)
+            try:
+                self._loading_sir_analysis_result = True
+                self.load_project(root, "workspace.json")
+                self.navigate("results")
+                self.sir_analysis_status.setText(
+                    "Ajuste SIR de tesis calculado y verificado en esta aplicación · "
+                    "validez e identificabilidad NOT_ASSESSED · incertidumbre NOT_CALCULATED · "
+                    "SIR real NOT_RUN."
+                )
+                self.statusBar().showMessage(
+                    "Workspace SIR de análisis cargado; revisa resultados y procedencia.", 10_000
+                )
+            except (OSError, TypeError, ValueError, RecursionError) as exc:
+                self.thesis_sir_page._on_analysis_worker_failure(
+                    f"El resultado se generó, pero no se pudo abrir: {str(exc)[:700]}"
+                )
+            finally:
+                self._loading_sir_analysis_result = False
 
 
 
