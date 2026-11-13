@@ -66,8 +66,10 @@ class ProviderRuntimeTests(unittest.TestCase):
 
     def help_text(self, provider):
         return ("--json --sandbox read-only workspace-write" if provider == "codex"
-                else "--prompt --output-format stream-json --sandbox "
-                     "--approval-mode default plan --admin-policy")
+                else ("--prompt --output-format stream-json --sandbox --mode "
+                      "accept-edits plan --agent" if provider == "agy" else
+                      "--prompt --output-format stream-json --sandbox "
+                      "--approval-mode default plan --admin-policy"))
 
     def discovery(self, provider, help_text=None):
         def run(argv, **kwargs):
@@ -84,8 +86,17 @@ class ProviderRuntimeTests(unittest.TestCase):
     def launch_fixture(self, provider, events, exit_code=0, wait_error=None, process_setup=None):
         # Every parser fixture represents a separate run with fresh evidence paths.
         root = Path(tempfile.mkdtemp(dir=self.temp.name))
-        self.request = replace(self.request, stdout_path=root / "stdout.jsonl",
-                               stderr_path=root / "stderr.log")
+        self.request = replace(self.request, cwd=root, stdout_path=root / "stdout.jsonl",
+                               stderr_path=root / "stderr.log",
+                               writable=provider == "agy")
+        if provider == "agy":
+            profile = root / ".agents" / "agents" / "ssec-reviewer.md"
+            profile.parent.mkdir(parents=True)
+            profile.write_text(
+                "---\nname: ssec-reviewer\ndescription: test\nmainAgent: true\n"
+                "subagent: false\ntools:\n  - view_file\n  - grep_search\n"
+                "  - replace_file_content\n  - write_to_file\ncommandExecutionPolicy: off\n"
+                "---\nworker test\n", encoding="utf-8")
         runtime = self.module.create_runtime(provider)
         payload = events if isinstance(events, bytes) else (
             "\n".join(json.dumps(event) for event in events) + "\n").encode()
@@ -106,7 +117,8 @@ class ProviderRuntimeTests(unittest.TestCase):
             return process
 
         with patch.object(self.module.shutil, "which", return_value=f"/selected/{provider}"), \
-                self.discovery(provider), patch.object(self.module.subprocess, "Popen", side_effect=spawn):
+                self.discovery(provider), patch.object(self.module.subprocess, "Popen", side_effect=spawn), \
+                patch.object(Path, "home", return_value=Path(self.temp.name)):
             handle = runtime.launch(self.request)
         self.assertEqual(handle.provider, provider)
         return runtime, handle, process
@@ -118,6 +130,7 @@ class ProviderRuntimeTests(unittest.TestCase):
     def test_explicit_provider_factory_rejects_unknown_instead_of_falling_back(self):
         self.assertIsInstance(self.module.create_runtime("codex"), self.module.CodexRuntime)
         self.assertIsInstance(self.module.create_runtime("gemini"), self.module.GeminiRuntime)
+        self.assertIsInstance(self.module.create_runtime("agy"), self.module.AgyRuntime)
         for value in ("", "auto", "CODEX", "fake", None):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.module.create_runtime(value)
@@ -145,6 +158,105 @@ class ProviderRuntimeTests(unittest.TestCase):
             self.assertNotIn("--yolo", hostile)
             self.assertIn("--prompt=--yolo", hostile)
 
+            agy_request = replace(self.request, writable=True, role="implementation_engineer")
+            agy = self.module.AgyRuntime().build_argv(agy_request)
+            self.assertIn("--sandbox", agy)
+            self.assertIn("--output-format", agy)
+            self.assertEqual(agy[agy.index("--output-format") + 1], "stream-json")
+            self.assertEqual(agy[agy.index("--mode") + 1], "accept-edits")
+            self.assertEqual(agy[agy.index("--agent") + 1], "ssec-implementation-engineer")
+            self.assertIn("--prompt=" + agy_request.prompt, agy)
+            self.assertNotIn("--dangerously-skip-permissions", agy)
+
+    def test_agy_stream_json_contract_uses_conversation_and_nested_result(self):
+        events = [
+            {"event": "init", "conversation_id": "agy-session-1",
+             "init": {"permission_mode": "request-review", "tools": ["view_file"]}},
+            {"event": "step_update", "step_update": {
+                "conversation_id": "agy-session-1", "step_index": 1,
+                "state": "DONE", "step_type": "agent_response", "text_delta": "Reviewed."}},
+            {"event": "result", "result": {
+                "conversation_id": "agy-session-1", "status": "SUCCESS",
+                "response": "Reviewed.\\n", "usage": {"total_tokens": 5}}},
+        ]
+        runtime, handle, result, _ = self.collect_fixture("agy", events)
+        self.assertEqual(handle.provider, "agy")
+        self.assertEqual(result.provider_session_id, "agy-session-1")
+        self.assertEqual(result.status, RuntimeStatus.SUCCEEDED)
+
+    def test_agy_failed_or_mismatched_terminal_event_never_succeeds(self):
+        for terminal in (
+            {"event": "result", "result": {"conversation_id": "other",
+             "status": "SUCCESS", "response": "ok"}},
+            {"event": "result", "result": {"conversation_id": "agy-session-2",
+             "status": "ERROR", "response": "", "error": "denied"}},
+        ):
+            with self.subTest(terminal=terminal):
+                events = [
+                    {"event": "init", "conversation_id": "agy-session-2", "init": {}},
+                    terminal,
+                ]
+                _, _, result, _ = self.collect_fixture("agy", events)
+                self.assertEqual(result.status, RuntimeStatus.FAILED)
+
+    def test_agy_refuses_readonly_and_unenforceable_external_policy_requests(self):
+        runtime = self.module.AgyRuntime()
+        with self.assertRaisesRegex(ValueError, "implementation workers"):
+            runtime.build_argv(replace(self.request, writable=False))
+        with self.assertRaisesRegex(RuntimeError, "external no-execution"):
+            runtime.build_argv(replace(self.request, writable=True,
+                                       tool_policy_path=Path(self.temp.name) / "policy.toml"))
+
+    def test_agy_capability_probe_reads_help_from_stderr(self):
+        runtime = self.module.AgyRuntime()
+
+        def run(argv, **kwargs):
+            self.assertFalse(kwargs["shell"])
+            if argv[-1] == "--version":
+                return subprocess.CompletedProcess(argv, 0, "1.5.0", "")
+            return subprocess.CompletedProcess(argv, 0, "", self.help_text("agy"))
+
+        with patch.object(self.module.shutil, "which", return_value="/selected/agy"), \
+                patch.object(self.module.subprocess, "run", side_effect=run):
+            capabilities = runtime.discover_capabilities()
+        self.assertTrue(capabilities.available)
+        self.assertEqual(capabilities.version, "1.5.0")
+
+    def test_agy_requires_generated_scoped_profile_before_cli_discovery(self):
+        runtime = self.module.AgyRuntime()
+        request = replace(self.request, writable=True)
+        with patch.object(self.module.subprocess, "run") as probe, \
+                patch.object(self.module.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "profile is missing"):
+                runtime.launch(request)
+        probe.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_agy_refuses_unsafe_or_unparseable_local_filesystem_settings(self):
+        root = Path(self.temp.name)
+        request = replace(self.request, cwd=root, writable=True, role="reviewer",
+                          stdout_path=root / "agy.stdout", stderr_path=root / "agy.stderr")
+        profile = root / ".agents" / "agents" / "ssec-reviewer.md"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        profile.write_text(
+            "---\nname: ssec-reviewer\ndescription: test\nmainAgent: true\n"
+            "subagent: false\ntools:\n  - view_file\n  - grep_search\n"
+            "  - replace_file_content\n  - write_to_file\ncommandExecutionPolicy: off\n"
+            "---\nworker test\n", encoding="utf-8")
+        settings = root / ".gemini" / "antigravity-cli" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        for content in ('{"allowNonWorkspaceAccess": true}',
+                        '{"allowNonWorkspaceAccess": "true"}', '{malformed'):
+            with self.subTest(settings=content):
+                settings.write_text(content, encoding="utf-8")
+                with patch.object(Path, "home", return_value=root), \
+                        patch.object(self.module.subprocess, "run") as probe, \
+                        patch.object(self.module.subprocess, "Popen") as spawn:
+                    with self.assertRaisesRegex(ValueError, "AGY local filesystem settings"):
+                        self.module.AgyRuntime().launch(request)
+                probe.assert_not_called()
+                spawn.assert_not_called()
+
     def test_proposal_runtime_enforces_gemini_plan_policy_and_rejects_codex(self):
         policy_path = Path(self.temp.name) / "proposal-policy.toml"
         policy_path.write_text("deny all tools", encoding="utf-8")
@@ -166,7 +278,7 @@ class ProviderRuntimeTests(unittest.TestCase):
                          runtime._additional_features("--approval-mode default --sandbox"))
 
     def test_cost_acknowledgement_is_required_before_discovery_or_spawn(self):
-        for provider in ("codex", "gemini"):
+        for provider in ("codex", "gemini", "agy"):
             with self.subTest(provider=provider), \
                     patch.object(self.module.subprocess, "Popen") as spawn, \
                     patch.object(self.module.subprocess, "run") as discover:

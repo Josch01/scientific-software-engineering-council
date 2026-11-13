@@ -15,14 +15,14 @@ from pathlib import Path
 
 if __package__:
     from .configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
-    from .prepare_agents import choose_roles, provider_for
+    from .prepare_agents import choose_roles, provider_for, profile as agent_profile
     from .route_task import validate_task, required_checks
     from .execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from .check_runner import read_check_manifest
     from .work_items import validate_work_items
 else:
     from configuration import DEFAULT_CONFIG, validate_config, load_config, config_path
-    from prepare_agents import choose_roles, provider_for
+    from prepare_agents import choose_roles, provider_for, profile as agent_profile
     from route_task import validate_task, required_checks
     from execution_evidence import canonical_task_sha256, candidate_tree_sha256, validate_check_specs
     from check_runner import read_check_manifest
@@ -93,7 +93,7 @@ def _validate_state_packet(state,task_id):
     if type(audit_level) is not str or audit_level not in {"basic","standard","strict"}:
         raise ValueError("task metadata audit policy is invalid")
     mode=state.get("mode")
-    if type(mode) is not str or mode not in {"codex","gemini","both"}:
+    if type(mode) is not str or mode not in {"codex","gemini","both","agy"}:
         raise ValueError("task metadata provider mode is invalid")
     review_roles=state.get("review_roles")
     if (type(review_roles) is not list or any(type(role) is not str for role in review_roles) or
@@ -226,6 +226,24 @@ def plan(task, policy, project):
             "required_evidence":evidence,"status":"PREVIEW_NOT_STARTED",
             "auto_merge":False,"note":"Git worktrees share metadata; they are NOT OS sandboxes."}
 
+def _install_agy_worker_profile(worker, policy):
+    """Materialize the fixed file-only AGY profile inside its isolated worktree."""
+    worktree=Path(worker["path"])
+    name="ssec-"+worker["role"].replace("_","-")
+    target=worktree/".agents"/"agents"/(name+".md")
+    _reject_reparse_components((worktree,worktree/".agents",worktree/".agents"/"agents",target),
+                               "AGY agent profile")
+    expected=agent_profile(worker["role"],"agy",policy)
+    if target.exists():
+        if not target.is_file() or target.read_text(encoding="utf-8")!=expected:
+            raise FileExistsError("refusing to overwrite an existing AGY worker profile")
+        return
+    target.parent.mkdir(parents=True,exist_ok=True)
+    _reject_reparse_components((worktree,worktree/".agents",worktree/".agents"/"agents",target),
+                               "AGY agent profile")
+    with target.open("x",encoding="utf-8",newline="\n") as stream:
+        stream.write(expected)
+
 def initialize(task, policy, project, apply=False):
     state = plan(task,policy,project)
     if not apply:
@@ -240,6 +258,8 @@ def initialize(task, policy, project, apply=False):
         path.parent.mkdir(parents=True,exist_ok=True)
         _reject_reparse_components((path.parent.parent,path.parent),"worktree path")
         git(root,"worktree","add","-b",worker["branch"],str(path),state["base_commit"])
+        if worker["provider"]=="agy":
+            _install_agy_worker_profile(worker,validate_config(policy))
     _reject_reparse_components((dest.parent.parent,dest.parent,dest),"task metadata")
     dest.mkdir(parents=True,exist_ok=False)
     state["status"] = "WORKTREES_READY_UNREVIEWED"

@@ -26,6 +26,20 @@ class TestModes(unittest.TestCase):
         self.assertEqual({a["provider"] for a in m["assignments"]}, {"gemini", "codex"})
         self.assertTrue(all(a["provider"] == "gemini" for a in m["assignments"] if a["reviewer"]))
 
+    def test_agy_workers_get_scoped_native_profiles_and_codex_reviews(self):
+        m, files = make_files(TASK, "agy")
+        self.assertTrue(all(a["provider"] == ("codex" if a["reviewer"] else "agy")
+                            for a in m["assignments"]))
+        profiles = [(path, body) for path, body in files.items()
+                    if path.startswith(".agents/agents/")]
+        self.assertTrue(profiles)
+        for path, body in profiles:
+            self.assertTrue(path.endswith(".md"))
+            self.assertIn("commandExecutionPolicy: off", body)
+            self.assertIn("mainAgent: true", body)
+            self.assertNotIn("run_command", body)
+            self.assertIn("write_to_file", body)
+
     def test_preview(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)

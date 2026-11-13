@@ -378,6 +378,50 @@ class IntegrationCandidateTests(unittest.TestCase):
         self.assertEqual(report["review_roles"], self.state["review_roles"])
         self.assertEqual(before, sorted(str(p) for p in self.meta.rglob("*")))
 
+    def test_integration_review_corroborates_agy_worker_session_format(self):
+        from scripts.integration_review import _corroborate_implementation_sessions, _session
+        run = Path(self.temp.name) / "agy-run"
+        run.mkdir()
+        session = "agy-conversation-1"
+        (run / "implementation_engineer.stdout").write_text(
+            json.dumps({"event": "init", "conversation_id": session, "init": {}}) + "\n"
+            + json.dumps({"event": "result", "result": {
+                "conversation_id": session, "status": "SUCCESS", "response": "done"
+            }}) + "\n", encoding="utf-8")
+        state = {"workers": [{"role": "implementation_engineer", "provider": "agy"}]}
+        entries = [{"role": "implementation_engineer", "provider": "agy",
+                    "provider_session_id": session, "outcome": "SUCCEEDED"}]
+        self.assertEqual(_session(entries[0]), ("agy", session))
+        _corroborate_implementation_sessions(run, entries, state, successful=True)
+        (run / "implementation_engineer.stdout").write_text(
+            json.dumps({"event": "init", "conversation_id": session, "init": {}}) + "\n"
+            + json.dumps({"event": "result", "result": {
+                "conversation_id": session, "status": "ERROR", "response": "", "error": "denied"
+            }}) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "cannot be corroborated"):
+            _corroborate_implementation_sessions(run, entries, state, successful=True)
+
+    def test_incomplete_failed_agy_session_is_historical_only(self):
+        from scripts.integration_review import _corroborate_implementation_sessions
+        run = Path(self.temp.name) / "agy-incomplete-run"
+        run.mkdir()
+        session = "agy-conversation-incomplete"
+        (run / "implementation_engineer.stdout").write_text(
+            json.dumps({"event": "init", "conversation_id": session, "init": {}}) + "\n",
+            encoding="utf-8")
+        state = {"workers": [{"role": "implementation_engineer", "provider": "agy"}]}
+        failed = [{"role": "implementation_engineer", "provider": "agy",
+                   "provider_session_id": session, "outcome": "FAILED"}]
+        # A valid init identity is useful for failed-run history even when the
+        # provider was interrupted before emitting its terminal result.
+        _corroborate_implementation_sessions(run, failed, state, successful=False)
+        with self.assertRaisesRegex(ValueError, "provider/outcome"):
+            _corroborate_implementation_sessions(run, failed, state, successful=True)
+
+        claimed_success = [dict(failed[0], outcome="SUCCEEDED")]
+        with self.assertRaisesRegex(ValueError, "cannot be corroborated"):
+            _corroborate_implementation_sessions(run, claimed_success, state, successful=False)
+
     def test_integrated_review_rejects_incomplete_implementation_history(self):
         from scripts.integration_review import run_integration_review
         result = self.integrated_fixture()

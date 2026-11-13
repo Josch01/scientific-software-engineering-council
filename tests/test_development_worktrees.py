@@ -90,6 +90,22 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(x["status"],"PREVIEW_NOT_STARTED")
         self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
 
+    def test_agy_worker_gets_scoped_profile_in_its_own_worktree(self):
+        state=initialize(TASK,dict(POLICY,provider_mode="agy"),self.root,apply=True)
+        worker=state["workers"][0]
+        loaded,_=load(self.root,TASK["task_id"])
+        agent_name="ssec-"+worker["role"].replace("_","-")
+        profile=Path(worker["path"])/".agents"/"agents"/(agent_name+".md")
+        self.assertEqual(worker["provider"],"agy")
+        self.assertEqual(loaded["mode"],"agy")
+        self.assertTrue(profile.is_file())
+        content=profile.read_text(encoding="utf-8")
+        self.assertIn("commandExecutionPolicy: off",content)
+        self.assertNotIn("run_command",content)
+        self.assertIn(".agents/agents/"+agent_name+".md",
+                      git(Path(worker["path"]),"status","--porcelain","--untracked-files=all"))
+        self.assertEqual(git(self.root,"status","--porcelain"),"")
+
     def test_plan_rejects_junction_at_worktree_storage_root(self):
         base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
         base.mkdir()

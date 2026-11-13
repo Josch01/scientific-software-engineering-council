@@ -38,7 +38,7 @@ Documentación de referencia: https://agentskills.io/specification , https://doc
 
 ## Panel gráfico SSEC (v0.2-dev.2)
 
-Control local para **Gemini / Codex / ambos**, máximo simultáneo planificado de subagentes, política de permisos, presupuesto estimado y auditoría. Requiere escritorio Windows o Linux y Python 3.11+ con Tkinter:
+Control local para **Gemini / Codex / ambos / AGY**, máximo simultáneo planificado de agentes, política de permisos, presupuesto estimado y auditoría. Requiere escritorio Windows o Linux y Python 3.11+ con Tkinter:
 
 ```bash
 python scripts/config_panel.py
@@ -55,7 +55,7 @@ El panel incluye **Abrir espacio científico**. Abre el manifiesto del proyecto 
 
 ## Auditorías reales desde el panel — v0.2-dev.3
 
-Se agregó un ejecutor **experimental y limitado a auditorías**: inicia procesos Codex y/o Gemini desde snapshots separados, guarda logs, controla concurrencia y termina procesos por tiempo o cancelación. El panel incluye **4 · Ejecutar auditoría** y **Cancelar**. La simulación del ejecutor se prueba en CI; no requiere cuentas de los proveedores.
+Se agregó un ejecutor **experimental y limitado a auditorías**: inicia procesos Codex, Gemini o AGY desde snapshots separados, guarda logs, controla concurrencia y termina procesos por tiempo o cancelación. El panel incluye **4 · Ejecutar auditoría** y **Cancelar**. La simulación del ejecutor se prueba en CI; no requiere cuentas de los proveedores.
 
 ```bash
 # Solo planificar, sin ejecución/coste/escritura
@@ -70,7 +70,7 @@ Lee [RUNNER.md](references/RUNNER.md) antes de ejecutar: snapshots no son un san
 
 ## Worktrees y coordinación de desarrollo — v0.2-dev.4
 
-Se añadió un [coordinador por worktrees](references/WORKTREE_DEVELOPMENT.md), un mailbox de handoffs y un ejecutor opt-in de CLI para desarrollo en ramas separadas. Gemini y Codex se eligen por tarea. Aún **no** hay integración automática de cambios ni auditoría autónoma cerrada; el gate bloquea y exige revisión humana.
+Se añadió un [coordinador por worktrees](references/WORKTREE_DEVELOPMENT.md), un mailbox de handoffs y un ejecutor opt-in de CLI para desarrollo en ramas separadas. Gemini y Codex se eligen por tarea; el modo `agy` ejecuta workers AGY con herramientas de archivo y revisores Codex. La integración real AGY permanece `NOT_RUN`; perfiles y pruebas offline no prueban una sesión del proveedor.
 
 ```bash
 python scripts/worktree_coordinator.py plan examples/seir_worktree_build.json --project /path/to/clean-git-project

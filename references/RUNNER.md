@@ -2,10 +2,11 @@
 
 ## What works
 
-- Executes real installed Gemini CLI, Codex CLI, or both from separate processes.
+- Executes installed Gemini CLI, Codex CLI, or AGY from separate processes; `both` keeps its existing Gemini/Codex routing.
 - The router selects only required roles; each role receives its own packet and a disposable source snapshot.
 - Bounded **top-level** concurrency, wave scheduling (reviewers later), a global wall-clock deadline, cancellation flag, and logs per process.
 - Codex launched via `codex exec --sandbox read-only --json --skip-git-repo-check --cd ...`; Gemini via `gemini --sandbox --approval-mode default --output-format json -p ...`.
+- `--mode agy` assigns implementation workers to AGY and independent reviewers to Codex. AGY workers get a per-worktree profile limited to file tools; shell commands and nested subagents are disabled. AGY uses its documented `event/init`, `event/step_update`, and nested `event/result` stream protocol.
 - Local desktop configuration panel has an explicitly confirmed **4 · Ejecutar auditoría** action, run-status polling, and **Cancelar** action.
 - Optional `--emit-progress-jsonl` emits bounded schema-v1 `SSEC_PROGRESS` snapshots for the supervisor; the default CLI continues to print only its JSON report.
 - Dry-run is the default. The stage runs **audits only**. No file merges, code changes to the original project, real bills measured, or scientific certifications.

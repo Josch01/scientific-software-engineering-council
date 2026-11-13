@@ -18,7 +18,7 @@ from .execution_evidence import validate_check_specs
 from .integration_candidate import (_INTEGRATION_ID_RE, _json_file, _new_integration_id,
                                     _sha256, validate_integration_manifest)
 from .prepare_agents import provider_for
-from .provider_runtimes import create_runtime
+from .provider_runtimes import AgyRuntime, create_runtime
 from .review_evidence import validate_review_manifest
 from .reviewer_output import _read_log, _MAX_LOG_BYTES
 from .worktree_coordinator import directory, load
@@ -43,7 +43,7 @@ def _latest(root, selected):
 
 def _session(item):
     provider, session = item.get("provider"), item.get("provider_session_id")
-    if provider not in {"codex", "gemini"} or type(session) is not str or not session or "\x00" in session:
+    if provider not in {"codex", "gemini", "agy"} or type(session) is not str or not session or "\x00" in session:
         raise ValueError("invalid historical runtime session identity")
     return provider, session
 
@@ -62,9 +62,23 @@ def _corroborate_implementation_sessions(run, entries, state, *, successful):
             raise ValueError("implementation session requires a bounded regular stdout record")
         before = _sha256(path)
         try:
-            events = _read_log(path)
-            kind, field = (("thread.started", "thread_id") if provider == "codex" else ("init", "session_id"))
-            observed = [event.get(field) for event in events if event["type"] == kind]
+            if provider == "agy":
+                observed_session, _children, parse_error = AgyRuntime()._parse(path)
+                # Failed or interrupted AGY launches still need an auditable
+                # session identity. A partial/error stream remains history only;
+                # never accept an incomplete stream for a worker marked successful.
+                incomplete_errors = {"Missing successful terminal event",
+                                     "AGY result was not successful",
+                                     "AGY result contained no response"}
+                if parse_error and (successful or item["outcome"] == "SUCCEEDED"
+                                    or parse_error not in incomplete_errors):
+                    raise ValueError(parse_error)
+                observed = [observed_session]
+            else:
+                events = _read_log(path)
+                kind, field = (("thread.started", "thread_id")
+                               if provider == "codex" else ("init", "session_id"))
+                observed = [event.get(field) for event in events if event["type"] == kind]
             if not observed or any(value != item["provider_session_id"] for value in observed):
                 raise ValueError("implementation session does not match the implementation stdout record")
             if _sha256(path) != before:

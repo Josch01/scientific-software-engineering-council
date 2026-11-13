@@ -75,7 +75,7 @@ def latest_progress_event(text: str) -> dict | None:
             provider, status = row.get("provider"), row.get("status")
             if (not isinstance(agent, str) or not 1 <= len(agent) <= 128 or agent in agents
                     or not isinstance(role, str) or not 1 <= len(role) <= 96
-                    or not isinstance(provider, str) or provider not in {"codex", "gemini"}
+                    or not isinstance(provider, str) or provider not in {"codex", "gemini", "agy"}
                     or not isinstance(status, str) or status not in PROGRESS_STATES):
                 valid = False
                 break

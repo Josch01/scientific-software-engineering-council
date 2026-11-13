@@ -326,7 +326,7 @@ def main() -> int:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--config", type=Path,
                         help="defaults to project/.ssec/config.json when it exists")
-    parser.add_argument("--mode", choices=("gemini", "codex", "both"))
+    parser.add_argument("--mode", choices=("gemini", "codex", "both", "agy"))
     parser.add_argument("--execute", action="store_true",
                         help="launch real CLIs in ephemeral snapshots; otherwise dry-run")
     parser.add_argument("--cancel-file", type=Path,

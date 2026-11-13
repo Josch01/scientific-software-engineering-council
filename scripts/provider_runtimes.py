@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -131,6 +132,9 @@ class _CliRuntime:
                 if version_result.returncode == 0:
                     version = version_result.stdout.strip() or None
                 help_text = help_result.stdout
+                if self.provider == "agy":
+                    # agy.EXE 1.5.0 writes its help table to stderr with exit 0.
+                    help_text += "\n" + (help_result.stderr or "")
                 available = (version_result.returncode == help_result.returncode == 0
                              and all(re.search(r"(?<![\w-])" + re.escape(flag)
                                                + r"(?![\w-])", help_text)
@@ -310,6 +314,52 @@ class _CliRuntime:
                         continue
                     event = json.loads(line, object_pairs_hook=_json_object,
                                        parse_constant=_invalid_constant)
+                    if self.provider == "agy":
+                        if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                            raise ValueError("AGY JSONL event must contain an event name")
+                        kind = event["event"]
+                        if terminal:
+                            raise ValueError("AGY emitted events after its terminal result")
+                        if kind == "init":
+                            value = event.get("conversation_id")
+                            if (not isinstance(value, str) or not value
+                                    or not isinstance(event.get("init"), dict)
+                                    or session_id is not None):
+                                raise ValueError("Malformed or duplicate AGY init event")
+                            session_id = value
+                        elif kind == "step_update":
+                            step = event.get("step_update")
+                            if (session_id is None or not isinstance(step, dict)
+                                    or step.get("conversation_id") != session_id
+                                    or type(step.get("step_index")) is not int
+                                    or step.get("state") not in ("ACTIVE", "DONE")
+                                    or not isinstance(step.get("step_type"), str)):
+                                raise ValueError("Malformed AGY step_update event")
+                            subagent_info = step.get("subagent_info")
+                            if subagent_info is not None:
+                                agents = subagent_info.get("subagents") if isinstance(subagent_info, dict) else None
+                                if not isinstance(agents, list):
+                                    raise ValueError("Malformed AGY subagent information")
+                                for agent in agents:
+                                    child = agent.get("conversation_id") if isinstance(agent, dict) else None
+                                    if not isinstance(child, str) or not child:
+                                        raise ValueError("Malformed AGY subagent conversation ID")
+                                    if child not in children:
+                                        children.append(child)
+                        elif kind == "result":
+                            result = event.get("result")
+                            if (session_id is None or not isinstance(result, dict)
+                                    or result.get("conversation_id") != session_id
+                                    or not isinstance(result.get("response"), str)):
+                                raise ValueError("Malformed AGY result event")
+                            if result.get("status") != "SUCCESS" or result.get("error"):
+                                error = "AGY result was not successful"
+                            elif not result["response"].strip():
+                                error = "AGY result contained no response"
+                            terminal = True
+                        else:
+                            raise ValueError("Unsupported AGY stream event")
+                        continue
                     if not isinstance(event, dict) or not isinstance(event.get("type"), str):
                         raise ValueError("JSONL event must be an object with a type")
                     kind = event["type"]
@@ -457,10 +507,146 @@ class GeminiRuntime(_CliRuntime):
                 "--output-format", "stream-json", "--prompt=" + request.prompt)
 
 
+class AgyRuntime(_CliRuntime):
+    """Antigravity CLI adapter for its documented headless NDJSON contract."""
+
+    provider = "agy"
+    _help_args = ("--help",)
+    _required_help = ("--prompt", "--output-format", "stream-json", "--sandbox",
+                      "--agent", "--mode", "accept-edits", "plan")
+
+    _worker_tools = ("view_file", "grep_search", "replace_file_content", "write_to_file")
+
+    def _validate_local_filesystem_settings(self) -> None:
+        """Fail closed if AGY is configured to read or write outside workspaces."""
+        directory = Path.home()
+        for part in (".gemini", "antigravity-cli"):
+            directory = directory / part
+            try:
+                metadata = directory.lstat()
+            except FileNotFoundError:
+                return  # AGY's documented default is workspace-only access.
+            except OSError as exc:
+                raise ValueError("AGY local filesystem settings cannot be checked safely") from exc
+            if (stat.S_ISLNK(metadata.st_mode)
+                    or getattr(metadata, "st_file_attributes", 0) & 0x400
+                    or not stat.S_ISDIR(metadata.st_mode)):
+                raise ValueError("AGY local filesystem settings path must be a real directory")
+
+        path = directory / "settings.json"
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise ValueError("AGY local filesystem settings cannot be checked safely") from exc
+        if (stat.S_ISLNK(before.st_mode)
+                or getattr(before, "st_file_attributes", 0) & 0x400
+                or not stat.S_ISREG(before.st_mode) or before.st_size > 1024 * 1024):
+            raise ValueError("AGY local filesystem settings must be a bounded regular file")
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            with os.fdopen(os.open(path, flags), "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                raw = stream.read(1024 * 1024 + 1)
+                after_open = os.fstat(stream.fileno())
+            after = path.lstat()
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                     info.st_mtime_ns, info.st_mode)
+            if (identity(before) != identity(opened) or identity(before) != identity(after_open)
+                    or identity(before) != identity(after) or len(raw) != before.st_size
+                    or getattr(after, "st_file_attributes", 0) & 0x400):
+                raise ValueError("settings changed while reading")
+            settings = json.loads(raw.decode("utf-8"), object_pairs_hook=_json_object,
+                                  parse_constant=_invalid_constant)
+            if not isinstance(settings, dict):
+                raise ValueError("settings root must be an object")
+            outside_access = settings.get("allowNonWorkspaceAccess", False)
+            if type(outside_access) is not bool:
+                raise ValueError("allowNonWorkspaceAccess must be a boolean")
+            if outside_access:
+                raise ValueError("allowNonWorkspaceAccess must be disabled")
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("AGY local filesystem settings are unsafe or invalid") from exc
+
+    def _validate_profile(self, request: RuntimeRequest) -> None:
+        role = request.role
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", role):
+            raise ValueError("AGY role cannot map to a safe workspace agent name")
+        cursor = request.cwd
+        for part in (".agents", "agents", "ssec-" + role.replace("_", "-") + ".md"):
+            cursor = cursor / part
+            try:
+                metadata = cursor.lstat()
+            except OSError as exc:
+                raise ValueError("AGY SSEC profile is missing from the worker worktree") from exc
+            if (stat.S_ISLNK(metadata.st_mode)
+                    or getattr(metadata, "st_file_attributes", 0) & 0x400):
+                raise ValueError("AGY SSEC profile path cannot contain a symlink or reparse point")
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 65536:
+            raise ValueError("AGY SSEC profile must be a bounded regular file")
+        try:
+            content = cursor.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("AGY SSEC profile cannot be read safely") from exc
+        if not content.startswith("---\n"):
+            raise ValueError("AGY SSEC profile has malformed frontmatter")
+        frontmatter, separator, _body = content[4:].partition("\n---\n")
+        if not separator:
+            raise ValueError("AGY SSEC profile has malformed frontmatter")
+        fields: dict[str, str] = {}
+        tools: list[str] = []
+        in_tools = False
+        for line in frontmatter.splitlines():
+            if line.startswith("  - ") and in_tools:
+                tools.append(line[4:])
+            elif line and not line[0].isspace() and ":" in line:
+                key, value = line.split(":", 1)
+                if key in fields:
+                    raise ValueError("AGY SSEC profile frontmatter has duplicate fields")
+                fields[key] = value.strip()
+                in_tools = key == "tools"
+        expected_name = "ssec-" + role.replace("_", "-")
+        if (set(fields) != {"name", "description", "mainAgent", "subagent",
+                            "tools", "commandExecutionPolicy"}
+                or fields["name"] != expected_name or fields["mainAgent"] != "true"
+                or fields["subagent"] != "false"
+                or fields["commandExecutionPolicy"] != "off"
+                or tuple(tools) != self._worker_tools):
+            raise ValueError("AGY SSEC profile must restrict the worker to file tools without commands")
+
+    def launch(self, request: RuntimeRequest) -> RuntimeHandle:
+        if not request.cost_acknowledged:
+            raise ValueError("Provider launch requires cost_acknowledged")
+        if not request.writable:
+            raise ValueError("AGY adapter is enabled only for scoped implementation workers")
+        if request.tool_policy_path is not None:
+            raise RuntimeError("AGY cannot enforce the SSEC external no-execution policy")
+        self._validate_profile(request)
+        self._validate_local_filesystem_settings()
+        return super().launch(request)
+
+    def build_argv(self, request: RuntimeRequest) -> tuple[str, ...]:
+        if request.tool_policy_path is not None:
+            raise RuntimeError("AGY cannot enforce the SSEC external no-execution policy")
+        if not request.writable:
+            raise ValueError("AGY adapter is enabled only for scoped implementation workers")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", request.role):
+            raise ValueError("AGY role cannot map to a safe workspace agent name")
+        mode = "accept-edits" if request.writable else "plan"
+        return (
+            "agy", "--agent", "ssec-" + request.role.replace("_", "-"),
+            "--mode", mode, "--sandbox", "--output-format", "stream-json",
+            "--prompt=" + request.prompt,
+        )
+
+
 def create_runtime(provider: str) -> AgentRuntime:
     """Provider selection is explicit and never substitutes another runtime."""
     if provider == "codex":
         return CodexRuntime()
     if provider == "gemini":
         return GeminiRuntime()
+    if provider == "agy":
+        return AgyRuntime()
     raise ValueError(f"Unsupported runtime provider: {provider!r}")
