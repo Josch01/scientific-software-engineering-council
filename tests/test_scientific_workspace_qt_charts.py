@@ -90,6 +90,19 @@ class ScientificChartWidgetTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    def test_data_table_rounds_display_only_and_preserves_exact_values(self):
+        exact = 1.2345678912345
+        payload = chart_payload()
+        payload["series"][0]["y"][1] = exact
+
+        table = charts._data_table(payload)
+        self.addCleanup(table.close)
+        cell = table.item(1, 1)
+
+        self.assertEqual(cell.text(), "1.23457")
+        self.assertEqual(cell.data(QtCore.Qt.ItemDataRole.UserRole), exact)
+        self.assertEqual(float(cell.toolTip()), exact)
+
     def test_chart_widget_uses_native_fallback_when_webengine_is_unavailable(self):
         with patch.object(charts, "QWebEngineView", None):
             widget = charts.ScientificChartWidget(chart_payload())

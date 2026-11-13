@@ -281,7 +281,15 @@ if QtWidgets is not None:
             values = [series[0]["x"][source_index]]
             values.extend(item["y"][source_index] for item in series)
             for column, value in enumerate(values):
-                table.setItem(row_index, column, QtWidgets.QTableWidgetItem(str(value)))
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    display_value = format(value, ".6g")
+                    exact_value = format(value, ".17g")
+                else:
+                    display_value = exact_value = str(value)
+                cell = QtWidgets.QTableWidgetItem(display_value)
+                cell.setData(QtCore.Qt.ItemDataRole.UserRole, value)
+                cell.setToolTip(exact_value)
+                table.setItem(row_index, column, cell)
         if point_count > len(indices):
             table.setToolTip(f"Vista tabular limitada a {len(indices)} filas de {point_count} puntos.")
         table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)

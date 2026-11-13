@@ -12,7 +12,7 @@ except ImportError:  # Support direct import from the scripts directory.
     from thesis_sir_model import WeeklyCountObservations
 
 
-_MAX_SOURCE_BYTES = 1_048_576
+MAX_RECONSTRUCTION_BYTES = 1_048_576
 _EXPECTED_ROWS = 56
 _SERIES_ID = "DGE_monday_sunday_candidate"
 _WEEK_LABEL = re.compile(r"^(?P<year>\d{4})-SE(?P<week>\d{1,2})$")
@@ -54,7 +54,7 @@ def parse_dge_reconstruction_json(payload: bytes | str) -> WeeklyCountObservatio
             raise ValueError("reconstruction JSON must be valid UTF-8") from exc
     else:
         raise ValueError("reconstruction JSON must be bytes or text")
-    if not raw or len(raw) > _MAX_SOURCE_BYTES:
+    if not raw or len(raw) > MAX_RECONSTRUCTION_BYTES:
         raise ValueError("reconstruction JSON must be nonempty and at most 1 MiB")
     try:
         text = raw.decode("utf-8-sig")
