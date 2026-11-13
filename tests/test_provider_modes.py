@@ -40,6 +40,26 @@ class TestModes(unittest.TestCase):
             self.assertNotIn("run_command", body)
             self.assertIn("write_to_file", body)
 
+    def test_domain_specialists_get_native_profiles_and_task_packets(self):
+        task = dict(TASK, kind="build", domains=["identifiability", "dynamics",
+                                                  "differential_algebra", "symbolic"],
+                    interfaces=["cli"], targets=["linux"], risk="R1")
+        expected = {"differential_algebra_specialist", "dynamical_systems_specialist",
+                    "identifiability_specialist"}
+        for mode, provider in (("codex", "codex"), ("gemini", "gemini"), ("agy", "agy")):
+            with self.subTest(mode=mode):
+                manifest, files = make_files(task, mode)
+                assignments = {item["role"]: item for item in manifest["assignments"]}
+                self.assertTrue(expected.issubset(assignments))
+                for role in expected:
+                    assignment = assignments[role]
+                    self.assertEqual(assignment["provider"], provider)
+                    profile = files[assignment["profile"]]
+                    packet = files[assignment["packet"]]
+                    self.assertIn("SSEC " + role.replace("_", " "), profile)
+                    self.assertIn("Role: " + role, packet)
+                    self.assertIn("scientific_validation", manifest["required_evidence"])
+
     def test_preview(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)

@@ -37,7 +37,9 @@ Activar para `BUILD | AUDIT | DEBUG | REFACTOR | OPTIMIZE | MIGRATE | GUI | IDL 
 
 ## Router mínimo de expertos
 
-Roles bajo demanda: `software_architect`, `implementation_engineer`, `numerical_analyst`, `mathematical_model_specialist`, `optimization_ml_engineer`, `data_engineer`, `gui_engineer`, `idl_engineer`, `software_auditor`, `security_reviewer`, `independent_reviewer`, `release_engineer`.
+Roles bajo demanda: `software_architect`, `implementation_engineer`, `numerical_analyst`, `mathematical_model_specialist`, `differential_algebra_specialist`, `dynamical_systems_specialist`, `identifiability_specialist`, `optimization_ml_engineer`, `data_engineer`, `gui_engineer`, `idl_engineer`, `software_auditor`, `security_reviewer`, `independent_reviewer`, `release_engineer`.
+
+Selecciona especialistas científicos por dominio, no por plantilla fija: `differential_algebra`/`symbolic` requiere auditoría de transformaciones exactas, dominios y casos excepcionales; `dynamics` requiere análisis de estabilidad, órbitas y bifurcaciones; `identifiability` requiere distinguir estructural/global/local de práctica, revisar parámetros/observables/simetrías y no inferir unicidad desde RMSE. Estas tareas agregan `scientific_validation` aunque el riesgo de software sea R0/R1. Una obligación planificada no demuestra que la validación se haya ejecutado ni que un claim sea cierto.
 
 El arquitecto elige **roles**, no modelos específicos. Los workers no autocertifican su trabajo. Repartir cambios en worktrees/ramas de propiedad exclusiva; revisión sólo lectura sobre candidatos. Ante conflicto, abrir una obligación de resolución con evidencia, no votar. En ausencia de runtime multiagente real, ejecutar pases secuenciales y no llamarlos independientes.
 
