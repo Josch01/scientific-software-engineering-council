@@ -207,7 +207,12 @@ class ThesisSIRParameters:
             raise ValueError("unsupported thesis SIR equation_set")
         if _finite_number(payload["population"], "population") != THESIS_SIR_POPULATION:
             raise ValueError("thesis SIR population is fixed at 129960600 persons")
-        if payload["states"] != ["S", "I", "R"]:
+        raw_states = payload["states"]
+        if (
+            not isinstance(raw_states, Sequence)
+            or isinstance(raw_states, (str, bytes, bytearray))
+            or tuple(raw_states) != ("S", "I", "R")
+        ):
             raise ValueError("thesis SIR states must be exactly S, I, R")
         expected_units = {
             "population": "person", "time": "week", "rates": "1/week",

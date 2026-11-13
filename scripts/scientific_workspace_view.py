@@ -11,9 +11,11 @@ import unicodedata
 try:
     from .scientific_core import OdeSolution, ObservationDataset, SirModelDefinition
     from .scientific_workspace_loader import LoadedResource, LoadedWorkspace
+    from .thesis_sir_model import THESIS_SIR_EQUATION_SET, ThesisSIRParameters
 except ImportError:  # Support direct script execution/import by the desktop shell.
     from scientific_core import OdeSolution, ObservationDataset, SirModelDefinition
     from scientific_workspace_loader import LoadedResource, LoadedWorkspace
+    from thesis_sir_model import THESIS_SIR_EQUATION_SET, ThesisSIRParameters
 
 
 MAX_JSON_VIEW_BYTES = 1 * 1024 * 1024
@@ -115,6 +117,7 @@ class ResidualSeriesView:
 
 @dataclass(frozen=True, slots=True)
 class ObservationEvaluationView:
+    method: str
     observation_sha256: str
     provenance: Mapping[str, str]
     time_unit: str
@@ -758,7 +761,11 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
     result = _result_object(payload, "observation evaluation", required)
     if type(result["schema_version"]) is not int or result["schema_version"] != 1:
         raise ValueError("unsupported observation evaluation schema_version; expected 1")
-    if result["method"] != "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES":
+    method = result["method"]
+    if method not in {
+        "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES",
+        "THESIS_SIR_WEEKLY_COUNT_INTERVAL_RK4",
+    }:
         raise ValueError("observation evaluation method does not match scientific_core schema v1")
     digest = result["observation_sha256"]
     if (not isinstance(digest, str) or len(digest) != 64
@@ -851,8 +858,11 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
         "time_unit", "variable_units", "parameters", "state_names", "initial_state",
     })
     model_state_names = _result_names(model["state_names"], "model state_names")
-    if not set(variable_names).issubset(model_state_names):
-        raise ValueError("model state_names must contain each observed variable")
+    if method == "SEGMENTED_FIXED_STEP_RK4_AT_OBSERVATION_TIMES":
+        if not set(variable_names).issubset(model_state_names):
+            raise ValueError("model state_names must contain each observed variable")
+    elif not {"S", "I", "R"}.issubset(model_state_names):
+        raise ValueError("thesis SIR interval evaluation must identify its S/I/R model states")
     if not isinstance(model["time_unit"], str) or not model["time_unit"] or len(model["time_unit"]) > 256:
         raise ValueError("model time_unit must be a non-empty string")
     if model["time_unit"] != time_unit:
@@ -924,6 +934,7 @@ def build_observation_evaluation_view(payload: object) -> ObservationEvaluationV
             residuals=tuple(residual_by_coordinate[key] for key in coordinates),
         ))
     return ObservationEvaluationView(
+        method=sanitize_display_text(method),
         observation_sha256=digest,
         provenance=MappingProxyType(provenance),
         time_unit=sanitize_display_text(time_unit),
@@ -1039,6 +1050,27 @@ def _sir_analysis_unit_context(
         payload = _cached_json_payload(model_resources[0], json_cache, json_byte_count)
         if not isinstance(payload, Mapping) or payload.get("model_type") != "sir":
             return None
+        if payload.get("equation_set") == THESIS_SIR_EQUATION_SET:
+            thesis_parameters = ThesisSIRParameters.from_dict(payload)
+            parameter_units = {"d0": "dimensionless", "gamma": "1/week"}
+            for index in range(len(thesis_parameters.harmonics)):
+                parameter_units.update({
+                    f"harmonic_{index}_cosine": "dimensionless",
+                    f"harmonic_{index}_sine": "dimensionless",
+                    f"harmonic_{index}_angular_frequency": "rad/week",
+                })
+            if component_type == "fit_summary":
+                return {"parameter_units": parameter_units}
+            return {
+                "time_unit": "week",
+                "state_units": {
+                    "S": "person",
+                    "I": "person",
+                    "R": "person",
+                    "cumulative_incidence": "person",
+                },
+                "parameter_units": parameter_units,
+            }
         definition = SirModelDefinition.from_dict(payload)
     except (KeyError, TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
         return None
