@@ -6,5 +6,5 @@
 - Defectos corregidos: en Windows, DirEntry.stat no entregaba identidad de archivo; además, el ID hexadecimal real de P3.21 era rechazado por fixtures con guiones. El lector ahora coteja lstat/descriptor y acepta el formato productor, cubierto por regresión.
 - Arquitectura: sin nuevo solver ni ejecución de código; reutiliza loader, vista y digest de salida P3.21. Lee como máximo 65 536 bytes por log y exige la ruta generada del mismo run ID.
 - Riesgos: las bitácoras no están firmadas; el digest verifica integridad frente a lo registrado, no autenticidad. Prueba de symlink omitida por política del host.
-- Pendiente: suite completa, Linux/CI y datos SIR reales NOT_RUN; validez matemática e incertidumbre NOT_ASSESSED.
-- GitHub: PR #53 abierto como borrador y apilado sobre P3.21; workflow iniciado y aún IN_PROGRESS al redactar este reporte. Sin merge a main ni release.
+- Pendiente: suite completa local, Windows CI todavía IN_PROGRESS, GUI Qt Linux y datos SIR reales NOT_RUN; validez matemática e incertidumbre NOT_ASSESSED.
+- GitHub: PR #53 borrador apilado sobre P3.21; workflow #231 reporta Ubuntu 3.11/3.12 SUCCESS y Windows 3.11/3.12 IN_PROGRESS. Sin merge a main ni release.
