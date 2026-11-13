@@ -1,6 +1,6 @@
 # Checklist de candidato de release SSEC
 
-**Estado de este snapshot (2026-11-04): `PARTIAL`; release 1.0: `BLOCKED`; `RC_READY`: no.** Esta checklist prepara una revisión humana. No crea tags, publica artefactos ni aprueba el merge.
+**Estado de este snapshot (2026-11-13, commit `119c92c`): `PARTIAL`; release 1.0: `BLOCKED`; `RC_READY`: no.** PRs apilados #59–#62 siguen en borrador y sin merge; CI de #59, #60 y #61 está verde, CI de #62 sigue en curso. Esta checklist prepara una revisión humana. No crea tags, publica artefactos ni aprueba el merge.
 
 ## 1. Código y reproducibilidad
 
@@ -39,9 +39,9 @@
 ## Bloqueos conocidos de este snapshot
 
 - Issue #5: licencia y términos de contribución pendientes de decisión del propietario; no existe `LICENSE`.
-- Escaneos automatizados de secretos/dependencias/vulnerabilidades y benchmark de tres proyectos: `NOT_RUN`; no se instalaron herramientas y no hay proyectos de referencia autorizados en este incremento.
-- Revisión independiente integral del sistema P4.4: `NOT_RUN`; solo se revisó de forma independiente la consistencia de su informe.
-- Integración real de proveedores desde la app, GUI Qt Linux y SIR/datos del usuario: `NOT_RUN` según sus informes P3.
-- El gate de release permanece cerrado si la procedencia canónica de ejecución no puede verificarse; no aceptar JSON auto-declarado como sustituto.
+- Escaneos automatizados de secretos/dependencias/vulnerabilidades: `NOT_RUN`; no hay herramientas instaladas y no se instalaron. Benchmark de tres proyectos: `NOT_RUN`; no hay proyectos de referencia autorizados.
+- Revisión independiente acotada al commit `f081d15` (loader, propuestas/aprobación, callbacks, procesos, historial y manejo de secretos/logs): sin hallazgos críticos o mayores reproducibles; observación P2: el historial local no autentica que una corrida ocurrió. La revisión integral P4.4 y la revisión del candidato `119c92c`: `NOT_RUN`.
+- Hubo una invocación AGY CLI autorizada; el flujo real completo desde la aplicación, la GUI Qt Linux y la ejecución del SIR/datos de tesis: `NOT_RUN`. La importación del JSON y su SHA-256 sí están verificados; no prueban validez científica.
+- El historial ahora advierte que SHA-256 no autentica el origen, pero no implementa firma o procedencia canónica. Mantener cerrado el gate de release; no aceptar JSON auto-declarado como sustituto.
 
 Reevaluar cada casilla contra el commit candidato. Una casilla pendiente deja el candidato en `PARTIAL`, `CONDITIONAL` o `BLOCKED` según su impacto; no etiquetar `RC_READY` ni `SCIENTIFICALLY_CERTIFIED` por inferencia.
