@@ -303,12 +303,17 @@ class SirAnalysisDemoTests(unittest.TestCase):
             self.assertEqual(result["data_status"], "SYNTHETIC\nFIXTURE")
             self.assertEqual(json.loads(provenance.content)["data_status"], "SYNTHETIC\nFIXTURE")
 
-    def test_analysis_workspace_builder_never_overwrites_or_writes_inside_source(self):
+    def test_analysis_workspace_builder_writes_create_only_output_under_project_root(self):
         from scripts.build_sir_analysis_demo import build_analysis_workspace
+        from scripts.scientific_workspace_loader import load_scientific_workspace
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             source = self._make_analysis_input_workspace(temporary)
+            original = {
+                path.relative_to(source).as_posix(): path.read_bytes()
+                for path in source.rglob("*") if path.is_file()
+            }
             existing_output = temporary / "existing"
             existing_output.mkdir()
             sentinel = existing_output / "keep.txt"
@@ -317,10 +322,60 @@ class SirAnalysisDemoTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "output directory must be empty"):
                 build_analysis_workspace(source, "workspace.json", existing_output)
             with self.assertRaisesRegex(ValueError, "outside the source project"):
-                build_analysis_workspace(source, "workspace.json", source / "generated")
+                build_analysis_workspace(source, "workspace.json", source)
+            with self.assertRaisesRegex(ValueError, "outside the source project"):
+                build_analysis_workspace(source, "workspace.json", source.parent)
+
+            output = source / "generated" / "sir-analysis"
+            result = build_analysis_workspace(source, "workspace.json", output)
+            self.assertEqual(result["workspace_path"], "generated/sir-analysis/workspace.json")
+            workspace = load_scientific_workspace(source, result["workspace_path"])
+            self.assertEqual(workspace.summary.to_dict()["status"], "VALID")
+            self.assertEqual(
+                {path.relative_to(source).as_posix(): path.read_bytes()
+                 for path in source.rglob("*") if path.is_file()
+                 and not path.is_relative_to(output)},
+                original,
+            )
+            self.assertTrue(all(
+                resource.path.startswith("generated/sir-analysis/")
+                for resource in workspace.resources
+            ))
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
-            self.assertFalse((source / "generated").exists())
+
+    def test_analysis_workspace_builder_rejects_source_symlink_output(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = self._make_analysis_input_workspace(temporary)
+            outside = temporary / "outside"
+            outside.mkdir()
+            link = source / "linked-output"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable in this environment: {exc}")
+
+            with self.assertRaisesRegex(ValueError, "cannot traverse symlinks"):
+                build_analysis_workspace(source, "workspace.json", link / "run")
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_analysis_builder_requires_the_manifest_confirmed_by_the_ui(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = self._make_analysis_input_workspace(temporary)
+            output = source / "generated" / "must-not-exist"
+
+            with self.assertRaisesRegex(ValueError, "changed after analysis confirmation"):
+                build_analysis_workspace(
+                    source, "workspace.json", output,
+                    expected_source_manifest_sha256="0" * 64,
+                )
+            self.assertFalse(output.exists())
 
     def test_cli_builds_analysis_from_verified_sir_workspace_resources(self):
         import subprocess

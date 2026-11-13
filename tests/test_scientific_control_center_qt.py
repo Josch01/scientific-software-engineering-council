@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import hashlib
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -110,6 +113,10 @@ class ControlCenterShellTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "examples" / "sir_profiled_analysis_workspace_demo"
         )
+        cls.analysis_examples = (
+            Path(__file__).resolve().parents[1]
+            / "examples" / "sir_analysis_input_demo"
+        )
 
     def _window(self):
         from scripts.scientific_control_center_qt import ControlCenterWindow
@@ -117,6 +124,28 @@ class ControlCenterShellTests(unittest.TestCase):
         window = ControlCenterWindow()
         self.addCleanup(window.close)
         return window
+
+    def _wait_for_sir_analysis(self, window, timeout: float = 15.0) -> None:
+        deadline = time.monotonic() + timeout
+        while window.analysis_running and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.005)
+        self.app.processEvents()
+        self.assertFalse(window.analysis_running, "analysis worker did not finish")
+
+    def _mock_sir_analysis_confirmation(self, window, captured, answer):
+        create_dialog = window._create_sir_analysis_confirmation
+
+        def capture(preview):
+            dialog = create_dialog(preview)
+            captured["text"] = dialog.text()
+            captured["default"] = dialog.defaultButton().text()
+            return dialog
+
+        return (
+            patch.object(window, "_create_sir_analysis_confirmation", side_effect=capture),
+            patch.object(QtWidgets.QMessageBox, "exec", return_value=answer),
+        )
 
     def test_existing_workspace_is_embedded_and_shares_loaded_project(self):
         window = self._window()
@@ -182,6 +211,174 @@ class ControlCenterShellTests(unittest.TestCase):
             self.assertEqual(window.current_project_root, output.resolve())
             self.assertEqual(window.agent_supervisor.project_root, output.resolve())
             self.assertEqual(window.workspace_window.workspace_view_model, model)
+
+    def test_qt_sir_analysis_can_be_rejected_without_output_or_workspace_change(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            model = window.load_project(root, "workspace.json")
+            confirmation_details = {}
+            confirm_patch, exec_patch = self._mock_sir_analysis_confirmation(
+                window, confirmation_details, QtWidgets.QMessageBox.StandardButton.No
+            )
+            with confirm_patch, exec_patch:
+                window.sir_analysis_button.click()
+
+            self.assertEqual(window.current_manifest_relative_path, "workspace.json")
+            self.assertEqual(window.workspace_window.workspace_view_model, model)
+            self.assertFalse(window.analysis_running)
+            self.assertFalse((root / "generated").exists())
+            self.assertIn("beta_knot_1", confirmation_details["text"])
+            self.assertIn("model/model.json", confirmation_details["text"])
+            self.assertEqual(confirmation_details["default"], "No ejecutar")
+
+    def test_qt_sir_analysis_acceptance_runs_real_builder_off_gui_thread_and_loads_views(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            original = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*") if path.is_file()
+            }
+            window = self._window()
+            window.show()
+            window.load_project(root, "workspace.json")
+            observed = {}
+            confirmation_details = {}
+
+            def run_real_builder(*args, **kwargs):
+                observed["thread"] = threading.current_thread()
+                return build_analysis_workspace(*args, **kwargs)
+
+            confirm_patch, exec_patch = self._mock_sir_analysis_confirmation(
+                window, confirmation_details, QtWidgets.QMessageBox.StandardButton.Yes
+            )
+
+            with patch(
+                "scripts.scientific_control_center_qt.build_analysis_workspace",
+                side_effect=run_real_builder,
+            ), confirm_patch, exec_patch:
+                window.sir_analysis_button.click()
+                self._wait_for_sir_analysis(window)
+
+            self.assertIsNot(observed["thread"], threading.main_thread())
+            self.assertEqual(window.current_project_root, root.resolve())
+            self.assertEqual(window.agent_supervisor.project_root, root.resolve())
+            self.assertTrue(window.current_manifest_relative_path.startswith(
+                "generated/sir-analysis/"
+            ))
+            self.assertIn("dS/dt", confirmation_details["text"])
+            self.assertIn("beta_knot_1", confirmation_details["text"])
+            self.assertIn("NOT_CALCULATED", confirmation_details["text"])
+            self.assertIn("no admite cancelación segura", confirmation_details["text"])
+            self.assertEqual(confirmation_details["default"], "No ejecutar")
+            self.assertIn("NOT_ASSESSED", window.sir_analysis_status.text())
+            self.assertIn("NOT_RUN", window.sir_analysis_status.text())
+            self.assertTrue((root / "generated" / "sir-analysis-runs").is_dir())
+            log_path = next((root / "generated" / "sir-analysis-runs").glob("*.json"))
+            run_log = json.loads(log_path.read_text(encoding="utf-8"))
+            self.assertEqual(run_log["status"], "SUCCEEDED")
+            self.assertEqual(run_log["real_user_sir"], "NOT_RUN")
+            self.assertEqual(run_log["uncertainty"], "NOT_CALCULATED")
+            self.assertEqual(
+                run_log["source_workspace_manifest_sha256"],
+                hashlib.sha256((root / "workspace.json").read_bytes()).hexdigest(),
+            )
+            result_manifest_bytes = (root / window.current_manifest_relative_path).read_bytes()
+            self.assertEqual(
+                run_log["result_workspace_manifest_sha256"],
+                hashlib.sha256(result_manifest_bytes).hexdigest(),
+            )
+            generated_resources = {
+                resource.resource_id: resource
+                for resource in window.workspace_window._loaded_workspace.resources
+            }
+            for resource_id in ("model", "observations", "analysis-config"):
+                self.assertEqual(
+                    generated_resources[resource_id].content,
+                    original[generated_resources[resource_id].path.split("/", 3)[-1]],
+                )
+            self.assertEqual(
+                {path.relative_to(root).as_posix(): path.read_bytes()
+                 for path in root.rglob("*") if path.is_file()
+                 and not path.is_relative_to(root / "generated")},
+                original,
+            )
+
+            window.navigate("results")
+            self.app.processEvents()
+            fit_table = window.findChild(QtWidgets.QTableWidget, "fit-parameters-table")
+            self.assertIsNotNone(fit_table)
+            self.assertEqual(fit_table.item(0, 0).text(), "beta_knot_1")
+            self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-sensitivity-view-sensitivity-0"))
+            self.assertIsNotNone(window.findChild(QtWidgets.QWidget, "plot-residual-view-residual-0"))
+
+    def test_qt_sir_analysis_failure_is_logged_without_loading_stale_results(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            source_model = window.load_project(root, "workspace.json")
+            confirmation_details = {}
+            confirm_patch, exec_patch = self._mock_sir_analysis_confirmation(
+                window, confirmation_details, QtWidgets.QMessageBox.StandardButton.Yes
+            )
+
+            with patch(
+                "scripts.scientific_control_center_qt.build_analysis_workspace",
+                side_effect=RuntimeError("deterministic test failure"),
+            ), confirm_patch, exec_patch:
+                window.sir_analysis_button.click()
+                self._wait_for_sir_analysis(window)
+
+            self.assertEqual(window.current_manifest_relative_path, "workspace.json")
+            self.assertEqual(window.workspace_window.workspace_view_model, source_model)
+            self.assertIn("Falló", window.sir_analysis_status.text())
+            logs = list((root / "generated" / "sir-analysis-runs").glob("*.json"))
+            self.assertEqual(len(logs), 1)
+            run_log = json.loads(logs[0].read_text(encoding="utf-8"))
+            self.assertEqual(run_log["status"], "FAILED")
+            self.assertIn("deterministic test failure", run_log["error"])
+
+    def test_qt_sir_analysis_prevents_duplicate_and_project_switch_while_running(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_builder(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=5)
+            raise RuntimeError("test release")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            window.load_project(root, "workspace.json")
+            confirmation_details = {}
+            confirm_patch, exec_patch = self._mock_sir_analysis_confirmation(
+                window, confirmation_details, QtWidgets.QMessageBox.StandardButton.Yes
+            )
+
+            with patch(
+                "scripts.scientific_control_center_qt.build_analysis_workspace",
+                side_effect=blocking_builder,
+            ), confirm_patch, exec_patch:
+                window.sir_analysis_button.click()
+                deadline = time.monotonic() + 2
+                while not started.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.005)
+                self.assertTrue(started.is_set())
+                self.assertFalse(window.sir_analysis_button.isEnabled())
+                with self.assertRaisesRegex(ValueError, "analysis is running"):
+                    window.load_project(root, "workspace.json")
+                window.sir_analysis_button.click()
+                self.assertTrue(window.analysis_running)
+                release.set()
+                self._wait_for_sir_analysis(window)
 
     def test_profiled_sir_results_can_request_workspace_audit_in_same_center(self):
         root = self.profiled_examples
