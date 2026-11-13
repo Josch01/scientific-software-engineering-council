@@ -9,9 +9,21 @@ import math
 import unicodedata
 
 try:
-    from .scientific_ui_theme import CHART_SERIES_COLORS, COLORS
+    from .scientific_ui_theme import (
+        CHART_SERIES_COLORS,
+        CHART_SERIES_DASH_PATTERNS,
+        CHART_SERIES_LINE_STYLES,
+        COLORS,
+        chart_line_style,
+    )
 except ImportError:  # Support direct execution from scripts/.
-    from scientific_ui_theme import CHART_SERIES_COLORS, COLORS
+    from scientific_ui_theme import (
+        CHART_SERIES_COLORS,
+        CHART_SERIES_DASH_PATTERNS,
+        CHART_SERIES_LINE_STYLES,
+        COLORS,
+        chart_line_style,
+    )
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -110,29 +122,36 @@ const h=document.createElement('h2');h.textContent=data.title;host.appendChild(h
 const legend=document.createElement('div');legend.className='legend';host.appendChild(legend);
 const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
 svg.setAttribute('viewBox','0 0 960 480');svg.setAttribute('role','img');
-svg.setAttribute('aria-label',data.title);host.appendChild(svg);
-const tip=document.createElement('div');tip.className='tooltip';tip.setAttribute('role','status');host.appendChild(tip);
+svg.setAttribute('aria-label',data.title+'; usa las flechas izquierda y derecha para consultar los puntos');
+svg.setAttribute('aria-keyshortcuts','ArrowLeft ArrowRight');svg.setAttribute('tabindex','0');host.appendChild(svg);
+const tip=document.createElement('div');tip.id='chart-tooltip';tip.className='tooltip';tip.setAttribute('role','status');
+tip.textContent='Enfoca la gráfica y usa ←/→ para consultar valores.';
+svg.setAttribute('aria-describedby',tip.id);host.appendChild(tip);
 const ns='http://www.w3.org/2000/svg',L=82,R=20,T=24,B=72,W=960,H=480;
 const allX=data.series[0].x;
-let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity,keyboardIndex=0;
 for(const x of allX){if(x<xmin)xmin=x;if(x>xmax)xmax=x;}
 for(const s of data.series)for(const y of s.y){if(y<ymin)ymin=y;if(y>ymax)ymax=y;}
 if(xmin===xmax){xmin-=0.5;xmax+=0.5;}if(ymin===ymax){const p=Math.max(Math.abs(ymin)*0.05,1);ymin-=p;ymax+=p;}
 else{const p=(ymax-ymin)*0.06;ymin-=p;ymax+=p;}
 const px=x=>L+(x-xmin)/(xmax-xmin)*(W-L-R),py=y=>H-B-(y-ymin)/(ymax-ymin)*(H-T-B);
 const el=(tag,attrs,text)=>{const n=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs||{}))n.setAttribute(k,String(v));if(text!==undefined)n.textContent=text;svg.appendChild(n);return n;};
-for(const y of [ymin,ymax])el('path',{d:`M${L},${py(y)}H${W-R}`,fill:'none',stroke:'#474550','stroke-width':1,class:'grid'});
-el('path',{d:`M${L},${T}V${H-B}H${W-R}`,fill:'none',stroke:'#696574','stroke-width':2});
+for(const y of [ymin,(ymin+ymax)/2,ymax])el('path',{d:`M${L},${py(y)}H${W-R}`,fill:'none',stroke:'__SSEC_GRID_COLOR__','stroke-width':1,class:'grid'});
+el('path',{d:`M${L},${T}V${H-B}H${W-R}`,fill:'none',stroke:'__SSEC_AXIS_COLOR__','stroke-width':1.5});
 for(const [x,label] of [[L,String(allX[0])],[W-R,String(allX[allX.length-1])]])el('text',{x,y:H-B+24,'text-anchor':x===L?'start':'end',class:'tick'},label);
 for(const [y,label] of [[T,String(ymax)],[H-B,String(ymin)]])el('text',{x:L-10,y:y+4,'text-anchor':'end',class:'tick'},label);
 el('text',{x:(L+W-R)/2,y:H-16,'text-anchor':'middle',class:'axis'},data.x_label);
 const ylabel=el('text',{x:18,y:(T+H-B)/2,'text-anchor':'middle',class:'axis',transform:`rotate(-90 18 ${(T+H-B)/2})`},data.y_label);
 const colors=__SSEC_CHART_COLORS__;
+const dashPatterns=__SSEC_CHART_DASH_PATTERNS__;
+const dashStyles=__SSEC_CHART_LINE_STYLES__;
 const stride=Math.max(1,Math.ceil(allX.length/2000)),renderedIndices=[];
 for(let j=0;j<allX.length;j+=stride)renderedIndices.push(j);
 if(renderedIndices[renderedIndices.length-1]!==allX.length-1)renderedIndices.push(allX.length-1);
-const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length];const d=renderedIndices.map((j,k)=>`${k?'L':'M'}${px(s.x[j]).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i,class:'series-line'});paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
-svg.addEventListener('mousemove',event=>{const point=svg.createSVGPoint();point.x=event.clientX;point.y=event.clientY;const p=point.matrixTransform(svg.getScreenCTM().inverse());if(p.x<L||p.x>W-R){tip.textContent='';return;}const ratio=(p.x-L)/(W-L-R),index=Math.max(0,Math.min(allX.length-1,Math.round(ratio*(allX.length-1))));const visible=data.series.map((s,i)=>paths[i].style.display==='none'?null:`${s.name}: ${s.y[index]}`).filter(Boolean);tip.textContent=`${data.x_label}: ${allX[index]} · ${visible.join(' · ')}`;});
+const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length],pattern=i%dashPatterns.length;const d=renderedIndices.map((j,k)=>`${k?'L':'M'}${px(s.x[j]).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i,class:'series-line'});if(dashPatterns[pattern])path.setAttribute('stroke-dasharray',dashPatterns[pattern]);path.style.animationDelay=`${Math.min(i*45,180)}ms`;paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.setAttribute('data-line-style',dashStyles[pattern]);button.style.setProperty('--series-color',color);button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
+const showPoint=index=>{const visible=data.series.map((s,i)=>paths[i].style.display==='none'?null:`${s.name}: ${s.y[index]}`).filter(Boolean);tip.textContent=`${data.x_label}: ${allX[index]} · ${visible.join(' · ')}`;};
+svg.addEventListener('mousemove',event=>{const point=svg.createSVGPoint();point.x=event.clientX;point.y=event.clientY;const p=point.matrixTransform(svg.getScreenCTM().inverse());if(p.x<L||p.x>W-R){tip.textContent='';return;}const ratio=(p.x-L)/(W-L-R),index=Math.max(0,Math.min(allX.length-1,Math.round(ratio*(allX.length-1))));showPoint(index);});
+svg.addEventListener('keydown',event=>{if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;event.preventDefault();const delta=event.key==='ArrowRight'?1:-1;keyboardIndex=Math.max(0,Math.min(allX.length-1,keyboardIndex+delta));showPoint(keyboardIndex);});
 svg.addEventListener('mouseleave',()=>{tip.textContent='';});
 })();"""
 
@@ -144,7 +163,11 @@ def build_scientific_chart_html(plot_data: Mapping[str, object]) -> str:
         json.dumps(normalized, ensure_ascii=False, allow_nan=False,
                    separators=(",", ":")).encode("utf-8")
     ).decode("ascii")
-    script = _SCRIPT.replace("__SSEC_CHART_COLORS__", json.dumps(CHART_SERIES_COLORS))
+    script = (_SCRIPT.replace("__SSEC_CHART_COLORS__", json.dumps(CHART_SERIES_COLORS))
+              .replace("__SSEC_CHART_DASH_PATTERNS__", json.dumps(CHART_SERIES_DASH_PATTERNS))
+              .replace("__SSEC_CHART_LINE_STYLES__", json.dumps(CHART_SERIES_LINE_STYLES))
+              .replace("__SSEC_GRID_COLOR__", COLORS["border"])
+              .replace("__SSEC_AXIS_COLOR__", COLORS["muted"]))
     script_hash = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
     csp = (
         "default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; "
@@ -154,18 +177,26 @@ def build_scientific_chart_html(plot_data: Mapping[str, object]) -> str:
     c = COLORS
     theme_css = (
         f":root{{color-scheme:dark;--surface:{c['surface']};--raised:{c['surface_raised']};"
-        f"--text:{c['text']};--muted:{c['muted']};--border:{c['border']};--accent:{c['accent']};}}"
+        f"--text:{c['text']};--muted:{c['muted']};--border:{c['border']};--accent:{c['accent']};--hover:{c['surface_hover']};}}"
         "*{box-sizing:border-box}body{font:14px 'Segoe UI',system-ui,sans-serif;color:var(--text);"
-        "background:var(--surface);margin:0;padding:14px}h2{font-size:16px;margin:4px 0 10px}"
+        "background:var(--surface);margin:0;padding:16px}h2{font-size:17px;margin:3px 0 12px;letter-spacing:.1px}"
         "svg{width:100%;height:auto;background:var(--surface);border-radius:8px}"
+        "svg:focus-visible{outline:2px solid var(--accent);outline-offset:3px}"
         ".axis{font:14px system-ui,sans-serif;fill:var(--text)}.tick{font:12px system-ui,sans-serif;fill:var(--muted)}"
-        ".legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}"
-        ".legend button{background:var(--raised);border:1px solid;border-radius:7px;padding:6px 10px;"
+        ".legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px}"
+        ".legend button{background:var(--raised);border:1px solid;border-radius:8px;padding:7px 11px;min-height:34px;"
         "color:var(--text);cursor:pointer;transition:background-color 140ms ease,opacity 140ms ease}"
-        ".legend button:hover{background:#403d49}.legend button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
-        ".tooltip{min-height:1.5em;color:var(--muted);font-variant-numeric:tabular-nums;padding-top:5px}"
-        "@media(prefers-reduced-motion:no-preference){.series-line{animation:line-in 260ms ease-out both}}"
-        "@keyframes line-in{from{opacity:.15}to{opacity:1}}"
+        ".legend button::before{content:'';display:inline-block;width:18px;margin-right:8px;vertical-align:middle;"
+        "border-top:2px solid var(--series-color)}"
+        ".legend button[data-line-style=dashed]::before,.legend button[data-line-style=longdash]::before,"
+        ".legend button[data-line-style=shortdash]::before,.legend button[data-line-style=dashdot]::before{border-top-style:dashed}"
+        ".legend button[data-line-style=dotted]::before{border-top-style:dotted}"
+        ".legend button[aria-pressed=false]{opacity:.58}"
+        ".legend button:hover{background:var(--hover)}.legend button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+        ".series-line{stroke-linecap:round;stroke-linejoin:round}"
+        ".tooltip{min-height:1.5em;color:var(--text);font-variant-numeric:tabular-nums;padding-top:6px}"
+        "@media(prefers-reduced-motion:no-preference){.series-line{animation:line-in 360ms ease-out both}}"
+        "@keyframes line-in{from{opacity:.08}to{opacity:1}}"
         "@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}"
     )
     html = (
@@ -183,6 +214,15 @@ def build_scientific_chart_html(plot_data: Mapping[str, object]) -> str:
 
 if QtWidgets is not None:
     class _ChartPainter(QtWidgets.QFrame):
+        _PEN_STYLES = {
+            "solid": QtCore.Qt.PenStyle.SolidLine,
+            "dashed": QtCore.Qt.PenStyle.DashLine,
+            "dotted": QtCore.Qt.PenStyle.DotLine,
+            "dashdot": QtCore.Qt.PenStyle.DashDotLine,
+            "longdash": QtCore.Qt.PenStyle.DashLine,
+            "shortdash": QtCore.Qt.PenStyle.DotLine,
+        }
+
         def __init__(self, data: Mapping[str, object], parent=None):
             super().__init__(parent)
             self._data = _normalize_chart_data(data)
@@ -240,7 +280,8 @@ if QtWidgets is not None:
             painter.restore()
             for index, item in enumerate(series):
                 color = QtGui.QColor(_COLORS[index % len(_COLORS)])
-                painter.setPen(QtGui.QPen(color, 2))
+                style = self._PEN_STYLES[chart_line_style(index)]
+                painter.setPen(QtGui.QPen(color, 2, style))
                 path = QtGui.QPainterPath()
                 stride = max(1, math.ceil(len(x_values) / 2000))
                 sampled = list(range(0, len(x_values), stride))

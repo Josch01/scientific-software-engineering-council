@@ -56,6 +56,7 @@ class ScientificWorkspaceQtTests(unittest.TestCase):
 
         self.assertEqual(image.pixelColor(5, 5).name(), COLORS["surface"])
         self.assertEqual(plot._COLORS, CHART_SERIES_COLORS)
+        self.assertEqual(plot._PEN_STYLES["dotted"], QtCore.Qt.PenStyle.DotLine)
 
     def _wait_for_simulation(self, window):
         loop = QtCore.QEventLoop()

@@ -18,14 +18,15 @@
 
 - `PASS` 183 pruebas en 12 módulos focalizados de Windows; log:
   `%TEMP%\ssec_p3_25_thesis_audit_tests.log`.
-- Compilación/diff check y CI quedan registrados con el commit/PR.
+- `PASS` compilación local y `git diff --check`.
+- `PASS` CI [run #249](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/43398035456): 4/4 jobs Windows/Ubuntu × Python 3.11/3.12.
 - No se instalaron paquetes ni se invocó Codex, Gemini/AGY u otro proveedor.
 
 ## Límites
 
 - CLI/proveedor real, modelo y datos reales del usuario: `NOT_RUN`.
 - Validez científica, identificabilidad e incertidumbre: `NOT_ASSESSED`.
-- Verificación visual/Linux y CI: pendientes al abrir el PR.
+- QA visual Linux local: `NOT_RUN`; CI verde no equivale a validación visual WebEngine en Linux.
 - El resultado sintético demuestra integración de software, no evidencia
   científica del modelo de tesis.
 

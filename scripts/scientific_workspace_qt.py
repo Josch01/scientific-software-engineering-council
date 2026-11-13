@@ -18,9 +18,9 @@ import tempfile
 import threading
 
 try:
-    from .scientific_ui_theme import CHART_SERIES_COLORS, COLORS, qt_stylesheet
+    from .scientific_ui_theme import CHART_SERIES_COLORS, COLORS, chart_line_style, qt_stylesheet
 except ImportError:  # Support direct execution from scripts/.
-    from scientific_ui_theme import CHART_SERIES_COLORS, COLORS, qt_stylesheet
+    from scientific_ui_theme import CHART_SERIES_COLORS, COLORS, chart_line_style, qt_stylesheet
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -225,6 +225,14 @@ if QtWidgets is not None:
         """Small native Qt plot for the verified time series already in memory."""
 
         _COLORS = CHART_SERIES_COLORS
+        _PEN_STYLES = {
+            "solid": QtCore.Qt.PenStyle.SolidLine,
+            "dashed": QtCore.Qt.PenStyle.DashLine,
+            "dotted": QtCore.Qt.PenStyle.DotLine,
+            "dashdot": QtCore.Qt.PenStyle.DashDotLine,
+            "longdash": QtCore.Qt.PenStyle.DashLine,
+            "shortdash": QtCore.Qt.PenStyle.DotLine,
+        }
 
         def __init__(self, content: Mapping[str, object], parent=None):
             super().__init__(parent)
@@ -297,7 +305,8 @@ if QtWidgets is not None:
             stride = max(1, math.ceil(count / 2000))
             for series_number, (name, index) in enumerate(zip(names, indices)):
                 color = QtGui.QColor(self._COLORS[series_number % len(self._COLORS)])
-                painter.setPen(QtGui.QPen(color, 2))
+                style = self._PEN_STYLES[chart_line_style(series_number)]
+                painter.setPen(QtGui.QPen(color, 2, style))
                 path = QtGui.QPainterPath()
                 sampled = list(range(0, count, stride))
                 if sampled[-1] != count - 1:
@@ -312,7 +321,7 @@ if QtWidgets is not None:
                         path.lineTo(point)
                 painter.drawPath(path)
                 legend_x = rect.left() + series_number * 100
-                painter.setPen(QtGui.QPen(color, 3))
+                painter.setPen(QtGui.QPen(color, 3, style))
                 painter.drawLine(legend_x, rect.bottom() + 54, legend_x + 18, rect.bottom() + 54)
                 painter.setPen(QtGui.QColor(COLORS["muted"]))
                 painter.drawText(legend_x + 24, rect.bottom() + 59, sanitize_display_text(str(name))[:32])

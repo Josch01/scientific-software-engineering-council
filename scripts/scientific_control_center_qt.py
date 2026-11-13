@@ -775,7 +775,9 @@ else:
         def _build_shell(self) -> None:
             toolbar = self.addToolBar("Centro de Control")
             toolbar.setMovable(False)
+            toolbar.setObjectName("controlCenterToolbar")
             title = QtWidgets.QLabel("SSEC · Centro de Control Científico")
+            title.setObjectName("controlCenterBrand")
             toolbar.addWidget(title)
             toolbar.addSeparator()
             self.active_project_label = QtWidgets.QLabel("Sin proyecto activo")
@@ -789,7 +791,8 @@ else:
             shell_layout.setSpacing(0)
             self.navigation = QtWidgets.QListWidget(shell)
             self.navigation.setObjectName("controlCenterNavigation")
-            self.navigation.setFixedWidth(220)
+            self.navigation.setFixedWidth(232)
+            self.navigation.setUniformItemSizes(True)
             self.navigation.setAccessibleName("Navegación principal del Centro de Control")
             self.navigation.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
             for route, label in self.ROUTES:
@@ -802,8 +805,8 @@ else:
 
             content = QtWidgets.QWidget(shell)
             content_layout = QtWidgets.QVBoxLayout(content)
-            content_layout.setContentsMargins(18, 16, 18, 12)
-            content_layout.setSpacing(10)
+            content_layout.setContentsMargins(24, 20, 24, 16)
+            content_layout.setSpacing(13)
             self.page_heading = QtWidgets.QLabel("Proyectos")
             self.page_heading.setObjectName("controlCenterPageHeading")
             content_layout.addWidget(self.page_heading)
