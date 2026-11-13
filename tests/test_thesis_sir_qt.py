@@ -68,6 +68,17 @@ class ThesisSirQtPageTests(unittest.TestCase):
         for column, value in enumerate(("0.1", "0.0", "0.5")):
             page.harmonic_table.item(0, column).setText(value)
 
+    def _run_synthetic(self):
+        self.page.load_data_file(self.source)
+        self._set_valid_parameters()
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            self.page.start_simulation()
+            self._wait_for_run()
+
     def _wait_for_run(self, timeout: float = 10.0):
         deadline = time.monotonic() + timeout
         while self.page.run_in_progress and time.monotonic() < deadline:
@@ -148,6 +159,64 @@ class ThesisSirQtPageTests(unittest.TestCase):
         self.assertFalse(self.page.run_in_progress)
         self.assertIsNone(self.page.result_payload)
         self.assertEqual(self.page.state, "READY")
+
+    def test_audit_action_requires_a_current_computed_result(self):
+        self.assertFalse(self.page.audit_button.isEnabled())
+        self.page.load_data_file(self.source)
+        self.assertFalse(self.page.audit_button.isEnabled())
+
+        self._set_valid_parameters()
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            self.page.start_simulation()
+            self._wait_for_run()
+        self.assertTrue(self.page.audit_button.isEnabled())
+
+        self.page.parameter_fields["gamma"].setText("0.11")
+        self.assertFalse(self.page.audit_button.isEnabled())
+
+    def test_declining_audit_bundle_creates_nothing_then_approval_emits_verified_workspace(self):
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+
+        self._run_synthetic()
+        parent = Path(self.temp.name) / "audit-output"
+        parent.mkdir()
+        emitted = []
+        self.page.audit_workspace_ready.connect(emitted.append)
+
+        with patch.object(
+            QtWidgets.QFileDialog, "getExistingDirectory", return_value=str(parent)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.No,
+        ) as confirmation:
+            self.page.audit_button.click()
+
+        confirmation.assert_called_once()
+        self.assertEqual(list(parent.iterdir()), [])
+        self.assertEqual(emitted, [])
+        self.assertEqual(self.page.state, "COMPUTED")
+
+        with patch.object(
+            QtWidgets.QFileDialog, "getExistingDirectory", return_value=str(parent)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ) as confirmation:
+            self.page.audit_button.click()
+
+        confirmation.assert_called_once()
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(len(list(parent.iterdir())), 1)
+        workspace_root = Path(emitted[0])
+        workspace = load_scientific_workspace(workspace_root, "workspace.json")
+        self.assertEqual(len(workspace.resources), 5)
+        self.assertIn("audit workspace preparado", self.page.status_label.text().lower())
 
     def test_approved_synthetic_run_uses_p25_engine_and_shows_calculated_results(self):
         self.page.load_data_file(self.source)

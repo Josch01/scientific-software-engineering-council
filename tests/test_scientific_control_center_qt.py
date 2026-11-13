@@ -590,6 +590,94 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertIn("NOT_APPROVED", window.audit_result_text.toPlainText())
         self.assertIn("NOT_CERTIFIED", window.audit_result_text.toPlainText())
 
+    def test_thesis_sir_result_opens_existing_audit_flow_without_provider_until_submit(self):
+        from tests.test_thesis_sir_qt import _reconstruction_payload
+
+        window = self._window()
+        window.show()
+        self.app.processEvents()
+        page = window.thesis_sir_page
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        source = base / "synthetic-reconstruction.json"
+        source.write_bytes(_reconstruction_payload())
+        output_parent = base / "audit-output"
+        output_parent.mkdir()
+        page.load_data_file(source)
+        page.harmonic_count.setCurrentIndex(page.harmonic_count.findData(1))
+        for name, value in {
+            "d0": "0.0",
+            "gamma": "0.1",
+            "log10_initial_infectious": "3.0",
+            "susceptible_fraction": "0.999",
+            "ascertainment_fraction": "0.1",
+        }.items():
+            page.parameter_fields[name].setText(value)
+        page.delay_days.setCurrentIndex(page.delay_days.findData(4.3))
+        for column, value in enumerate(("0.1", "0.0", "0.5")):
+            page.harmonic_table.item(0, column).setText(value)
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            page.start_simulation()
+            deadline = time.monotonic() + 10
+            while page.run_in_progress and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.005)
+        self.assertEqual(page.state, "COMPUTED")
+
+        def fake_audit(*_args, **_kwargs):
+            return {
+                "execution": "PROCESSES_COMPLETED_NOT_AUDITED",
+                "release_status": "NOT_APPROVED",
+                "scientific_validity": "NOT_CERTIFIED",
+                "results": [],
+            }
+
+        with patch.object(
+            QtWidgets.QFileDialog,
+            "getExistingDirectory",
+            return_value=str(output_parent),
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ), patch(
+            "scripts.scientific_workspace_qt.run_workspace_audit",
+            side_effect=fake_audit,
+        ) as audit_service:
+            page.audit_button.click()
+            self.app.processEvents()
+            root = next(output_parent.iterdir())
+            self.assertEqual(window.current_project_root, root.resolve())
+            self.assertEqual(window.current_route, "audits")
+            dialog = window.workspace_window.findChild(
+                QtWidgets.QDialog, "workspaceAuditRequestDialog"
+            )
+            self.assertIsNotNone(dialog)
+            table = dialog.findChild(QtWidgets.QTableWidget, "workspaceAuditResourceTable")
+            self.assertEqual(table.rowCount(), 5)
+            ids = {table.item(row, 0).text() for row in range(table.rowCount())}
+            self.assertEqual(ids, {
+                "sir_model", "sir_observations", "sir_result", "sir_engine", "sir_data_adapter"
+            })
+            audit_service.assert_not_called()
+            table.selectAll()
+            dispatch = dialog.findChild(QtWidgets.QPushButton, "dispatchWorkspaceAuditButton")
+            self.assertIsNotNone(dispatch)
+            dispatch.click()
+            deadline = time.monotonic() + 8
+            while "NOT_APPROVED" not in window.audit_result_text.toPlainText() and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.005)
+
+        audit_service.assert_called_once()
+        self.assertIn("NOT_APPROVED", window.audit_result_text.toPlainText())
+
     def test_failed_load_preserves_the_current_project_and_workspace(self):
         window = self._window()
         window.load_project(self.examples, "workspace.json")
