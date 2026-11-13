@@ -343,6 +343,115 @@ class ControlCenterShellTests(unittest.TestCase):
             self.assertEqual(run_log["status"], "FAILED")
             self.assertIn("deterministic test failure", run_log["error"])
 
+    def _create_sir_analysis_history(self, root, run_id):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+        from scripts.scientific_control_center_qt import _write_analysis_run_log
+
+        output = root / "generated" / "sir-analysis" / run_id
+        result = build_analysis_workspace(root, "workspace.json", output)
+        result_manifest = result["workspace_path"]
+        manifest_bytes = (root / result_manifest).read_bytes()
+        record = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "started_at_utc": "2026-11-13T12:00:00.000Z",
+            "source_workspace_manifest": "workspace.json",
+            "source_workspace_manifest_sha256": hashlib.sha256(
+                (root / "workspace.json").read_bytes()
+            ).hexdigest(),
+            "output_directory": output.relative_to(root).as_posix(),
+            "status": "SUCCEEDED",
+            "finished_at_utc": "2026-11-13T12:00:01.000Z",
+            "duration_seconds": 1.0,
+            "result_workspace_manifest": result_manifest,
+            "result_workspace_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "scientific_validity": "NOT_ASSESSED",
+            "identifiability": "NOT_ASSESSED",
+            "uncertainty": "NOT_CALCULATED",
+            "real_user_sir": "NOT_RUN",
+        }
+        _write_analysis_run_log(root, run_id, record)
+        return result_manifest
+
+    def test_qt_sir_analysis_history_loads_verified_result_and_marks_it_historical(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            window.load_project(root, "workspace.json")
+            run_id = "11111111111141118111111111111111"
+            result_manifest = self._create_sir_analysis_history(root, run_id)
+
+            opened = window.open_sir_analysis_history_run(run_id)
+
+            self.assertTrue(opened)
+            self.assertEqual(window.current_manifest_relative_path, result_manifest)
+            self.assertIn("histórico", window.sir_analysis_status.text().casefold())
+            self.assertIn(run_id, window.sir_analysis_status.text())
+            self.assertIsNotNone(window.findChild(QtWidgets.QPushButton, "sirAnalysisHistoryButton"))
+
+    def test_qt_sir_analysis_history_dialog_only_enables_verified_success_rows(self):
+        from scripts.scientific_control_center_qt import _write_analysis_run_log
+        from scripts.scientific_run_history import list_sir_analysis_runs
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            window.load_project(root, "workspace.json")
+            success_id = "11111111111141118111111111111111"
+            self._create_sir_analysis_history(root, success_id)
+            failed_id = "33333333333343338333333333333333"
+            _write_analysis_run_log(
+                root,
+                failed_id,
+                {
+                    "schema_version": 1,
+                    "run_id": failed_id,
+                    "started_at_utc": "2026-11-12T12:00:00.000Z",
+                    "source_workspace_manifest": "workspace.json",
+                    "source_workspace_manifest_sha256": "f" * 64,
+                    "output_directory": f"generated/sir-analysis/{failed_id}",
+                    "status": "FAILED",
+                    "finished_at_utc": "2026-11-12T12:00:01.000Z",
+                    "duration_seconds": 1.0,
+                    "error": "fixture failure",
+                },
+            )
+            records = list_sir_analysis_runs(root)
+            dialog = window._create_sir_analysis_history_dialog(records)
+            self.addCleanup(dialog.close)
+            table = dialog.findChild(QtWidgets.QTableWidget, "sirAnalysisHistoryTable")
+            self.assertEqual(table.rowCount(), 2)
+
+            table.selectRow(0)
+            self.app.processEvents()
+            self.assertEqual(records[0].run_id, success_id)
+            self.assertTrue(dialog.history_open_button.isEnabled())
+            table.selectRow(1)
+            self.app.processEvents()
+            self.assertEqual(records[1].run_id, failed_id)
+            self.assertFalse(dialog.history_open_button.isEnabled())
+
+    def test_qt_sir_analysis_history_digest_failure_preserves_current_workspace(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "project"
+            shutil.copytree(self.analysis_examples, root)
+            window = self._window()
+            original_model = window.load_project(root, "workspace.json")
+            original_path = window.current_manifest_relative_path
+            run_id = "22222222222242228222222222222222"
+            result_manifest = self._create_sir_analysis_history(root, run_id)
+            result_path = root / result_manifest
+            result_path.write_bytes(result_path.read_bytes() + b" ")
+
+            opened = window.open_sir_analysis_history_run(run_id)
+
+            self.assertFalse(opened)
+            self.assertEqual(window.current_manifest_relative_path, original_path)
+            self.assertIs(window.workspace_window.workspace_view_model, original_model)
+            self.assertIn("no se abrió", window.sir_analysis_status.text().casefold())
+
     def test_qt_sir_analysis_prevents_duplicate_and_project_switch_while_running(self):
         started = threading.Event()
         release = threading.Event()

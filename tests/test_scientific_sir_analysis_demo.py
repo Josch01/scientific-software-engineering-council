@@ -362,6 +362,49 @@ class SirAnalysisDemoTests(unittest.TestCase):
                 build_analysis_workspace(source, "workspace.json", link / "run")
             self.assertEqual(list(outside.iterdir()), [])
 
+    def _directory_symlink_or_skip(self, link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"symlink creation unavailable in this environment: {exc}")
+
+    def test_analysis_output_equal_to_source_through_root_alias_is_rejected(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = self._make_analysis_input_workspace(temporary)
+            alias = temporary / "path-alias"
+            self._directory_symlink_or_skip(alias, temporary)
+            source_via_alias = alias / "source"
+
+            with self.assertRaisesRegex(ValueError, "outside the source project"):
+                build_analysis_workspace(
+                    source_via_alias, "workspace.json", source_via_alias
+                )
+
+    def test_analysis_builder_rejects_symlink_output_through_root_alias(self):
+        from scripts.build_sir_analysis_demo import build_analysis_workspace
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = self._make_analysis_input_workspace(temporary)
+            outside = temporary / "outside"
+            outside.mkdir()
+            link = source / "linked-output"
+            self._directory_symlink_or_skip(link, outside)
+            alias = temporary / "path-alias"
+            self._directory_symlink_or_skip(alias, temporary)
+            source_via_alias = alias / "source"
+
+            with self.assertRaisesRegex(ValueError, "cannot traverse symlinks"):
+                build_analysis_workspace(
+                    source_via_alias,
+                    "workspace.json",
+                    source_via_alias / "linked-output" / "run",
+                )
+            self.assertEqual(list(outside.iterdir()), [])
+
     def test_analysis_builder_requires_the_manifest_confirmed_by_the_ui(self):
         from scripts.build_sir_analysis_demo import build_analysis_workspace
 

@@ -23,6 +23,7 @@ try:
     from .build_sir_analysis_demo import build_analysis_workspace
     from .scientific_workspace_loader import load_scientific_workspace
     from .scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
+    from .scientific_run_history import list_sir_analysis_runs, read_sir_analysis_run
     from .scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
 except ImportError:  # Support direct execution from scripts/.
     from configuration import (
@@ -35,6 +36,7 @@ except ImportError:  # Support direct execution from scripts/.
     from build_sir_analysis_demo import build_analysis_workspace
     from scientific_workspace_loader import load_scientific_workspace
     from scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
+    from scientific_run_history import list_sir_analysis_runs, read_sir_analysis_run
     from scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
 
 
@@ -915,6 +917,18 @@ else:
             )
             self.sir_analysis_button.clicked.connect(self.start_sir_analysis)
             analysis_actions.addWidget(self.sir_analysis_button)
+            self.sir_analysis_history_button = QtWidgets.QPushButton("Historial…")
+            self.sir_analysis_history_button.setObjectName("sirAnalysisHistoryButton")
+            self.sir_analysis_history_button.setAccessibleName(
+                "Abrir historial de análisis SIR"
+            )
+            self.sir_analysis_history_button.setToolTip(
+                "Consultar y reabrir resultados guardados tras verificar sus digests"
+            )
+            self.sir_analysis_history_button.clicked.connect(
+                self.show_sir_analysis_history
+            )
+            analysis_actions.addWidget(self.sir_analysis_history_button)
             self.sir_analysis_status = QtWidgets.QLabel(
                 "Carga modelo, observaciones y configuración de análisis para habilitar esta acción."
             )
@@ -974,12 +988,144 @@ else:
             inputs = self._sir_analysis_resources()
             busy = self.analysis_running
             self.sir_analysis_button.setEnabled(inputs is not None and not busy)
+            self.sir_analysis_history_button.setEnabled(
+                self.current_project_root is not None and not busy
+            )
             self.open_project_button.setEnabled(not busy)
             self.workspace_audit_button.setEnabled(self.current_project_root is not None and not busy)
             if not busy and inputs is None:
                 self.sir_analysis_status.setText(
                     "Para ejecutar, el workspace debe declarar recursos model_spec, observations y configuración generic."
                 )
+
+        def _create_sir_analysis_history_dialog(self, records):
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("sirAnalysisHistoryDialog")
+            dialog.setWindowTitle("Historial de análisis SIR")
+            dialog.setMinimumSize(760, 380)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            description = QtWidgets.QLabel(
+                "Se muestran hasta 100 corridas recientes. No se recalculan; solo se "
+                "abren resultados exitosos cuyo manifiesto y recursos vuelven a validar."
+            )
+            description.setWordWrap(True)
+            layout.addWidget(description)
+            table = QtWidgets.QTableWidget(len(records), 4, dialog)
+            table.setObjectName("sirAnalysisHistoryTable")
+            table.setAccessibleName("Corridas guardadas de análisis SIR")
+            table.setHorizontalHeaderLabels(
+                ["Fecha UTC", "Estado", "ID de corrida", "Resultado / detalle"]
+            )
+            table.setSelectionBehavior(
+                QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+            )
+            table.setSelectionMode(
+                QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+            )
+            table.setEditTriggers(
+                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+            )
+            table.horizontalHeader().setStretchLastSection(True)
+            table.horizontalHeader().setSectionResizeMode(
+                0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+            table.horizontalHeader().setSectionResizeMode(
+                1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+            table.horizontalHeader().setSectionResizeMode(
+                2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+            for row, record in enumerate(records):
+                detail = (
+                    record.result_workspace_manifest
+                    if record.can_open
+                    else (record.issue or "Sin resultado verificable")
+                )
+                values = (record.started_at_utc, record.status, record.run_id, detail)
+                for column, value in enumerate(values):
+                    item = QtWidgets.QTableWidgetItem(value)
+                    item.setData(QtCore.Qt.ItemDataRole.UserRole, record.run_id)
+                    table.setItem(row, column, item)
+            empty = QtWidgets.QLabel("No hay corridas guardadas en este proyecto.")
+            empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            empty.setVisible(not records)
+            table.setVisible(bool(records))
+            layout.addWidget(empty)
+            layout.addWidget(table, 1)
+
+            buttons = QtWidgets.QHBoxLayout()
+            buttons.addStretch(1)
+            open_button = QtWidgets.QPushButton("Abrir resultado histórico")
+            open_button.setObjectName("openHistoricalSirAnalysisButton")
+            open_button.setEnabled(False)
+            close_button = QtWidgets.QPushButton("Cerrar")
+            buttons.addWidget(open_button)
+            buttons.addWidget(close_button)
+            layout.addLayout(buttons)
+
+            def selected_record():
+                row = table.currentRow()
+                if row < 0 or row >= len(records):
+                    return None
+                return records[row]
+
+            def update_open_button():
+                record = selected_record()
+                open_button.setEnabled(record is not None and record.can_open)
+
+            def accept_openable_row(row, _column):
+                if 0 <= row < len(records) and records[row].can_open:
+                    dialog.accept()
+
+            table.itemSelectionChanged.connect(update_open_button)
+            table.cellDoubleClicked.connect(accept_openable_row)
+            open_button.clicked.connect(dialog.accept)
+            close_button.clicked.connect(dialog.reject)
+            dialog.history_table = table
+            dialog.history_records = records
+            dialog.history_open_button = open_button
+            return dialog
+
+        def show_sir_analysis_history(self) -> None:
+            if self.current_project_root is None:
+                return
+            try:
+                records = list_sir_analysis_runs(self.current_project_root)
+            except (OSError, TypeError, ValueError, RecursionError) as exc:
+                self.sir_analysis_status.setText(
+                    f"No se pudo leer el historial · {str(exc)[:500]}"
+                )
+                return
+            dialog = self._create_sir_analysis_history_dialog(records)
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return
+            row = dialog.history_table.currentRow()
+            if 0 <= row < len(dialog.history_records):
+                record = dialog.history_records[row]
+                if record.can_open:
+                    self.open_sir_analysis_history_run(record.run_id)
+
+        def open_sir_analysis_history_run(self, run_id: str) -> bool:
+            if self.current_project_root is None or self.analysis_running:
+                return False
+            try:
+                record = read_sir_analysis_run(self.current_project_root, run_id)
+                self.load_project(
+                    self.current_project_root,
+                    record.result_workspace_manifest,
+                    expected_manifest_sha256=record.result_workspace_manifest_sha256,
+                )
+                self.navigate("results")
+                self.sir_analysis_status.setText(
+                    f"Histórico abierto · {record.started_at_utc} · corrida {record.run_id} · "
+                    "incertidumbre NOT_CALCULATED · validez NOT_ASSESSED · SIR particular NOT_RUN."
+                )
+                return True
+            except (OSError, TypeError, ValueError, RecursionError) as exc:
+                self.sir_analysis_status.setText(
+                    f"No se abrió el resultado histórico · {str(exc)[:700]}"
+                )
+                return False
 
         def _sir_analysis_preview(self, resources) -> str:
             _loaded, selected = resources
@@ -1217,7 +1363,11 @@ else:
                 )
 
         def load_project(
-            self, project_root: str | os.PathLike[str], manifest_relative_path: str
+            self,
+            project_root: str | os.PathLike[str],
+            manifest_relative_path: str,
+            *,
+            expected_manifest_sha256: str | None = None,
         ) -> WorkspaceViewModel:
             """Load both resources and shared project context only after verification succeeds."""
             if self.analysis_running and not self._loading_sir_analysis_result:
@@ -1225,7 +1375,11 @@ else:
             root, policy = self.agent_supervisor.project_context(project_root)
             if self.agent_supervisor.process_running and root != self.agent_supervisor.project_root:
                 raise ValueError("espera a que termine la auditoría antes de cambiar de proyecto")
-            model = self.workspace_window.load_workspace(project_root, manifest_relative_path)
+            model = self.workspace_window.load_workspace(
+                project_root,
+                manifest_relative_path,
+                expected_manifest_sha256=expected_manifest_sha256,
+            )
             self.current_project_root = root
             self.current_manifest_relative_path = manifest_relative_path
             self.active_project_label.setText(str(root))

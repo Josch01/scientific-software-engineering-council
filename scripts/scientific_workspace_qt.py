@@ -6,6 +6,7 @@ files remain inert; only host-registered actions may execute after confirmation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 import json
@@ -1201,10 +1202,24 @@ if QtWidgets is not None:
             return dialog
 
         def load_workspace(
-            self, project_root: str | os.PathLike[str], manifest_relative_path: str
+            self,
+            project_root: str | os.PathLike[str],
+            manifest_relative_path: str,
+            *,
+            expected_manifest_sha256: str | None = None,
         ) -> WorkspaceViewModel:
-            """Verify all manifest/resource bytes before changing visible workspace state."""
+            """Verify workspace resources and optional manifest provenance before UI mutation."""
             loaded = load_scientific_workspace(project_root, manifest_relative_path)
+            if expected_manifest_sha256 is not None:
+                if (
+                    not isinstance(expected_manifest_sha256, str)
+                    or len(expected_manifest_sha256) != 64
+                    or any(character not in "0123456789abcdef" for character in expected_manifest_sha256)
+                ):
+                    raise ValueError("expected workspace SHA-256 is invalid")
+                actual_sha256 = hashlib.sha256(loaded.manifest_bytes).hexdigest()
+                if actual_sha256 != expected_manifest_sha256:
+                    raise ValueError("workspace manifest SHA-256 differs from the selected history record")
             model = build_workspace_view_model(loaded)
             try:
                 actions = sir_simulation_actions_for_workspace(loaded)
