@@ -760,6 +760,186 @@ class ControlCenterShellTests(unittest.TestCase):
         window.navigate("audits")
         self.assertIs(window.page_stack.currentWidget(), window.audit_page)
 
+    def _prepare_thesis_sir_fit(self, window, output_parent):
+        from tests.test_thesis_sir_qt import _reconstruction_payload
+        from scripts.thesis_sir_model import (
+            HarmonicTerm, ThesisSIRParameters, WeeklyCountObservations,
+            evaluate_thesis_sir_weekly_counts,
+        )
+
+        page = window.thesis_sir_page
+        source = Path(output_parent).parent / "synthetic-reconstruction.json"
+        source_payload = json.loads(_reconstruction_payload())
+        labels = tuple(row["week"] for row in source_payload["week_by_week_comparison"])
+        truth = ThesisSIRParameters(
+            d0=-0.45,
+            harmonics=(HarmonicTerm(0.1, 0.0, 0.5),),
+            gamma=0.1,
+            log10_initial_infectious=3.0,
+            susceptible_fraction=0.999,
+            ascertainment_fraction=0.1,
+            delay_days=4.3,
+        )
+        generated = evaluate_thesis_sir_weekly_counts(
+            truth,
+            WeeklyCountObservations(labels, (0,) * len(labels), "P3_32_QT_SYNTHETIC"),
+            max_step=0.1,
+            max_steps_per_interval=1000,
+        )
+        for row, count in zip(source_payload["week_by_week_comparison"], generated.predicted_means):
+            row["DGE_monday_sunday_candidate"] = round(count)
+        source.write_text(json.dumps(source_payload), encoding="utf-8")
+        page.load_data_file(source)
+        page.harmonic_count.setCurrentIndex(page.harmonic_count.findData(1))
+        for name, value in {
+            "d0": "0.0",
+            "gamma": "0.1",
+            "log10_initial_infectious": "3.0",
+            "susceptible_fraction": "0.999",
+            "ascertainment_fraction": "0.1",
+        }.items():
+            page.parameter_fields[name].setText(value)
+        page.delay_days.setCurrentIndex(page.delay_days.findData(4.3))
+        for column, value in enumerate(("0.1", "0.0", "0.5")):
+            page.harmonic_table.item(0, column).setText(value)
+        page.max_step_combo.setCurrentIndex(page.max_step_combo.findData(0.1))
+
+        parameters = page._collect_parameters()
+        dialog, rows = page._fit_configuration_dialog(parameters)
+        row = next(index for index, item in enumerate(rows) if item[0] == "d0")
+        table = dialog.parameter_table
+        table.item(row, 0).setCheckState(QtCore.Qt.CheckState.Checked)
+        table.item(row, 5).setText("-1.0")
+        table.item(row, 6).setText("1.0")
+        table.item(row, 7).setText("0.05")
+        dialog.close()
+
+        class AcceptedDialog:
+            parameter_table = table
+
+            @staticmethod
+            def exec():
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+        with patch.object(
+            page, "_fit_configuration_dialog", return_value=(AcceptedDialog(), rows)
+        ):
+            page.configure_fit_parameters()
+        return page, source
+
+    def test_thesis_sir_fit_rejection_creates_no_output_and_reports_exact_inputs(self):
+        window = self._window()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        output = Path(temporary.name) / "analysis-output"
+        output.mkdir()
+        page, source = self._prepare_thesis_sir_fit(window, output)
+        original = source.read_bytes()
+
+        with patch.object(
+            QtWidgets.QFileDialog, "getExistingDirectory", return_value=str(output)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.No,
+        ) as confirmation:
+            page.fit_button.click()
+
+        self.assertEqual(list(output.iterdir()), [])
+        self.assertFalse(window.analysis_running)
+        self.assertIn(page.observations.source_sha256, confirmation.call_args.args[2])
+        self.assertIn('"d0": 0.0', confirmation.call_args.args[2])
+        self.assertIn("-1.0", confirmation.call_args.args[2])
+        self.assertIn("bitácora", confirmation.call_args.args[2])
+        self.assertIn("snapshots con SHA-256", confirmation.call_args.args[2])
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_thesis_sir_fit_runs_off_ui_thread_and_opens_verified_result_workspace(self):
+        from scripts.scientific_workspace_loader import load_scientific_workspace
+
+        window = self._window()
+        window.show()
+        self.app.processEvents()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        output = Path(temporary.name) / "analysis-output"
+        output.mkdir()
+        page, source = self._prepare_thesis_sir_fit(window, output)
+        original = source.read_bytes()
+
+        with patch.object(
+            QtWidgets.QFileDialog, "getExistingDirectory", return_value=str(output)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            page.fit_button.click()
+            self.assertTrue(window.analysis_running)
+            with self.assertRaisesRegex(ValueError, "analysis is running"):
+                window.load_project(output, "workspace.json")
+            self._wait_for_sir_analysis(window, timeout=20.0)
+
+        self.assertEqual(page.state, "ANALYZED", page.status_label.text())
+        self.assertEqual(window.current_route, "results")
+        self.assertIsNotNone(window.workspace_window.workspace_view_model)
+        root = window.current_project_root
+        self.assertEqual(root.parent, output.resolve())
+        loaded = load_scientific_workspace(root, "workspace.json")
+        components = {
+            component.component_id: component
+            for section in window.workspace_window.workspace_view_model.sections
+            for component in section.components
+        }
+        self.assertTrue(all(components[name].status == "ok" for name in (
+            "trajectory", "fit", "sensitivity", "residuals", "uncertainty", "artifacts"
+        )))
+        self.assertEqual(components["residuals"].content.method,
+                         "THESIS_SIR_WEEKLY_COUNT_INTERVAL_RK4")
+        self.assertIn("NOT_ASSESSED", loaded.manifest["description"])
+        self.assertIn("NOT_CALCULATED", loaded.manifest["description"])
+        by_id = {resource.resource_id: resource for resource in loaded.resources}
+        analysis_record = json.loads(by_id["analysis"].content.decode("utf-8"))
+        self.assertEqual(analysis_record["input_source_sha256"], page.observations.source_sha256)
+        self.assertEqual(analysis_record["fit_configuration"]["initial_parameters"], {"d0": 0.0})
+        self.assertIn("analysis_engine", analysis_record["engine_source_sha256"])
+        uncertainty = json.loads(by_id["uncertainty"].content.decode("utf-8"))
+        self.assertEqual(uncertainty["status"], "NOT_CALCULATED")
+        run_log = json.loads(by_id["run-log"].content.decode("utf-8"))
+        self.assertEqual(run_log["timing_status"], "RECORDED")
+        self.assertLessEqual(run_log["started_at_utc"], run_log["completed_at_utc"])
+        self.assertEqual(run_log["human_review"], "PENDING")
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_thesis_sir_fit_failure_does_not_load_workspace_or_show_prior_result_as_new(self):
+        window = self._window()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        output = Path(temporary.name) / "analysis-output"
+        output.mkdir()
+        page, source = self._prepare_thesis_sir_fit(window, output)
+        original = source.read_bytes()
+
+        with patch.object(
+            QtWidgets.QFileDialog, "getExistingDirectory", return_value=str(output)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.StandardButton.Yes,
+        ), patch(
+            "scripts.thesis_sir_qt.analyze_thesis_sir_parameters",
+            side_effect=ValueError("synthetic worker failure"),
+        ):
+            page.fit_button.click()
+            self._wait_for_sir_analysis(window)
+
+        self.assertEqual(page.state, "FAILED")
+        self.assertIsNone(page.result_payload)
+        self.assertIn("no se cargaron resultados", page.status_label.text())
+        self.assertEqual(list(output.iterdir()), [])
+        self.assertIsNone(window.workspace_window.workspace_view_model)
+        self.assertEqual(source.read_bytes(), original)
+
 
 @unittest.skipIf(QtWidgets is None, "PySide6 is not installed")
 class AgentSupervisorPageTests(unittest.TestCase):
