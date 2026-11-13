@@ -60,6 +60,47 @@ class TestModes(unittest.TestCase):
                     self.assertIn("Role: " + role, packet)
                     self.assertIn("scientific_validation", manifest["required_evidence"])
 
+    def test_sir_checklists_are_role_specific_across_provider_profiles(self):
+        task = dict(TASK, kind="audit", request="Auditar un sir modificado con observaciones mensuales.",
+                    domains=["numerical", "identifiability", "dynamics"],
+                    interfaces=["cli"], targets=["linux"], risk="R1")
+        required = {
+            "mathematical_model_specialist": "consistencia dimensional",
+            "numerical_analyst": "refinamiento del paso",
+            "identifiability_specialist": "estructural y práctica",
+            "dynamical_systems_specialist": "causalidad",
+        }
+        for mode in ("codex", "gemini", "both", "agy"):
+            with self.subTest(mode=mode):
+                manifest, files = make_files(task, mode)
+                assignments = {item["role"]: item for item in manifest["assignments"]}
+                for role, phrase in required.items():
+                    profile = files[assignments[role]["profile"]]
+                    if "Checklist SIR" not in profile:
+                        self.fail(f"{role} profile lacks the SIR checklist")
+                    if phrase not in profile:
+                        self.fail(f"{role} checklist lacks {phrase!r}")
+                    if "NOT_ASSESSED" not in profile:
+                        self.fail(f"{role} checklist lacks the claim-status boundary")
+
+    def test_non_sir_profiles_omit_sir_specific_text(self):
+        task = dict(TASK, kind="build", request="Implement a generic numerical CLI.",
+                    domains=["numerical"], interfaces=["cli"], targets=["linux"], risk="R1")
+        manifest, files = make_files(task, "codex")
+        assignments = {item["role"]: item for item in manifest["assignments"]}
+        profile = files[assignments["numerical_analyst"]["profile"]]
+        if "Checklist SIR" in profile:
+            self.fail("non-SIR profile received SIR-only text")
+
+    def test_portable_skill_has_sir_checks_and_claim_boundaries(self):
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        if "Checklist SIR" not in skill:
+            self.fail("portable skill lacks the SIR checklist")
+        for phrase in ("consistencia dimensional", "error numérico", "identificabilidad",
+                       "NOT_ASSESSED", "RMSE bajo"):
+            if phrase not in skill:
+                self.fail(f"portable checklist lacks {phrase!r}")
+
     def test_preview(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
