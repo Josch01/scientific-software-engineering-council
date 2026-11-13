@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -141,8 +142,8 @@ def git(root, *args, check=True):
     return proc.stdout.strip()
 
 def repository(project, clean=False):
-    if not project.is_dir() or project.is_symlink():
-        raise ValueError("project must be a directory, not a symlink")
+    if not project.is_dir() or _is_symlink_or_reparse(project):
+        raise ValueError("project must be a directory, not a symlink or reparse point")
     root = Path(git(project,"rev-parse","--show-toplevel")).resolve()
     if root != project.resolve():
         raise ValueError("provide the root of the Git repository")
@@ -152,15 +153,40 @@ def repository(project, clean=False):
         raise ValueError("source Git checkout must be clean")
     return root
 
+def _is_symlink_or_reparse(path):
+    """Detect symlinks, junctions and Windows reparse points without creating links."""
+    path=Path(path)
+    try:
+        info=path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValueError("coordinator path could not be inspected safely: "+str(path)) from exc
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    reparse_flag=getattr(stat,"FILE_ATTRIBUTE_REPARSE_POINT",0x400 if os.name=="nt" else 0)
+    if getattr(info,"st_file_attributes",0)&reparse_flag:
+        return True
+    is_junction=getattr(path,"is_junction",None)
+    if is_junction is not None:
+        try:
+            return bool(is_junction())
+        except OSError as exc:
+            raise ValueError("coordinator junction could not be inspected safely: "+str(path)) from exc
+    return False
+
+def _reject_reparse_components(paths, label):
+    for path in paths:
+        if _is_symlink_or_reparse(path):
+            raise ValueError(f"{label} cannot contain a symlink, junction, or reparse point: {path}")
+
 def directory(root, task_id):
     if not isinstance(task_id,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",task_id):
         raise ValueError("unsafe task_id")
     base = root.parent / ("." + root.name + "-ssec-worktrees")
-    if base.is_symlink() or (base / ".ssec-state").is_symlink():
-        raise ValueError("symlinked coordinator directory not permitted")
-    path = base / ".ssec-state" / task_id
-    if path.is_symlink():
-        raise ValueError("task metadata symlink forbidden")
+    metadata=base/".ssec-state"
+    path = metadata / task_id
+    _reject_reparse_components((base,metadata,path),"coordinator directory")
     return path
 
 def plan(task, policy, project):
@@ -179,14 +205,14 @@ def plan(task, policy, project):
         validate_work_items(packet,impl,reviewers,
                             [spec.check_id for spec in validate_check_specs(packet)])
     parent = root.parent / ("." + root.name + "-ssec-worktrees")
-    if parent.is_symlink():
-        raise ValueError("worktree storage symlink forbidden")
+    _reject_reparse_components((parent,parent/task["task_id"]),"worktree storage")
     workers=[]
     for role in dict.fromkeys(impl):
         branch = "ssec/" + task["task_id"] + "/" + role.replace("_","-")
         git(root,"check-ref-format","--branch",branch)
         path = parent / task["task_id"] / role
-        if path.exists() or path.is_symlink():
+        _reject_reparse_components((path.parent,path),"worktree path")
+        if path.exists():
             raise FileExistsError("existing worktree: " + str(path))
         if git(root,"for-each-ref","--format=%(refname)","refs/heads/"+branch):
             raise ValueError("branch already exists: " + branch)
@@ -210,8 +236,11 @@ def initialize(task, policy, project, apply=False):
         raise FileExistsError("task already initialized")
     for worker in state["workers"]:
         path = Path(worker["path"])
+        _reject_reparse_components((path.parent.parent,path.parent,path),"worktree path")
         path.parent.mkdir(parents=True,exist_ok=True)
+        _reject_reparse_components((path.parent.parent,path.parent),"worktree path")
         git(root,"worktree","add","-b",worker["branch"],str(path),state["base_commit"])
+    _reject_reparse_components((dest.parent.parent,dest.parent,dest),"task metadata")
     dest.mkdir(parents=True,exist_ok=False)
     state["status"] = "WORKTREES_READY_UNREVIEWED"
     state["created_at_unix"] = time.time()
@@ -222,8 +251,7 @@ def initialize(task, policy, project, apply=False):
 def load(project, task_id):
     root = repository(project)
     dest = directory(root,task_id)
-    if (dest/"state.json").is_symlink():
-        raise ValueError("metadata symlink forbidden")
+    _reject_reparse_components((dest,dest/"state.json"),"task metadata")
     state=json.loads((dest/"state.json").read_text(encoding="utf-8"))
     if state["task_id"] != task_id or state["project_root"] != str(root):
         raise ValueError("task belongs to a different project")
@@ -247,8 +275,7 @@ def message(project, task_id, sender, kind, summary, artifact=""):
     event={"id":uuid.uuid4().hex,"task_id":task_id,"time":time.time(),
            "sender":sender,"kind":kind,"summary":summary,"artifact":artifact}
     path=dest/"mailbox.jsonl"
-    if path.is_symlink():
-        raise ValueError("mailbox symlink forbidden")
+    _reject_reparse_components((path,),"mailbox")
     with path.open("a",encoding="utf-8") as f:
         f.write(json.dumps(event,ensure_ascii=False)+"\n")
     return event
@@ -259,7 +286,7 @@ def inspect(project,task_id):
     results=[]
     for w in state["workers"]:
         folder=Path(w["path"])
-        if not folder.is_dir() or folder.is_symlink():
+        if _is_symlink_or_reparse(folder) or not folder.is_dir():
             results.append({"role":w["role"],"error":"worktree missing"})
             continue
         if git(folder,"symbolic-ref","--short","HEAD") != w["branch"]:
@@ -273,7 +300,9 @@ def inspect(project,task_id):
                         "diff_sha256":hashlib.sha256((diff+"\n"+"\n".join(untracked)).encode()).hexdigest(),
                         "has_changes":bool(changed or untracked),
                         "diff_check":git(folder,"diff","--check",state["base_commit"],check=False)})
-    events=[json.loads(line) for line in (dest/"mailbox.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    mailbox=dest/"mailbox.jsonl"
+    _reject_reparse_components((mailbox,),"mailbox")
+    events=[json.loads(line) for line in mailbox.read_text(encoding="utf-8").splitlines() if line]
     return {"task_id":task_id,"workers":results,"events":events,
             "base_unchanged":git(root,"rev-parse","HEAD")==state["base_commit"],
             "source_clean":not bool(git(root,"status","--porcelain","--untracked-files=all")),
@@ -283,25 +312,26 @@ def _discover_check_manifests(metadata):
     root=metadata/"check-runs"
     paths=[]
     errors=[]
-    if not root.exists() and not root.is_symlink():
+    root_redirected=_is_symlink_or_reparse(root)
+    if not root.exists() and not root_redirected:
         return paths,errors
-    if root.is_symlink() or not root.is_dir():
+    if root_redirected or not root.is_dir():
         return paths,[{"path":"check-runs","error":"check-run root is not a regular directory"}]
     try:
         for execution in root.iterdir():
-            if execution.is_symlink() or not execution.is_dir():
+            if _is_symlink_or_reparse(execution) or not execution.is_dir():
                 errors.append({"path":execution.relative_to(metadata).as_posix(),
                                "error":"execution entry is not a regular directory"})
                 continue
             for role in execution.iterdir():
-                if role.is_symlink() or not role.is_dir():
+                if _is_symlink_or_reparse(role) or not role.is_dir():
                     errors.append({"path":role.relative_to(metadata).as_posix(),
                                    "error":"worker entry is not a regular directory"})
                     continue
                 manifest=role/"manifest.json"
-                if manifest.exists() or manifest.is_symlink():
+                if manifest.exists() or _is_symlink_or_reparse(manifest):
                     paths.append(manifest)
-    except OSError as exc:
+    except (OSError,ValueError) as exc:
         errors.append({"path":"check-runs","error":f"could not inspect check runs: {exc}"})
     return paths,errors
 
@@ -313,8 +343,8 @@ def _manifest_matches_task(path,metadata,state,worker,current_tree,specs):
     cursor=metadata
     for part in parts:
         cursor=cursor/part
-        if cursor.is_symlink():
-            raise ValueError("manifest path contains a symlink")
+        if _is_symlink_or_reparse(cursor):
+            raise ValueError("manifest path contains a symlink, junction, or reparse point")
     manifest=read_check_manifest(path,metadata)
     if manifest["execution_id"]!=parts[1]:
         raise ValueError("manifest execution id does not match its metadata path")
@@ -433,8 +463,9 @@ def gate(project,task_id):
     integration_attempts=[]
     integration_root_invalid=False
     latest_attempt_invalid=False
-    if integration_root.exists() or integration_root.is_symlink():
-        if integration_root.is_symlink() or not integration_root.is_dir():
+    integration_root_redirected=_is_symlink_or_reparse(integration_root)
+    if integration_root.exists() or integration_root_redirected:
+        if integration_root_redirected or not integration_root.is_dir():
             integration_root_invalid=True
             invalid_integration_manifests.append({"path":"integrations",
                 "error":"integration root is not a regular directory"})
@@ -455,12 +486,12 @@ def gate(project,task_id):
         latest_attempt_invalid=True
         for attempt in integration_attempts:
             relative=attempt.relative_to(metadata).as_posix()
-            if attempt.is_symlink() or not attempt.is_dir():
+            if _is_symlink_or_reparse(attempt) or not attempt.is_dir():
                 invalid_integration_manifests.append({"path":relative,
                     "error":"integration attempt is not a regular directory"})
                 continue
             manifest_path=attempt/"manifest.json"
-            if not manifest_path.exists() and not manifest_path.is_symlink():
+            if not manifest_path.exists() and not _is_symlink_or_reparse(manifest_path):
                 invalid_integration_manifests.append({"path":relative+"/manifest.json",
                     "error":"integration attempt has no published manifest; it may have stopped during composition"})
                 continue

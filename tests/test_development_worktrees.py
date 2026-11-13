@@ -4,6 +4,7 @@ from dataclasses import replace
 import os
 import hashlib
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import Mock,patch
 from scripts.execution_evidence import canonical_task_sha256, candidate_tree_sha256
 from scripts.configuration import DEFAULT_CONFIG
@@ -19,6 +22,7 @@ from scripts.worktree_coordinator import plan,initialize,inspect,message,gate,lo
 from scripts.development_runner import (_cli_exit_code, execute, run_worker, _review_diff,
                                        _MAX_REVIEW_DIFF_BYTES, _persist_review_artifacts,
                                        _relative_metadata_path)
+import scripts.development_runner as development_runner
 from scripts.agent_runtime import FakeRuntime, RuntimeCapabilities, RuntimeCapabilityStatus, RuntimeStatus
 from scripts.provider_runtimes import GeminiRuntime
 
@@ -85,6 +89,111 @@ class WorktreeTests(unittest.TestCase):
         x=plan(TASK,POLICY,self.root)
         self.assertEqual(x["status"],"PREVIEW_NOT_STARTED")
         self.assertEqual(len(git(self.root,"worktree","list","--porcelain").split("worktree ")),2)
+
+    def test_plan_rejects_junction_at_worktree_storage_root(self):
+        base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
+        base.mkdir()
+        with patch.object(Path,"is_junction",new=lambda path:path==base,create=True):
+            with self.assertRaisesRegex(ValueError,"junction|reparse|symlink"):
+                plan(TASK,POLICY,self.root)
+
+    def test_execute_cli_previews_and_requires_check_command_confirmation(self):
+        task=task_with_checks()
+        task["check_specs"][1]["cwd"]="safe\n\x1b[2J\u202e"
+        with tempfile.TemporaryDirectory() as folder:
+            task_path=Path(folder)/"task.json"
+            task_path.write_text(json.dumps(task),encoding="utf-8")
+            output=StringIO()
+            with patch.object(sys,"argv",["development_runner.py",str(task_path),
+                    "--project",str(self.root),"--task-id",task["task_id"],"--execute"]), \
+                 patch("builtins.input",return_value="RUN CHECKS "+task["task_id"]) as confirm, \
+                 patch.object(sys,"stdin",Mock(isatty=Mock(return_value=True))), \
+                 patch.object(development_runner,"execute",return_value={"execution":"PREVIEW_ONLY"}) as execute_mock, \
+                 redirect_stdout(output):
+                development_runner.main()
+        confirm.assert_called_once()
+        self.assertIn(task["task_id"],confirm.call_args.args[0])
+        execute_mock.assert_called_once()
+        self.assertIn("static_analysis",output.getvalue())
+        self.assertIn("argv=",output.getvalue())
+        self.assertIn("timeout_seconds=20",output.getvalue())
+        self.assertNotIn("\x1b",output.getvalue())
+        self.assertIn(r'cwd="safe\n\u001b[2J\u202e"',output.getvalue())
+
+    def test_plan_rejects_windows_reparse_attribute_without_junction_api(self):
+        base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
+        base.mkdir()
+        original_lstat=Path.lstat
+        def lstat_with_reparse(path,*args,**kwargs):
+            info=original_lstat(path,*args,**kwargs)
+            if path==base:
+                return Mock(st_mode=info.st_mode,st_file_attributes=0x400)
+            return info
+        with patch.object(stat,"FILE_ATTRIBUTE_REPARSE_POINT",0x400,create=True), \
+             patch.object(Path,"lstat",new=lstat_with_reparse), \
+             patch.object(Path,"is_junction",new=None,create=True):
+            with self.assertRaisesRegex(ValueError,"reparse|junction|symlink"):
+                plan(TASK,POLICY,self.root)
+
+    def test_inspect_rejects_junction_worker_path(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        folder=Path(state["workers"][0]["path"])
+        with patch.object(Path,"is_junction",new=lambda path:path==folder,create=True):
+            report=inspect(self.root,TASK["task_id"])
+        self.assertEqual(report["workers"][0].get("error"),"worktree missing")
+
+    def test_execute_stops_before_runtime_when_inspection_reports_invalid_worker(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        invalid={"base_unchanged":True,"source_clean":True,
+                 "workers":[{"role":state["workers"][0]["role"],"error":"worktree missing"}]}
+        runtime_factory=Mock(side_effect=ValueError("runtime must not be reached"))
+        with patch.object(development_runner,"inspect",return_value=invalid), \
+             self.assertRaisesRegex(ValueError,"worker.*worktree|invalid.*worker"):
+            execute(self.root,TASK["task_id"],state["task_packet"],launch=True,cost_ack=True,
+                    runtime_factory=runtime_factory)
+        runtime_factory.assert_not_called()
+
+    def test_run_worker_refuses_junction_before_runtime_factory(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        worker=state["workers"][0]
+        folder=Path(worker["path"])
+        logs=Path(self.tmp.name)/"logs"
+        logs.mkdir()
+        runtime_factory=Mock(side_effect=ValueError("runtime launched"))
+        with patch.object(Path,"is_junction",new=lambda path:path==folder,create=True):
+            result=run_worker(worker,state["task_packet"],logs,time.monotonic()+30,
+                              threading.Event(),runtime_factory,True)
+        runtime_factory.assert_not_called()
+        self.assertRegex(result.get("error",""),"junction|reparse|symlink")
+
+    def test_execute_cli_stops_when_check_command_confirmation_is_rejected(self):
+        task=task_with_checks()
+        with tempfile.TemporaryDirectory() as folder:
+            task_path=Path(folder)/"task.json"
+            task_path.write_text(json.dumps(task),encoding="utf-8")
+            with patch.object(sys,"argv",["development_runner.py",str(task_path),
+                    "--project",str(self.root),"--task-id",task["task_id"],"--execute"]), \
+                 patch("builtins.input",return_value="no"), \
+                 patch.object(sys,"stdin",Mock(isatty=Mock(return_value=True))), \
+                 patch.object(development_runner,"execute",return_value={"execution":"PREVIEW_ONLY"}) as execute_mock, \
+                 self.assertRaises(SystemExit):
+                development_runner.main()
+        execute_mock.assert_not_called()
+
+    def test_execute_cli_fails_closed_without_interactive_terminal(self):
+        task=task_with_checks()
+        with tempfile.TemporaryDirectory() as folder:
+            task_path=Path(folder)/"task.json"
+            task_path.write_text(json.dumps(task),encoding="utf-8")
+            with patch.object(sys,"argv",["development_runner.py",str(task_path),
+                    "--project",str(self.root),"--task-id",task["task_id"],"--execute"]), \
+                 patch.object(sys,"stdin",Mock(isatty=Mock(return_value=False))), \
+                 patch("builtins.input") as input_mock, \
+                 patch.object(development_runner,"execute") as execute_mock, \
+                 self.assertRaises(SystemExit):
+                development_runner.main()
+        input_mock.assert_not_called()
+        execute_mock.assert_not_called()
 
     def test_plan_validates_role_owned_work_items_before_initializing(self):
         task=task_with_checks()

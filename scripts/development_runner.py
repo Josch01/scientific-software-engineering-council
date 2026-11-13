@@ -591,7 +591,8 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
     try:
         if not cost_ack:
             raise ValueError("--accept-unmetered-cost required")
-        if not folder.is_dir() or folder.is_symlink():
+        _ensure_no_symlink_path(folder)
+        if not folder.is_dir():
             raise ValueError("missing worktree")
         if git(folder,"symbolic-ref","--short","HEAD")!=worker["branch"]:
             raise ValueError("wrong branch")
@@ -787,6 +788,10 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     current=inspect(project,task_id)
     if not current["base_unchanged"] or not current["source_clean"]:
         raise ValueError("source checkout changed")
+    invalid_workers=[item.get("role","unknown") for item in current.get("workers",[])
+                     if item.get("error")]
+    if invalid_workers:
+        raise ValueError("worker worktrees are invalid: "+", ".join(invalid_workers))
     report={"task_id":task_id,"mode":state["mode"],"roles":[w["role"] for w in state["workers"]],
             "run_id":None,"execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
             "check_status":"NOT_RUN","check_evidence":[],
@@ -926,6 +931,24 @@ def _cli_exit_code(report):
         "PREVIEW_ONLY", "REVIEWED_WORKER_CANDIDATES_AWAITING_INTEGRATION") else 2
 
 
+def _confirm_task_check_commands(task, task_id):
+    """Show task-supplied process checks and require a separate local approval."""
+    specs=validate_check_specs(task)
+    if not specs:
+        return
+    if not sys.stdin.isatty():
+        raise ValueError("task checks require an interactive terminal for command review")
+    print("Task checks will run as local processes with this user's permissions:")
+    for spec in specs:
+        print("- "+spec.check_id+
+              "; argv="+json.dumps(list(spec.argv),ensure_ascii=True)+
+              "; cwd="+json.dumps(spec.cwd,ensure_ascii=True)+
+              "; timeout_seconds="+str(spec.timeout_seconds))
+    phrase="RUN CHECKS "+task_id
+    if input(f"Review the commands above. Type {phrase!r} to authorize them: ").strip()!=phrase:
+        raise ValueError("task check command execution was not approved")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("task_json",type=Path)
@@ -938,10 +961,12 @@ def main():
     a=p.parse_args()
     try:
         task=json.loads(a.task_json.read_text(encoding="utf-8"))
+        if a.execute:
+            _confirm_task_check_commands(task,a.task_id)
         result=execute(a.project,a.task_id,task,launch=a.execute,
                        cost_ack=a.accept_unmetered_cost,parallel=a.max_parallel,
                        minutes=a.max_minutes)
-    except (OSError,ValueError,KeyError,TypeError) as exc:
+    except (EOFError,OSError,ValueError,KeyError,TypeError) as exc:
         p.error(str(exc))
     print(json.dumps(result,ensure_ascii=False,indent=2))
     return _cli_exit_code(result)
