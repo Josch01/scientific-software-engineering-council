@@ -43,6 +43,14 @@ class ScientificChartHtmlTests(unittest.TestCase):
         self.assertNotIn("qwebchannel", html.lower())
         self.assertNotIn("<script src", html.lower())
 
+    def test_chart_html_uses_scientific_dark_palette_and_reduced_motion(self):
+        html = charts.build_scientific_chart_html(chart_payload()).lower()
+
+        self.assertIn("#292830", html)
+        self.assertIn("#b89bff", html)
+        self.assertIn("prefers-reduced-motion", html)
+        self.assertIn("@keyframes", html)
+
     def test_hostile_labels_are_transported_as_data_not_html(self):
         payload = chart_payload()
         hostile = "</script><img src=x onerror=alert(1)>"
@@ -89,6 +97,12 @@ class ScientificChartWidgetTests(unittest.TestCase):
         self.addCleanup(widget.close)
         self.assertIsNotNone(widget.findChild(QtWidgets.QFrame, "scientificChartFallback"))
         self.assertIsNotNone(widget.findChild(QtWidgets.QTableWidget, "scientificChartDataTable"))
+        plot = widget.findChild(charts._ChartPainter)
+        image = QtGui.QImage(420, 280, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtGui.QColor("transparent"))
+        plot.resize(image.size())
+        plot.render(image)
+        self.assertEqual(image.pixelColor(5, 5).name(), charts.COLORS["surface"])
 
     def test_widget_falls_back_when_valid_chart_html_exceeds_page_budget(self):
         payload = chart_payload()
@@ -129,6 +143,15 @@ class ScientificChartWidgetTests(unittest.TestCase):
 
         self.assertTrue(evaluated, "local chart script did not finish")
         self.assertGreater(evaluated[0], 0, "local SVG chart was not rendered")
+        rendered_theme = []
+        view.page().runJavaScript(
+            "JSON.stringify([getComputedStyle(document.body).backgroundColor, "
+            "document.querySelector('path.series-line').getAttribute('stroke')])",
+            lambda value: (rendered_theme.append(value), loop.quit()),
+        )
+        QtCore.QTimer.singleShot(5000, loop.quit)
+        loop.exec()
+        self.assertEqual(json.loads(rendered_theme[0]), ["rgb(41, 40, 48)", "#b89bff"])
         self.assertFalse(view.page().acceptNavigationRequest(
             QtCore.QUrl("https://example.invalid"),
             charts.QWebEnginePage.NavigationType.NavigationTypeLinkClicked,

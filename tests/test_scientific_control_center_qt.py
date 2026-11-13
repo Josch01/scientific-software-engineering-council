@@ -125,6 +125,28 @@ class ControlCenterShellTests(unittest.TestCase):
         self.addCleanup(window.close)
         return window
 
+    def test_control_center_uses_charcoal_purple_theme(self):
+        window = self._window()
+
+        stylesheet = window.styleSheet().lower()
+        self.assertIn("#202027", stylesheet)
+        self.assertIn("#aa8bf2", stylesheet)
+        self.assertNotIn("#f2f5f7", stylesheet)
+
+    def test_embedded_workspace_uses_the_same_dark_theme(self):
+        window = self._window()
+
+        self.assertIn("#202027", window.workspace_window.styleSheet().lower())
+        self.assertIn("#aa8bf2", window.workspace_window.styleSheet().lower())
+
+    def test_route_transition_respects_reduced_motion_preference(self):
+        window = self._window()
+
+        with patch.dict(os.environ, {"SSEC_REDUCED_MOTION": "1"}):
+            window.navigate("agents")
+
+        self.assertIsNone(window._page_transition_animation)
+
     def _wait_for_sir_analysis(self, window, timeout: float = 15.0) -> None:
         deadline = time.monotonic() + timeout
         while window.analysis_running and time.monotonic() < deadline:
@@ -162,7 +184,8 @@ class ControlCenterShellTests(unittest.TestCase):
         self.assertFalse(window.workspace_window.isWindow())
         self.assertEqual(window.agent_supervisor.project_root, self.examples.resolve())
         self.assertIs(window.pages["agents"], window.agent_supervisor)
-        self.assertIn(str(self.examples.resolve()), window.active_project_label.text())
+        self.assertEqual(window.active_project_label.text(), self.examples.name)
+        self.assertEqual(window.active_project_label.toolTip(), str(self.examples.resolve()))
         self.assertTrue(window.workspace_audit_button.isEnabled())
 
     def test_profiled_sir_results_open_in_integrated_center_with_shared_supervisor_project(self):

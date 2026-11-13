@@ -12,9 +12,10 @@ import unittest
 from unittest.mock import patch
 
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:  # PySide6 is an optional desktop dependency.
     QtCore = None
+    QtGui = None
     QtWidgets = None
 
 
@@ -35,6 +36,26 @@ class ScientificWorkspaceQtTests(unittest.TestCase):
         self.app.processEvents()
         self.addCleanup(window.close)
         return window
+
+    def test_trajectory_chart_uses_dark_surface_and_scientific_palette(self):
+        from scripts.scientific_ui_theme import CHART_SERIES_COLORS, COLORS
+        from scripts.scientific_workspace_qt import _TrajectoryPlot
+
+        plot = _TrajectoryPlot({
+            "times": (0.0, 1.0, 2.0),
+            "values": ((9.0, 1.0, 0.0), (7.0, 2.0, 1.0), (4.0, 3.0, 3.0)),
+            "series_names": ("S", "I", "R"),
+            "series_indices": (0, 1, 2),
+            "time_unit": "day",
+            "population_unit": "people",
+        })
+        plot.resize(500, 300)
+        image = QtGui.QImage(plot.size(), QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtGui.QColor("transparent"))
+        plot.render(image)
+
+        self.assertEqual(image.pixelColor(5, 5).name(), COLORS["surface"])
+        self.assertEqual(plot._COLORS, CHART_SERIES_COLORS)
 
     def _wait_for_simulation(self, window):
         loop = QtCore.QEventLoop()

@@ -13,6 +13,11 @@ import time
 import uuid
 
 try:
+    from .scientific_ui_theme import motion_enabled, qt_stylesheet
+except ImportError:  # Support direct execution from scripts/.
+    from scientific_ui_theme import motion_enabled, qt_stylesheet
+
+try:
     from .configuration import (
         AUDIT_LEVELS, DEFAULT_CONFIG, PERMISSIONS, PROVIDERS, config_path,
         load_config, save_config, validate_config,
@@ -738,12 +743,12 @@ else:
         """One Qt shell around the existing verified workspace and supervisor pages."""
 
         ROUTES = (
-            ("projects", "Proyectos", QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),
-            ("agents", "Agentes", QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon),
-            ("experiments", "Experimentos", QtWidgets.QStyle.StandardPixmap.SP_MediaPlay),
-            ("audits", "Auditorías", QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation),
-            ("code", "Código", QtWidgets.QStyle.StandardPixmap.SP_FileIcon),
-            ("results", "Resultados", QtWidgets.QStyle.StandardPixmap.SP_DirIcon),
+            ("projects", "Proyectos"),
+            ("agents", "Agentes"),
+            ("experiments", "Experimentos"),
+            ("audits", "Auditorías"),
+            ("code", "Código"),
+            ("results", "Resultados"),
         )
 
         def __init__(self, parent=None):
@@ -755,29 +760,14 @@ else:
             self.current_manifest_relative_path: str | None = None
             self.current_route = "projects"
             self._sir_analysis_thread: _SirAnalysisThread | None = None
+            self._page_transition_animation = None
             self._loading_sir_analysis_result = False
             self._build_shell()
             self._apply_style()
             self.navigate("projects")
 
         def _apply_style(self) -> None:
-            self.setStyleSheet(
-                "QMainWindow { background: #f2f5f7; color: #1d2d39; }"
-                "QLabel { color: #243746; }"
-                "QToolBar { background: #16384a; border: 0; spacing: 8px; padding: 8px; }"
-                "QToolBar QLabel { color: #ffffff; font-size: 17px; font-weight: 650; }"
-                "QListWidget { background: #16384a; color: #f2f5f7; border: 0; padding: 8px; }"
-                "QListWidget::item { padding: 11px 10px; border-radius: 4px; }"
-                "QListWidget::item:selected { background: #176b87; color: white; font-weight: 600; }"
-                "QListWidget::item:focus { border: 2px solid #d68a31; }"
-                "QPushButton { background: #176b87; color: white; border: 1px solid #10546b;"
-                " border-radius: 4px; padding: 8px 13px; }"
-                "QPushButton:hover { background: #125b73; }"
-                "QPushButton:disabled { background: #9eafb8; color: #f5f7f8; }"
-                "QPushButton:focus, QLineEdit:focus, QPlainTextEdit:focus {"
-                " border: 2px solid #d68a31; }"
-                "QStatusBar { background: #e6edf1; color: #243746; }"
-            )
+            self.setStyleSheet(qt_stylesheet())
 
         def _build_shell(self) -> None:
             toolbar = self.addToolBar("Centro de Control")
@@ -799,10 +789,8 @@ else:
             self.navigation.setFixedWidth(220)
             self.navigation.setAccessibleName("Navegación principal del Centro de Control")
             self.navigation.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-            for route, label, standard_icon in self.ROUTES:
-                item = QtWidgets.QListWidgetItem(
-                    self.style().standardIcon(standard_icon), label
-                )
+            for route, label in self.ROUTES:
+                item = QtWidgets.QListWidgetItem(label)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, route)
                 item.setToolTip(label)
                 self.navigation.addItem(item)
@@ -815,7 +803,6 @@ else:
             content_layout.setSpacing(10)
             self.page_heading = QtWidgets.QLabel("Proyectos")
             self.page_heading.setObjectName("controlCenterPageHeading")
-            self.page_heading.setStyleSheet("font-size: 22px; font-weight: 650; color: #16384a;")
             content_layout.addWidget(self.page_heading)
             self.page_stack = QtWidgets.QStackedWidget(content)
             self.page_stack.setObjectName("controlCenterPages")
@@ -1311,6 +1298,7 @@ else:
             self.navigate(str(route))
 
         def navigate(self, route: str) -> None:
+            route_changed = route != self.current_route
             route_indexes = {
                 self.navigation.item(index).data(QtCore.Qt.ItemDataRole.UserRole): index
                 for index in range(self.navigation.count())
@@ -1339,6 +1327,26 @@ else:
                     self.workspace_content.setCurrentWidget(self.workspace_window)
             else:
                 self.page_stack.setCurrentWidget(self.pages[route])
+            if route_changed:
+                self._animate_page_transition()
+
+        def _animate_page_transition(self) -> None:
+            if not motion_enabled():
+                return
+            effect = self.page_stack.graphicsEffect()
+            if not isinstance(effect, QtWidgets.QGraphicsOpacityEffect):
+                effect = QtWidgets.QGraphicsOpacityEffect(self.page_stack)
+                self.page_stack.setGraphicsEffect(effect)
+            if self._page_transition_animation is not None:
+                self._page_transition_animation.stop()
+            effect.setOpacity(0.94)
+            animation = QtCore.QPropertyAnimation(effect, b"opacity", self)
+            animation.setDuration(150)
+            animation.setStartValue(0.94)
+            animation.setEndValue(1.0)
+            animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+            self._page_transition_animation = animation
+            animation.start()
 
         def open_project_dialog(self) -> None:
             project_root = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1382,7 +1390,8 @@ else:
             )
             self.current_project_root = root
             self.current_manifest_relative_path = manifest_relative_path
-            self.active_project_label.setText(str(root))
+            self.active_project_label.setText(root.name or str(root))
+            self.active_project_label.setToolTip(str(root))
             self.project_root_value.setText(str(root))
             self.workspace_value.setText(
                 f"{model.title} · {model.workspace_id} · {model.verification_status}"
