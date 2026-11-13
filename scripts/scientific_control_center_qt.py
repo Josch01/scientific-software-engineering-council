@@ -1014,6 +1014,17 @@ else:
             )
             description.setWordWrap(True)
             layout.addWidget(description)
+            integrity_notice = QtWidgets.QLabel(
+                "Historial local sin firma. SHA-256 detecta cambios frente al digest "
+                "guardado, pero no autentica quién produjo la corrida."
+            )
+            integrity_notice.setObjectName("sirAnalysisHistoryIntegrityNotice")
+            integrity_notice.setProperty("state", "warning")
+            integrity_notice.setAccessibleName(
+                "Límite de autenticidad del historial local"
+            )
+            integrity_notice.setWordWrap(True)
+            layout.addWidget(integrity_notice)
             table = QtWidgets.QTableWidget(len(records), 4, dialog)
             table.setObjectName("sirAnalysisHistoryTable")
             table.setAccessibleName("Corridas guardadas de análisis SIR")

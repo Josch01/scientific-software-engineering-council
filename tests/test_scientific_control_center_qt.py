@@ -456,6 +456,11 @@ class ControlCenterShellTests(unittest.TestCase):
             dialog = window._create_sir_analysis_history_dialog(records)
             self.addCleanup(dialog.close)
             table = dialog.findChild(QtWidgets.QTableWidget, "sirAnalysisHistoryTable")
+            integrity_notice = dialog.findChild(
+                QtWidgets.QLabel, "sirAnalysisHistoryIntegrityNotice"
+            )
+            self.assertIsNotNone(integrity_notice)
+            self.assertIn("no autentica", integrity_notice.text().casefold())
             self.assertEqual(table.rowCount(), 2)
 
             table.selectRow(0)
