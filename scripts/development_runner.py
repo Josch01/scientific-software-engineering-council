@@ -591,7 +591,8 @@ def run_worker(worker,task,logs,deadline,stop,runtime_factory,cost_ack):
     try:
         if not cost_ack:
             raise ValueError("--accept-unmetered-cost required")
-        if not folder.is_dir() or folder.is_symlink():
+        _ensure_no_symlink_path(folder)
+        if not folder.is_dir():
             raise ValueError("missing worktree")
         if git(folder,"symbolic-ref","--short","HEAD")!=worker["branch"]:
             raise ValueError("wrong branch")
@@ -787,6 +788,10 @@ def execute(project,task_id,task,*,launch=False,cost_ack=False,parallel=1,minute
     current=inspect(project,task_id)
     if not current["base_unchanged"] or not current["source_clean"]:
         raise ValueError("source checkout changed")
+    invalid_workers=[item.get("role","unknown") for item in current.get("workers",[])
+                     if item.get("error")]
+    if invalid_workers:
+        raise ValueError("worker worktrees are invalid: "+", ".join(invalid_workers))
     report={"task_id":task_id,"mode":state["mode"],"roles":[w["role"] for w in state["workers"]],
             "run_id":None,"execution":"PREVIEW_ONLY","process_execution":"NOT_STARTED",
             "check_status":"NOT_RUN","check_evidence":[],
@@ -936,8 +941,8 @@ def _confirm_task_check_commands(task, task_id):
     print("Task checks will run as local processes with this user's permissions:")
     for spec in specs:
         print("- "+spec.check_id+
-              "; argv="+json.dumps(list(spec.argv),ensure_ascii=False)+
-              "; cwd="+spec.cwd+
+              "; argv="+json.dumps(list(spec.argv),ensure_ascii=True)+
+              "; cwd="+json.dumps(spec.cwd,ensure_ascii=True)+
               "; timeout_seconds="+str(spec.timeout_seconds))
     phrase="RUN CHECKS "+task_id
     if input(f"Review the commands above. Type {phrase!r} to authorize them: ").strip()!=phrase:

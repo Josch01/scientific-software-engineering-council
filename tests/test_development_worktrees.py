@@ -99,6 +99,7 @@ class WorktreeTests(unittest.TestCase):
 
     def test_execute_cli_previews_and_requires_check_command_confirmation(self):
         task=task_with_checks()
+        task["check_specs"][1]["cwd"]="safe\n\x1b[2J\u202e"
         with tempfile.TemporaryDirectory() as folder:
             task_path=Path(folder)/"task.json"
             task_path.write_text(json.dumps(task),encoding="utf-8")
@@ -116,6 +117,8 @@ class WorktreeTests(unittest.TestCase):
         self.assertIn("static_analysis",output.getvalue())
         self.assertIn("argv=",output.getvalue())
         self.assertIn("timeout_seconds=20",output.getvalue())
+        self.assertNotIn("\x1b",output.getvalue())
+        self.assertIn(r'cwd="safe\n\u001b[2J\u202e"',output.getvalue())
 
     def test_plan_rejects_windows_reparse_attribute_without_junction_api(self):
         base=self.root.parent/("."+self.root.name+"-ssec-worktrees")
@@ -138,6 +141,30 @@ class WorktreeTests(unittest.TestCase):
         with patch.object(Path,"is_junction",new=lambda path:path==folder,create=True):
             report=inspect(self.root,TASK["task_id"])
         self.assertEqual(report["workers"][0].get("error"),"worktree missing")
+
+    def test_execute_stops_before_runtime_when_inspection_reports_invalid_worker(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        invalid={"base_unchanged":True,"source_clean":True,
+                 "workers":[{"role":state["workers"][0]["role"],"error":"worktree missing"}]}
+        runtime_factory=Mock(side_effect=ValueError("runtime must not be reached"))
+        with patch.object(development_runner,"inspect",return_value=invalid), \
+             self.assertRaisesRegex(ValueError,"worker.*worktree|invalid.*worker"):
+            execute(self.root,TASK["task_id"],state["task_packet"],launch=True,cost_ack=True,
+                    runtime_factory=runtime_factory)
+        runtime_factory.assert_not_called()
+
+    def test_run_worker_refuses_junction_before_runtime_factory(self):
+        state=initialize(TASK,POLICY,self.root,apply=True)
+        worker=state["workers"][0]
+        folder=Path(worker["path"])
+        logs=Path(self.tmp.name)/"logs"
+        logs.mkdir()
+        runtime_factory=Mock(side_effect=ValueError("runtime launched"))
+        with patch.object(Path,"is_junction",new=lambda path:path==folder,create=True):
+            result=run_worker(worker,state["task_packet"],logs,time.monotonic()+30,
+                              threading.Event(),runtime_factory,True)
+        runtime_factory.assert_not_called()
+        self.assertRegex(result.get("error",""),"junction|reparse|symlink")
 
     def test_execute_cli_stops_when_check_command_confirmation_is_rejected(self):
         task=task_with_checks()
