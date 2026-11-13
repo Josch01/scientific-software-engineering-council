@@ -121,13 +121,23 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _output_location(output_dir: str | Path, source_root: Path) -> tuple[Path, str]:
+def _output_location(
+    output_dir: str | Path,
+    source_root: Path,
+    *,
+    source_root_path: str | Path | None = None,
+) -> tuple[Path, str]:
     requested = Path(os.path.abspath(Path(output_dir).expanduser()))
     source = source_root.resolve(strict=True)
-    requested_inside = _is_relative_to(requested, source)
-    if requested_inside:
-        current = source
-        for part in requested.relative_to(source).parts:
+    source_path = source_root if source_root_path is None else source_root_path
+    lexical_source = Path(os.path.abspath(Path(source_path).expanduser()))
+    requested_inside = False
+    for containment_root in (lexical_source, source):
+        if not _is_relative_to(requested, containment_root):
+            continue
+        requested_inside = True
+        current = containment_root
+        for part in requested.relative_to(containment_root).parts:
             current = current / part
             try:
                 info = current.lstat()
@@ -293,8 +303,11 @@ def build_analysis_workspace(
     The source manifest loader verifies resource containment and SHA-256 before
     this function parses model, observations, or bounded analysis settings.
     """
-    root = Path(source_project_root).resolve(strict=True)
-    output, _prefix = _output_location(output_dir, root)
+    source_path = Path(source_project_root).expanduser()
+    root = source_path.resolve(strict=True)
+    output, _prefix = _output_location(
+        output_dir, root, source_root_path=source_path
+    )
 
     loaded = load_scientific_workspace(root, source_manifest)
     source_manifest_sha256 = hashlib.sha256(loaded.manifest_bytes).hexdigest()
