@@ -5,7 +5,9 @@ import argparse
 from collections.abc import Mapping
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 from typing import Sequence
 
@@ -18,6 +20,7 @@ try:
         solve_sir_model,
     )
     from .scientific_workspace_loader import load_scientific_workspace
+    from .scientific_workspace import validate_workspace_manifest
 except ImportError:  # Support direct execution: python scripts/build_sir_analysis_demo.py
     from scientific_core import (
         ObservationDataset,
@@ -27,6 +30,7 @@ except ImportError:  # Support direct execution: python scripts/build_sir_analys
         solve_sir_model,
     )
     from scientific_workspace_loader import load_scientific_workspace
+    from scientific_workspace import validate_workspace_manifest
 
 
 _SIR_FIXTURE: dict[str, object] = {
@@ -117,6 +121,34 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def _output_location(output_dir: str | Path, source_root: Path) -> tuple[Path, str]:
+    requested = Path(os.path.abspath(Path(output_dir).expanduser()))
+    source = source_root.resolve(strict=True)
+    requested_inside = _is_relative_to(requested, source)
+    if requested_inside:
+        current = source
+        for part in requested.relative_to(source).parts:
+            current = current / part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                continue
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise ValueError("analysis output cannot traverse symlinks or reparse points")
+    root = requested.resolve(strict=False)
+    if not requested_inside and _is_relative_to(root, source):
+        raise ValueError("analysis output cannot alias the source project through a symlink")
+    if root == source or _is_relative_to(source, root):
+        raise ValueError("analysis output must be outside the source project")
+    if root.exists():
+        if not root.is_dir() or any(root.iterdir()):
+            raise ValueError("output directory must be empty")
+    prefix = root.relative_to(source).as_posix() if _is_relative_to(root, source) else ""
+    return root, prefix
+
+
 def _create_analysis_output(
     output_dir: str | Path,
     *,
@@ -128,15 +160,9 @@ def _create_analysis_output(
     analysis: SirParameterAnalysis,
     source_manifest_sha256: str,
     input_resource_sha256: Mapping[str, str],
-) -> None:
+) -> str:
     """Write a complete, digest-linked workspace into a new or empty directory."""
-    root = Path(output_dir).resolve(strict=False)
-    source = source_root.resolve(strict=True)
-    if _is_relative_to(root, source) or _is_relative_to(source, root):
-        raise ValueError("analysis output must be outside the source project")
-    if root.exists():
-        if not root.is_dir() or any(root.iterdir()):
-            raise ValueError("output directory must be empty")
+    root, prefix = _output_location(output_dir, source_root)
 
     source_content = Path(__file__).resolve().read_bytes().replace(b"\r\n", b"\n")
     core_content = (
@@ -183,7 +209,8 @@ def _create_analysis_output(
         ("analysis-builder", "source_code", "code/build_sir_analysis_demo.py", source_content),
     )
     resources = [
-        {"id": resource_id, "kind": kind, "path": path,
+        {"id": resource_id, "kind": kind,
+         "path": f"{prefix}/{path}" if prefix else path,
          "sha256": hashlib.sha256(content).hexdigest()}
         for resource_id, kind, path, content in payloads
     ]
@@ -236,6 +263,7 @@ def _create_analysis_output(
         ],
     }
     manifest_content = _json_bytes(manifest)
+    validate_workspace_manifest(manifest)
     if not root.exists():
         root.mkdir(parents=True)
     if any(root.iterdir()):
@@ -247,6 +275,7 @@ def _create_analysis_output(
             stream.write(content)
     with (root / "workspace.json").open("xb") as stream:
         stream.write(manifest_content)
+    return f"{prefix}/workspace.json" if prefix else "workspace.json"
 
 
 def build_analysis_workspace(
@@ -257,6 +286,7 @@ def build_analysis_workspace(
     model_resource_id: str = "model",
     observations_resource_id: str = "observations",
     config_resource_id: str = "analysis-config",
+    expected_source_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     """Analyze validated SIR resources and write a digest-linked workspace.
 
@@ -264,13 +294,13 @@ def build_analysis_workspace(
     this function parses model, observations, or bounded analysis settings.
     """
     root = Path(source_project_root).resolve(strict=True)
-    output = Path(output_dir).resolve(strict=False)
-    if _is_relative_to(output, root) or _is_relative_to(root, output):
-        raise ValueError("analysis output must be outside the source project")
-    if output.exists() and (not output.is_dir() or any(output.iterdir())):
-        raise ValueError("output directory must be empty")
+    output, _prefix = _output_location(output_dir, root)
 
     loaded = load_scientific_workspace(root, source_manifest)
+    source_manifest_sha256 = hashlib.sha256(loaded.manifest_bytes).hexdigest()
+    if (expected_source_manifest_sha256 is not None
+            and source_manifest_sha256 != expected_source_manifest_sha256):
+        raise ValueError("source workspace changed after analysis confirmation")
     by_id = {resource.resource_id: resource for resource in loaded.resources}
     requested = (
         (model_resource_id, "model_spec", "model"),
@@ -303,7 +333,7 @@ def build_analysis_workspace(
         max_iterations=config["max_iterations"],
         max_function_evaluations=config["max_function_evaluations"],
     )
-    _create_analysis_output(
+    workspace_path = _create_analysis_output(
         output,
         source_root=root,
         model_content=model_resource.content,
@@ -311,7 +341,7 @@ def build_analysis_workspace(
         analysis_config_content=config_resource.content,
         dataset=dataset,
         analysis=analysis,
-        source_manifest_sha256=hashlib.sha256(loaded.manifest_bytes).hexdigest(),
+        source_manifest_sha256=source_manifest_sha256,
         input_resource_sha256={
             "model": model_resource.sha256,
             "observations": observations_resource.sha256,
@@ -320,7 +350,7 @@ def build_analysis_workspace(
     )
     return {
         "status": "BUILT_ANALYSIS_WORKSPACE",
-        "workspace_path": "workspace.json",
+        "workspace_path": workspace_path,
         "resource_count": 11,
         "fit_status": analysis.fit.status,
         "parameters": dict(analysis.fit.parameters),

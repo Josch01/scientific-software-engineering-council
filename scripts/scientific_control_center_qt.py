@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
+import time
 import uuid
 
 try:
@@ -16,7 +20,9 @@ try:
     from .config_panel import PROGRESS_LOG_LIMIT, build_policy, latest_progress_event
     from .prepare_agents import prepare
     from .run_agents import plan as plan_agent_audit
-    from .scientific_workspace_view import WorkspaceViewModel
+    from .build_sir_analysis_demo import build_analysis_workspace
+    from .scientific_workspace_loader import load_scientific_workspace
+    from .scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
     from .scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
 except ImportError:  # Support direct execution from scripts/.
     from configuration import (
@@ -26,7 +32,9 @@ except ImportError:  # Support direct execution from scripts/.
     from config_panel import PROGRESS_LOG_LIMIT, build_policy, latest_progress_event
     from prepare_agents import prepare
     from run_agents import plan as plan_agent_audit
-    from scientific_workspace_view import WorkspaceViewModel
+    from build_sir_analysis_demo import build_analysis_workspace
+    from scientific_workspace_loader import load_scientific_workspace
+    from scientific_workspace_view import WorkspaceViewModel, build_workspace_view_model
     from scientific_workspace_qt import QtCore, QtGui, QtWidgets, ScientificWorkspaceWindow
 
 
@@ -52,6 +60,44 @@ def workspace_section_index(view_model: WorkspaceViewModel, category: str) -> in
     return None
 
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _write_analysis_run_log(
+    project_root: Path, run_id: str, payload: dict[str, object]
+) -> str:
+    """Create a small run record beneath the project without following links."""
+    root = Path(project_root).resolve(strict=True)
+    relative_parent = Path("generated") / "sir-analysis-runs"
+    parent = root
+    for part in relative_parent.parts:
+        parent = parent / part
+        try:
+            info = parent.lstat()
+        except FileNotFoundError:
+            try:
+                parent.mkdir(exist_ok=True)
+            except FileExistsError:
+                # A sibling process may have created a non-directory entry; validate it below.
+                pass
+            info = parent.lstat()
+        if (stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise ValueError("analysis log path cannot traverse symlinks or reparse points")
+        if not parent.is_dir():
+            raise ValueError("analysis log parent must be a directory")
+    target = parent / f"run-{run_id}.json"
+    content = (json.dumps(
+        payload, ensure_ascii=True, allow_nan=False, sort_keys=True,
+        separators=(",", ":"),
+    ) + "\n").encode("utf-8")
+    with target.open("xb") as stream:
+        stream.write(content)
+    return target.relative_to(root).as_posix()
+
+
 if QtWidgets is None:
     class ControlCenterWindow:  # pragma: no cover - Qt is optional.
         """Unavailable placeholder that keeps importing the optional shell safe."""
@@ -60,6 +106,97 @@ if QtWidgets is None:
             raise RuntimeError("PySide6 is required for the SSEC Control Center")
 
 else:
+    class _SirAnalysisThread(QtCore.QThread):
+        progress_changed = QtCore.Signal(str)
+        succeeded = QtCore.Signal(object)
+        failed = QtCore.Signal(str)
+
+        def __init__(
+            self, project_root: Path, manifest_relative_path: str, output_dir: Path,
+            run_id: str, expected_source_manifest_sha256: str, parent=None,
+        ):
+            super().__init__(parent)
+            self.project_root = project_root
+            self.manifest_relative_path = manifest_relative_path
+            self.output_dir = output_dir
+            self.run_id = run_id
+            self.expected_source_manifest_sha256 = expected_source_manifest_sha256
+
+        def run(self) -> None:
+            started = time.perf_counter()
+            started_at = _utc_timestamp()
+            base_record: dict[str, object] = {
+                "schema_version": 1,
+                "run_id": self.run_id,
+                "started_at_utc": started_at,
+                "source_workspace_manifest": self.manifest_relative_path,
+                "source_workspace_manifest_sha256": self.expected_source_manifest_sha256,
+                "output_directory": self.output_dir.relative_to(self.project_root).as_posix(),
+            }
+            self.progress_changed.emit(
+                "Verificando entradas y calculando con el motor científico P3.20…"
+            )
+            workspace_path: str | None = None
+            result_manifest_sha256: str | None = None
+            try:
+                result = build_analysis_workspace(
+                    self.project_root,
+                    self.manifest_relative_path,
+                    self.output_dir,
+                    expected_source_manifest_sha256=self.expected_source_manifest_sha256,
+                )
+                workspace_path = result.get("workspace_path")
+                if not isinstance(workspace_path, str):
+                    raise ValueError("analysis builder returned no workspace manifest path")
+                self.progress_changed.emit("Verificando el workspace y los resultados generados…")
+                loaded = load_scientific_workspace(self.project_root, workspace_path)
+                if loaded.summary.to_dict().get("status") != "VALID":
+                    raise ValueError("generated workspace did not validate")
+                build_workspace_view_model(loaded)
+                result_manifest_sha256 = hashlib.sha256(loaded.manifest_bytes).hexdigest()
+                finished_at = _utc_timestamp()
+                run_log = {
+                    **base_record,
+                    "status": "SUCCEEDED",
+                    "finished_at_utc": finished_at,
+                    "duration_seconds": round(time.perf_counter() - started, 6),
+                    "result_workspace_manifest": workspace_path,
+                    "result_workspace_manifest_sha256": result_manifest_sha256,
+                    "analysis_execution": result.get("analysis_execution"),
+                    "scientific_validity": "NOT_ASSESSED",
+                    "identifiability": "NOT_ASSESSED",
+                    "uncertainty": "NOT_CALCULATED",
+                    "real_user_sir": "NOT_RUN",
+                }
+                log_path = _write_analysis_run_log(self.project_root, self.run_id, run_log)
+                result["run_id"] = self.run_id
+                result["run_log_path"] = log_path
+                result["result_workspace_manifest_sha256"] = result_manifest_sha256
+                self.succeeded.emit(result)
+            except Exception as exc:
+                finished_at = _utc_timestamp()
+                message = f"{type(exc).__name__}: {str(exc)[:1000]}"
+                run_log = {
+                    **base_record,
+                    "status": "FAILED",
+                    "finished_at_utc": finished_at,
+                    "duration_seconds": round(time.perf_counter() - started, 6),
+                    "error": message,
+                    "result_workspace_manifest": workspace_path,
+                    "result_workspace_manifest_sha256": result_manifest_sha256,
+                    "scientific_validity": "NOT_ASSESSED",
+                    "identifiability": "NOT_ASSESSED",
+                    "uncertainty": "NOT_CALCULATED",
+                    "real_user_sir": "NOT_RUN",
+                }
+                try:
+                    log_path = _write_analysis_run_log(self.project_root, self.run_id, run_log)
+                    message = f"{message} · bitácora: {log_path}"
+                except Exception as log_exc:
+                    message = f"{message} · no se pudo conservar la bitácora: {log_exc}"
+                self.failed.emit(message)
+
+
     class AgentSupervisorPage(QtWidgets.QWidget):
         """Qt controls over the existing policy, preparation and audit runner contracts."""
 
@@ -615,6 +752,8 @@ else:
             self.current_project_root: Path | None = None
             self.current_manifest_relative_path: str | None = None
             self.current_route = "projects"
+            self._sir_analysis_thread: _SirAnalysisThread | None = None
+            self._loading_sir_analysis_result = False
             self._build_shell()
             self._apply_style()
             self.navigate("projects")
@@ -763,6 +902,36 @@ else:
             page = QtWidgets.QWidget()
             layout = QtWidgets.QVBoxLayout(page)
             layout.setContentsMargins(0, 0, 0, 0)
+            analysis_group = QtWidgets.QGroupBox("Análisis científico declarativo")
+            analysis_layout = QtWidgets.QVBoxLayout(analysis_group)
+            analysis_actions = QtWidgets.QHBoxLayout()
+            self.sir_analysis_button = QtWidgets.QPushButton("Ejecutar análisis…")
+            self.sir_analysis_button.setObjectName("runSirAnalysisButton")
+            self.sir_analysis_button.setAccessibleName(
+                "Confirmar y ejecutar el análisis SIR con el motor científico de SSEC"
+            )
+            self.sir_analysis_button.setToolTip(
+                "Ejecuta simulación, ajuste, sensibilidad y residuales a partir de recursos verificados"
+            )
+            self.sir_analysis_button.clicked.connect(self.start_sir_analysis)
+            analysis_actions.addWidget(self.sir_analysis_button)
+            self.sir_analysis_status = QtWidgets.QLabel(
+                "Carga modelo, observaciones y configuración de análisis para habilitar esta acción."
+            )
+            self.sir_analysis_status.setObjectName("sirAnalysisStatus")
+            self.sir_analysis_status.setAccessibleName("Estado de ejecución del análisis SIR")
+            self.sir_analysis_status.setWordWrap(True)
+            self.sir_analysis_status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            analysis_actions.addWidget(self.sir_analysis_status, 1)
+            analysis_layout.addLayout(analysis_actions)
+            self.sir_analysis_progress = QtWidgets.QProgressBar()
+            self.sir_analysis_progress.setObjectName("sirAnalysisProgress")
+            self.sir_analysis_progress.setAccessibleName("Progreso indeterminado del análisis SIR")
+            self.sir_analysis_progress.setRange(0, 0)
+            self.sir_analysis_progress.setTextVisible(False)
+            self.sir_analysis_progress.hide()
+            analysis_layout.addWidget(self.sir_analysis_progress)
+            layout.addWidget(analysis_group)
             self.workspace_content = QtWidgets.QStackedWidget(page)
             self.workspace_content.setObjectName("controlCenterWorkspaceContent")
             self.workspace_window = ScientificWorkspaceWindow()
@@ -781,6 +950,205 @@ else:
             self.workspace_content.setCurrentWidget(self.workspace_empty_label)
             layout.addWidget(self.workspace_content, 1)
             return page
+
+        @property
+        def analysis_running(self) -> bool:
+            return self._sir_analysis_thread is not None
+
+        def _sir_analysis_resources(self):
+            loaded = self.workspace_window._loaded_workspace
+            if loaded is None:
+                return None
+            resources = {resource.resource_id: resource for resource in loaded.resources}
+            required = {
+                "model": "model_spec",
+                "observations": "observations",
+                "analysis-config": "generic",
+            }
+            if any(resources.get(name) is None or resources[name].kind != kind
+                   for name, kind in required.items()):
+                return None
+            return loaded, resources
+
+        def _update_sir_analysis_controls(self) -> None:
+            inputs = self._sir_analysis_resources()
+            busy = self.analysis_running
+            self.sir_analysis_button.setEnabled(inputs is not None and not busy)
+            self.open_project_button.setEnabled(not busy)
+            self.workspace_audit_button.setEnabled(self.current_project_root is not None and not busy)
+            if not busy and inputs is None:
+                self.sir_analysis_status.setText(
+                    "Para ejecutar, el workspace debe declarar recursos model_spec, observations y configuración generic."
+                )
+
+        def _sir_analysis_preview(self, resources) -> str:
+            _loaded, selected = resources
+            model_resource = selected["model"]
+            observations_resource = selected["observations"]
+            config_resource = selected["analysis-config"]
+            model = json.loads(model_resource.content.decode("utf-8"))
+            observations = json.loads(observations_resource.content.decode("utf-8"))
+            config = json.loads(config_resource.content.decode("utf-8"))
+            if not isinstance(model, dict) or not isinstance(observations, dict) or not isinstance(config, dict):
+                raise ValueError("model, observations and analysis configuration must be JSON objects")
+            observation_rows = observations.get("observations", [])
+            observation_provenance = observations.get("provenance", {})
+            if not isinstance(observation_rows, list) or not isinstance(observation_provenance, dict):
+                raise ValueError("observations structure is invalid")
+            resource_lines = []
+            for resource in (model_resource, observations_resource, config_resource):
+                resource_lines.append(
+                    f"- {resource.resource_id} ({resource.kind}): {resource.path} · "
+                    f"SHA-256 {resource.sha256}"
+                )
+            return "\n".join((
+                "Recursos verificados:",
+                *resource_lines,
+                "",
+                f"Modelo: {model.get('model_type', 'sin tipo')} · "
+                f"ecuaciones: {json.dumps(model.get('equations', {}), ensure_ascii=False, sort_keys=True)}",
+                f"Condiciones iniciales: {json.dumps(model.get('initial_conditions', {}), ensure_ascii=False, sort_keys=True)}",
+                f"Parámetros del modelo: {json.dumps(model.get('parameters', {}), ensure_ascii=False, sort_keys=True)}",
+                f"Intervalo e integrador: {json.dumps({'t_span': model.get('t_span'), 'integrator': model.get('integrator')}, ensure_ascii=False, sort_keys=True)}",
+                f"Observaciones: {len(observation_rows)} filas · "
+                f"estado {observation_provenance.get('data_status', 'NOT_DECLARED')} · "
+                f"unidades {json.dumps(observations.get('variables', []), ensure_ascii=False, sort_keys=True)}",
+                f"Configuración de análisis: parámetros iniciales {json.dumps(config.get('initial_parameters', {}), ensure_ascii=False, sort_keys=True)} · "
+                f"límites {json.dumps(config.get('bounds', {}), ensure_ascii=False, sort_keys=True)} · "
+                f"fit_knots {json.dumps(config.get('fit_knots'), ensure_ascii=False, sort_keys=True)} · "
+                f"máximos {config.get('max_iterations')} iteraciones / {config.get('max_function_evaluations')} evaluaciones",
+                "",
+                "Operación: volver a verificar SHA-256, ejecutar el builder SSEC P3.20 existente "
+                "(simulación, ajuste, sensibilidad local y residuales), validar el workspace generado "
+                "y abrir Resultados. Los recursos originales no se reemplazan; se crea una carpeta nueva.",
+                "El motor actual no admite cancelación segura. Código Python del proyecto o de agentes: no se ejecuta.",
+                "Validez e identificabilidad: NOT_ASSESSED · incertidumbre: NOT_CALCULATED · SIR particular del usuario: NOT_RUN.",
+            ))
+
+        def _create_sir_analysis_confirmation(self, preview: str):
+            confirmation = QtWidgets.QMessageBox(self)
+            confirmation.setWindowTitle("Confirmar análisis científico")
+            confirmation.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            confirmation.setText(preview)
+            confirmation.setStandardButtons(
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No
+            )
+            confirmation.button(QtWidgets.QMessageBox.StandardButton.Yes).setText(
+                "Ejecutar análisis"
+            )
+            confirmation.button(QtWidgets.QMessageBox.StandardButton.No).setText(
+                "No ejecutar"
+            )
+            confirmation.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+            return confirmation
+
+        def start_sir_analysis(self) -> None:
+            if self.analysis_running:
+                return
+            inputs = self._sir_analysis_resources()
+            root = self.current_project_root
+            manifest_path = self.current_manifest_relative_path
+            if inputs is None or root is None or manifest_path is None:
+                self.sir_analysis_status.setText(
+                    "No se inició: el workspace no contiene los recursos requeridos."
+                )
+                return
+            loaded, _resources = inputs
+            try:
+                preview = self._sir_analysis_preview(inputs)
+                expected_manifest_sha256 = hashlib.sha256(loaded.manifest_bytes).hexdigest()
+            except (UnicodeDecodeError, TypeError, ValueError, RecursionError) as exc:
+                self.sir_analysis_status.setText(f"No se inició: entradas inválidas · {exc}")
+                return
+
+            run_id = uuid.uuid4().hex
+            output_dir = root / "generated" / "sir-analysis" / run_id
+            destination = output_dir.relative_to(root).as_posix()
+            confirmation = self._create_sir_analysis_confirmation(
+                f"¿Ejecutar el análisis SIR?\n\n{preview}\n\n"
+                f"Destino nuevo: {destination}/workspace.json\n"
+                f"Bitácora persistente: generated/sir-analysis-runs/run-{run_id}.json"
+            )
+            if confirmation.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+                self.sir_analysis_status.setText(
+                    "Ejecución rechazada; no se escribieron resultados ni bitácora."
+                )
+                return
+
+            thread = _SirAnalysisThread(
+                root, manifest_path, output_dir, run_id,
+                expected_manifest_sha256, self,
+            )
+            thread.progress_changed.connect(self._on_sir_analysis_progress)
+            thread.succeeded.connect(self._on_sir_analysis_succeeded)
+            thread.failed.connect(self._on_sir_analysis_failed)
+            thread.finished.connect(self._on_sir_analysis_finished)
+            self._sir_analysis_thread = thread
+            self.workspace_window.setEnabled(False)
+            self.sir_analysis_progress.show()
+            self.sir_analysis_status.setText(
+                f"En curso · ejecución {run_id[:8]} · el resultado anterior no se presenta como nuevo."
+            )
+            self._update_sir_analysis_controls()
+            thread.start()
+
+        @QtCore.Slot(str)
+        def _on_sir_analysis_progress(self, message: str) -> None:
+            self.sir_analysis_status.setText(message)
+
+        @QtCore.Slot(object)
+        def _on_sir_analysis_succeeded(self, result: object) -> None:
+            if not isinstance(result, dict):
+                self._on_sir_analysis_failed("El worker devolvió un resultado inválido.")
+                return
+            workspace_path = result.get("workspace_path")
+            if not isinstance(workspace_path, str) or self.current_project_root is None:
+                self._on_sir_analysis_failed("No se recibió una ruta de workspace válida.")
+                return
+            try:
+                self._loading_sir_analysis_result = True
+                self.load_project(self.current_project_root, workspace_path)
+                self.navigate("results")
+                self.sir_analysis_status.setText(
+                    f"Análisis calculado y workspace verificado · {workspace_path} · "
+                    "validez e identificabilidad NOT_ASSESSED · incertidumbre NOT_CALCULATED · "
+                    "SIR particular NOT_RUN."
+                )
+            except (OSError, TypeError, ValueError, RecursionError) as exc:
+                self._on_sir_analysis_failed(
+                    f"El cálculo terminó, pero el workspace no pudo cargarse: {exc}"
+                )
+            finally:
+                self._loading_sir_analysis_result = False
+
+        @QtCore.Slot(str)
+        def _on_sir_analysis_failed(self, error: str) -> None:
+            self.sir_analysis_status.setText(
+                f"Falló el análisis; no se cargaron resultados · {error[:1500]}"
+            )
+
+        @QtCore.Slot()
+        def _on_sir_analysis_finished(self) -> None:
+            thread = self.sender()
+            if thread is not self._sir_analysis_thread:
+                return
+            self._sir_analysis_thread = None
+            self.workspace_window.setEnabled(True)
+            self.sir_analysis_progress.hide()
+            self._update_sir_analysis_controls()
+            thread.deleteLater()
+
+        def closeEvent(self, event) -> None:
+            if self.analysis_running:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Análisis en curso",
+                    "El motor no admite cancelación segura. Espera a que termine antes de cerrar.",
+                )
+                event.ignore()
+                return
+            super().closeEvent(event)
 
         def _show_audit_result(self, report: object) -> None:
             if not isinstance(report, dict):
@@ -852,6 +1220,8 @@ else:
             self, project_root: str | os.PathLike[str], manifest_relative_path: str
         ) -> WorkspaceViewModel:
             """Load both resources and shared project context only after verification succeeds."""
+            if self.analysis_running and not self._loading_sir_analysis_result:
+                raise ValueError("analysis is running; wait before changing the project workspace")
             root, policy = self.agent_supervisor.project_context(project_root)
             if self.agent_supervisor.process_running and root != self.agent_supervisor.project_root:
                 raise ValueError("espera a que termine la auditoría antes de cambiar de proyecto")
@@ -865,6 +1235,7 @@ else:
             )
             self.workspace_audit_button.setEnabled(True)
             self.agent_supervisor.set_project_root(root, policy=policy)
+            self._update_sir_analysis_controls()
             self.statusBar().showMessage(
                 f"Proyecto cargado · {model.verification_status}", 8_000
             )
