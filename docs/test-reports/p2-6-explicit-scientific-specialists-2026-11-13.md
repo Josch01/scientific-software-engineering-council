@@ -16,7 +16,7 @@
 - PASS: `python -m unittest tests.test_integration_candidate.IntegrationCandidateTests.test_science_validation_stays_pending_after_software_manual_approval` — 1 flujo local, 333.7 s. La decisión manual conserva `scientific_validation` pendiente, `automatic_merge=false` y `release_status=NOT_APPROVED`; la revisión usa un fixture local, no un proveedor real.
 - PASS: smoke `python scripts/route_task.py examples/seir_desktop_audit.json` — incluye los expertos de dinámica e identificabilidad y evidencia `scientific_validation`.
 - PASS: `python scripts/validate_skill.py`, `python -m py_compile scripts/route_task.py scripts/prepare_agents.py`, `git diff --check`.
-- PASS: CI del commit `ca2926980c7063510283197e2b5cbd50fc314b15`, 4/4 jobs Windows/Ubuntu × Python 3.11/3.12. La regresión agregada después queda pendiente de CI en el nuevo head.
+- PASS: CI run [#285](https://github.com/Josch01/scientific-software-engineering-council/actions/runs/43444874988), commit `14d997c09f4dcc7661e9e4a86ebad1d9ae19b1a6`, 4/4 jobs Windows/Ubuntu × Python 3.11/3.12; incluye la regresión de aprobación manual con `scientific_validation` pendiente.
 
 ## Límites
 
