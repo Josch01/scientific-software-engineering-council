@@ -17,6 +17,7 @@ except ImportError:
     QtWidgets = None
 
 from scripts import scientific_workspace_qt_charts as charts
+from scripts.scientific_ui_theme import CHART_SERIES_LINE_STYLES
 
 
 def chart_payload():
@@ -46,10 +47,22 @@ class ScientificChartHtmlTests(unittest.TestCase):
     def test_chart_html_uses_scientific_dark_palette_and_reduced_motion(self):
         html = charts.build_scientific_chart_html(chart_payload()).lower()
 
-        self.assertIn("#292830", html)
-        self.assertIn("#b89bff", html)
+        self.assertIn("#34323d", html)
+        self.assertIn("#c6a7ff", html)
         self.assertIn("prefers-reduced-motion", html)
         self.assertIn("@keyframes", html)
+
+    def test_chart_series_have_distinct_line_patterns_and_animated_entry(self):
+        html = charts.build_scientific_chart_html(chart_payload()).lower()
+
+        self.assertIn("stroke-dasharray", html)
+        self.assertIn("data-line-style", html)
+        self.assertIn("line-in", html)
+        self.assertIn("aria-keyshortcuts", html)
+        self.assertIn("arrowleft", html)
+        self.assertNotIn("__ssec_", html)
+        for style in CHART_SERIES_LINE_STYLES:
+            self.assertIn(f'"{style}"', html)
 
     def test_hostile_labels_are_transported_as_data_not_html(self):
         payload = chart_payload()
@@ -116,6 +129,9 @@ class ScientificChartWidgetTests(unittest.TestCase):
         plot.resize(image.size())
         plot.render(image)
         self.assertEqual(image.pixelColor(5, 5).name(), charts.COLORS["surface"])
+        self.assertEqual(
+            plot._PEN_STYLES["dashdot"], QtCore.Qt.PenStyle.DashDotLine
+        )
 
     def test_widget_falls_back_when_valid_chart_html_exceeds_page_budget(self):
         payload = chart_payload()
@@ -164,12 +180,38 @@ class ScientificChartWidgetTests(unittest.TestCase):
         )
         QtCore.QTimer.singleShot(5000, loop.quit)
         loop.exec()
-        self.assertEqual(json.loads(rendered_theme[0]), ["rgb(41, 40, 48)", "#b89bff"])
+        self.assertEqual(json.loads(rendered_theme[0]), ["rgb(52, 50, 61)", "#c6a7ff"])
         self.assertFalse(view.page().acceptNavigationRequest(
             QtCore.QUrl("https://example.invalid"),
             charts.QWebEnginePage.NavigationType.NavigationTypeLinkClicked,
             True,
         ))
+
+    @unittest.skipUnless(charts.WEBENGINE_AVAILABLE, "Qt WebEngine is unavailable")
+    def test_webengine_chart_arrow_navigation_reports_the_selected_data_point(self):
+        widget = charts.ScientificChartWidget(chart_payload())
+        self.addCleanup(widget.close)
+        view = widget.findChild(charts.QWebEngineView, "scientificChartWebEngine")
+        loop = QtCore.QEventLoop()
+        view.loadFinished.connect(loop.quit)
+        QtCore.QTimer.singleShot(5000, loop.quit)
+        loop.exec()
+
+        evaluated = []
+        view.page().runJavaScript(
+            "(()=>{const svg=document.querySelector('svg');svg.focus();"
+            "svg.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',"
+            "bubbles:true,cancelable:true}));"
+            "return document.querySelector('#chart-tooltip').textContent;})()",
+            lambda value: (evaluated.append(value), loop.quit()),
+        )
+        QtCore.QTimer.singleShot(5000, loop.quit)
+        loop.exec()
+
+        self.assertEqual(
+            evaluated,
+            ["Time · day: 1 · Observed: 8 · Simulated: 9"],
+        )
 
     @unittest.skipUnless(charts.WEBENGINE_AVAILABLE, "Qt WebEngine is unavailable")
     def test_webengine_renders_series_beyond_javascript_argument_limit(self):

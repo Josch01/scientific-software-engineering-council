@@ -129,15 +129,15 @@ class ControlCenterShellTests(unittest.TestCase):
         window = self._window()
 
         stylesheet = window.styleSheet().lower()
-        self.assertIn("#202027", stylesheet)
-        self.assertIn("#aa8bf2", stylesheet)
+        self.assertIn("#27262e", stylesheet)
+        self.assertIn("#b99aff", stylesheet)
         self.assertNotIn("#f2f5f7", stylesheet)
 
     def test_embedded_workspace_uses_the_same_dark_theme(self):
         window = self._window()
 
-        self.assertIn("#202027", window.workspace_window.styleSheet().lower())
-        self.assertIn("#aa8bf2", window.workspace_window.styleSheet().lower())
+        self.assertIn("#27262e", window.workspace_window.styleSheet().lower())
+        self.assertIn("#b99aff", window.workspace_window.styleSheet().lower())
 
     def test_thesis_sir_workspace_is_integrated_as_a_control_center_route(self):
         from scripts.thesis_sir_qt import ThesisSIRPage

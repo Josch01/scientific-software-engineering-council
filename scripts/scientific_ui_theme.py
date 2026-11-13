@@ -5,26 +5,37 @@ import os
 
 
 COLORS = {
-    "background": "#202027",
-    "sidebar": "#24232b",
-    "surface": "#292830",
-    "surface_raised": "#32313b",
-    "surface_hover": "#3a3744",
-    "border": "#484550",
-    "text": "#f2eef7",
-    "muted": "#c2bdcc",
-    "accent": "#aa8bf2",
-    "accent_hover": "#bea5ff",
-    "accent_pressed": "#5b487d",
-    "focus": "#d8caff",
-    "success": "#70ddbd",
-    "warning": "#ffd27d",
-    "danger": "#ff929e",
+    "background": "#27262e",
+    "sidebar": "#2d2b35",
+    "surface": "#34323d",
+    "surface_raised": "#3d3b47",
+    "surface_hover": "#484550",
+    "border": "#585561",
+    "text": "#f5f2fa",
+    "muted": "#cdc8d5",
+    "accent": "#b99aff",
+    "accent_hover": "#d0baff",
+    "accent_pressed": "#69558f",
+    "focus": "#e6d8ff",
+    "success": "#7be0c3",
+    "warning": "#ffd68a",
+    "danger": "#ffa1ab",
 }
 
 CHART_SERIES_COLORS = (
-    "#b89bff", "#61d6c1", "#ff9b81", "#79c7ff", "#f4c96d", "#ed94c6",
+    "#c6a7ff", "#66dec6", "#ffa48e", "#7dd3fc", "#ffd166", "#f29bcb",
 )
+CHART_SERIES_LINE_STYLES = (
+    "solid", "dashed", "dotted", "dashdot", "longdash", "shortdash",
+)
+CHART_SERIES_DASH_PATTERNS = ("", "9 5", "2 4", "12 4 2 4", "14 5", "5 3")
+
+
+def chart_line_style(index: int) -> str:
+    """Return the shared color-independent line style for a chart series."""
+    if not isinstance(index, int) or index < 0:
+        raise ValueError("chart series index must be a non-negative integer")
+    return CHART_SERIES_LINE_STYLES[index % len(CHART_SERIES_LINE_STYLES)]
 
 
 def motion_enabled() -> bool:
@@ -40,21 +51,23 @@ def qt_stylesheet() -> str:
     return f"""
         QMainWindow, QDialog, QProgressDialog {{ background: {c['background']}; color: {c['text']}; }}
         QWidget {{ color: {c['text']}; font-family: "Segoe UI", "Arial", sans-serif; font-size: 13px; }}
-        QToolBar {{ background: {c['sidebar']}; border: 0; spacing: 12px; padding: 10px 16px; }}
+        QToolBar {{ background: {c['sidebar']}; border: 0; border-bottom: 1px solid {c['border']}; spacing: 14px; padding: 11px 22px; }}
         QToolBar QLabel {{ color: {c['text']}; font-size: 15px; font-weight: 650; }}
         QStatusBar {{ background: {c['sidebar']}; color: {c['muted']}; border-top: 1px solid {c['border']}; }}
-        QListWidget {{ background: {c['sidebar']}; color: {c['muted']}; border: 0; padding: 14px 10px; outline: 0; }}
-        QListWidget::item {{ min-height: 38px; padding: 5px 12px; border-radius: 7px; margin: 2px 0; }}
+        QListWidget {{ background: {c['sidebar']}; color: {c['muted']}; border: 0; border-right: 1px solid {c['border']}; padding: 18px 12px; outline: 0; }}
+        QListWidget::item {{ min-height: 42px; padding: 7px 13px; border-radius: 8px; margin: 3px 0; }}
         QListWidget::item:hover {{ background: {c['surface_hover']}; color: {c['text']}; }}
         QListWidget::item:selected {{ background: {c['accent_pressed']}; color: {c['text']}; font-weight: 650; border-left: 3px solid {c['accent']}; }}
-        QGroupBox {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 10px; margin-top: 14px; padding: 16px 12px 12px; font-weight: 600; }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 5px; }}
+        QGroupBox {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 12px; margin-top: 15px; padding: 18px 14px 14px; font-weight: 600; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px; color: {c['accent_hover']}; }}
         QTabWidget::pane {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 8px; top: -1px; }}
-        QTabBar::tab {{ background: {c['sidebar']}; color: {c['muted']}; padding: 9px 15px; margin-right: 4px; border: 1px solid {c['border']}; border-bottom: 0; border-top-left-radius: 7px; border-top-right-radius: 7px; }}
-        QTabBar::tab:selected {{ background: {c['surface_raised']}; color: {c['text']}; border-top: 2px solid {c['accent']}; }}
-        QPushButton {{ background: {c['accent_pressed']}; color: {c['text']}; border: 1px solid {c['accent']}; border-radius: 7px; padding: 8px 14px; min-height: 22px; }}
-        QPushButton:hover {{ background: {c['accent']}; color: {c['background']}; }}
-        QPushButton:pressed {{ background: {c['accent_pressed']}; }}
+        QTabBar::tab {{ background: {c['sidebar']}; color: {c['muted']}; padding: 10px 16px; margin-right: 5px; border: 1px solid {c['border']}; border-bottom: 0; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
+        QTabBar::tab:selected {{ background: {c['surface_raised']}; color: {c['text']}; border-top: 2px solid {c['accent']}; font-weight: 650; }}
+        QPushButton {{ background: {c['surface_raised']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 8px; padding: 9px 15px; min-height: 24px; }}
+        QPushButton:hover {{ background: {c['surface_hover']}; border-color: {c['accent']}; }}
+        QPushButton:pressed {{ background: {c['accent_pressed']}; border-color: {c['accent_pressed']}; }}
+        QPushButton#openProjectButton, QPushButton#proposeWorkspaceButton, QPushButton#runThesisSirButton {{ background: {c['accent_pressed']}; border-color: {c['accent']}; font-weight: 650; }}
+        QPushButton#openProjectButton:hover, QPushButton#proposeWorkspaceButton:hover, QPushButton#runThesisSirButton:hover {{ background: {c['accent']}; color: {c['background']}; }}
         QPushButton:disabled {{ background: {c['surface_raised']}; color: {c['muted']}; border-color: {c['border']}; }}
         QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']}; border-radius: 6px; padding: 7px; selection-background-color: {c['accent_pressed']}; }}
         QComboBox QAbstractItemView {{ background: {c['surface_raised']}; color: {c['text']}; selection-background-color: {c['accent_pressed']}; border: 1px solid {c['border']}; }}
@@ -66,13 +79,13 @@ def qt_stylesheet() -> str:
         QScrollBar:vertical {{ background: {c['sidebar']}; width: 12px; margin: 2px; }}
         QScrollBar::handle:vertical {{ background: {c['border']}; border-radius: 5px; min-height: 30px; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-        QLabel#controlCenterPageHeading, QLabel#workspaceHeading {{ color: {c['text']}; font-size: 22px; font-weight: 700; }}
+        QLabel#controlCenterPageHeading, QLabel#workspaceHeading {{ color: {c['text']}; font-size: 24px; font-weight: 700; padding-bottom: 2px; }}
         QLabel#activeProjectLabel {{ color: {c['muted']}; background: {c['surface_raised']}; border: 1px solid {c['border']}; border-radius: 12px; padding: 5px 10px; }}
         QLabel#workspaceDigestStatus, QLabel[state="success"] {{ background: #253b37; color: {c['success']}; border: 1px solid #42695f; border-radius: 6px; padding: 8px; font-weight: 600; }}
         QLabel#scientificNotice, QLabel[state="warning"] {{ color: {c['warning']}; background: #39342a; border: 1px solid #71603d; border-radius: 6px; padding: 8px; }}
         QLabel#scientificActionWarning {{ color: {c['danger']}; }}
-        QFrame#thesisSirHeroCard, QFrame#thesisSirSetupPanel, QFrame#thesisSirResultsPanel {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 11px; }}
-        QFrame#thesisSirFactCard {{ background: {c['surface_raised']}; border: 1px solid {c['border']}; border-radius: 8px; }}
+        QFrame#thesisSirHeroCard, QFrame#thesisSirSetupPanel, QFrame#thesisSirResultsPanel {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 12px; }}
+        QFrame#thesisSirFactCard {{ background: {c['surface_raised']}; border: 1px solid {c['border']}; border-radius: 9px; }}
         QLabel#thesisSirPageTitle {{ color: {c['text']}; font-size: 23px; font-weight: 700; }}
         QLabel#thesisSirKicker {{ color: {c['accent_hover']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; }}
         QLabel#thesisSirEquationSummary {{ background: {c['background']}; color: {c['text']}; border-left: 3px solid {c['accent']}; border-radius: 5px; padding: 10px 12px; font-size: 14px; }}
@@ -93,5 +106,5 @@ def qt_stylesheet() -> str:
         QSplitter#thesisSirWorkspaceSplitter::handle:horizontal {{ width: 8px; }}
         QSplitter#thesisSirWorkspaceSplitter::handle:vertical {{ height: 8px; }}
         QToolTip {{ background: {c['surface_raised']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 5px; }}
-        QPushButton:focus, QListWidget:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus {{ border: 2px solid {c['focus']}; }}
+        QPushButton:focus, QListWidget:focus, QListWidget::item:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {c['focus']}; }}
     """
