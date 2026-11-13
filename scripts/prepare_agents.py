@@ -18,6 +18,11 @@ else:
 
 MODES = ("gemini", "codex", "both", "agy")
 REVIEWERS = {"software_auditor", "security_reviewer", "independent_reviewer", "release_engineer"}
+_SIR_TASK_PATTERN = re.compile(
+    r"\b(?:SIR|SEIR|compartimental(?:es)?|compartmental(?:s)?|"
+    r"epidemiol[oó]g(?:ía|ia|ico|ica|icos|icas|ical|y|ic)?)\b",
+    re.IGNORECASE,
+)
 ROLE_TASKS = {
     "software_architect": "Analizar diseño modular, contratos y dependencias; proponer ADR.",
     "implementation_engineer": "Implementar solo cambios autorizados, registrar patch y pruebas.",
@@ -35,6 +40,41 @@ ROLE_TASKS = {
     "independent_reviewer": "Reconstruir evidencia sin usar veredicto anterior; no editar.",
     "release_engineer": "Auditar CI, empaquetado y plataforma; no aprobar sin evidencia.",
 }
+SIR_ROLE_CHECKLISTS = {
+    "mathematical_model_specialist": (
+        "Explicita ecuaciones y define estados/parámetros, unidades y escala temporal; comprueba consistencia dimensional de cada término de la EDO.",
+        "Contrasta condiciones iniciales y supuestos con las ecuaciones; no presupongas conservación de S+I+R en variantes modificadas.",
+    ),
+    "numerical_analyst": (
+        "Registra solver/versión, malla o paso y tolerancias; evalúa refinamiento del paso o comparación con una referencia.",
+        "Separa error numérico de integración y RMSE de ajuste; revisa positividad/invariantes solo si se derivan de las ecuaciones declaradas.",
+    ),
+    "identifiability_specialist": (
+        "Distingue entre identificabilidad estructural y práctica y liga parámetros/observables con muestreo y ruido disponibles.",
+        "Examina simetrías/confusión; sensibilidad local o RMSE bajo no prueban identificabilidad ni unicidad.",
+    ),
+    "dynamical_systems_specialist": (
+        "Limita estabilidad y trayectoria a las ecuaciones, parámetros y horizonte analizados.",
+        "Una simulación no demuestra capacidad predictiva, causalidad ni validez epidemiológica.",
+    ),
+}
+
+
+def sir_checklist(role: str, task: dict | None) -> str:
+    """Render only the selected role's SIR checks for an explicitly named task."""
+    request = task.get("request") if isinstance(task, dict) else None
+    if type(request) is not str or not _SIR_TASK_PATTERN.search(request):
+        return ""
+    checks = SIR_ROLE_CHECKLISTS.get(role)
+    if checks is None:
+        return ""
+    rendered = "\n\nChecklist SIR (preguntas de revisión; no son evidencia):\n"
+    rendered += "\n".join("- " + check for check in checks)
+    rendered += (
+        "\n- Si faltan ecuaciones/datos, cálculos: NOT_RUN; claims científicos: NOT_ASSESSED. "
+        "RMSE bajo no establece precisión numérica, unicidad ni validez."
+    )
+    return rendered
 
 
 def provider_for(role: str, mode: str) -> str:
@@ -51,7 +91,7 @@ def agent_name(role: str) -> str:
     return "ssec-" + role.replace("_", "-")
 
 
-def agent_instruction(role: str, policy: dict) -> str:
+def agent_instruction(role: str, policy: dict, *, task: dict | None = None) -> str:
     permissions = policy["permissions"]
     controls = {
         "read_only": "SOLO LECTURA: no edites archivos, ni crees artefactos en el proyecto.",
@@ -72,13 +112,14 @@ def agent_instruction(role: str, policy: dict) -> str:
         "Devuelve hallazgos, evidencia, comandos realmente ejecutados, NOT_RUN y bloqueos.\n"
         "No certifiques tu propio trabajo. Los auditores solo pueden leer. "
         "Aislamiento efectivo requiere controles del CLI principal."
+        + sir_checklist(role, task)
     )
 
 
-def profile(role: str, provider: str, policy: dict) -> str:
+def profile(role: str, provider: str, policy: dict, *, task: dict | None = None) -> str:
     name = agent_name(role)
     description = "SSEC " + role.replace("_", " ") + " - " + ROLE_TASKS[role]
-    instr = agent_instruction(role, policy)
+    instr = agent_instruction(role, policy, task=task)
     if provider == "agy":
         # AGY's CLI runs a non-interactive task, so the generated primary agent
         # intentionally has file tools only and cannot execute shell commands
@@ -157,7 +198,7 @@ def make_files(task: dict, mode: str, config: dict | None = None) -> tuple[dict,
                   f".agents/agents/{name}.md" if provider == "agy" else
                   f".codex/agents/{name}.toml")
         packet = f"{folder}/{name}.md"
-        files[target] = profile(role, provider, policy)
+        files[target] = profile(role, provider, policy, task=task)
         files[packet] = (
             f"# SSEC task packet: {name}\n\n"
             f"Task: {task_id}\nProvider: {provider}\nRole: {role}\n"

@@ -41,6 +41,15 @@ Roles bajo demanda: `software_architect`, `implementation_engineer`, `numerical_
 
 Selecciona especialistas científicos por dominio, no por plantilla fija: `differential_algebra`/`symbolic` requiere auditoría de transformaciones exactas, dominios y casos excepcionales; `dynamics` requiere análisis de estabilidad, órbitas y bifurcaciones; `identifiability` requiere distinguir estructural/global/local de práctica, revisar parámetros/observables/simetrías y no inferir unicidad desde RMSE. Estas tareas agregan `scientific_validation` aunque el riesgo de software sea R0/R1. Una obligación planificada no demuestra que la validación se haya ejecutado ni que un claim sea cierto.
 
+### Checklist SIR/SEIR (solo cuando aplique)
+
+- `mathematical_model_specialist`: escribir las ecuaciones; definir estados/parámetros, escalas temporales y unidades; comprobar la consistencia dimensional de cada término y cotejar condiciones iniciales/supuestos. No asumir que `S+I+R` se conserva en una variante modificada.
+- `numerical_analyst`: registrar solver/versión, malla o paso y tolerancias; comprobar refinamiento del paso o comparación con una referencia. Separar error numérico de integración y RMSE de ajuste; comprobar positividad/invariantes solo si las ecuaciones los implican.
+- `identifiability_specialist`: separar identificabilidad estructural y práctica; ligar parámetros/observables al muestreo y ruido; revisar simetrías/confusión. Sensibilidad local o RMSE bajo no prueban identificabilidad ni unicidad.
+- `dynamical_systems_specialist`: restringir estabilidad/trayectorias a las ecuaciones, parámetros y horizonte analizados. Simular no demuestra predicción, causalidad ni validez epidemiológica.
+
+Si faltan ecuaciones/datos, marcar cálculos `NOT_RUN` y claims científicos `NOT_ASSESSED`. La checklist es una guía de revisión, no evidencia ni certificación.
+
 El arquitecto elige **roles**, no modelos específicos. Los workers no autocertifican su trabajo. Repartir cambios en worktrees/ramas de propiedad exclusiva; revisión sólo lectura sobre candidatos. Ante conflicto, abrir una obligación de resolución con evidencia, no votar. En ausencia de runtime multiagente real, ejecutar pases secuenciales y no llamarlos independientes.
 
 ## Módulos bajo demanda
