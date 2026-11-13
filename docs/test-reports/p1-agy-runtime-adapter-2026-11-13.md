@@ -26,3 +26,10 @@ Documentación oficial consultada: [headless mode y NDJSON](https://antigravity.
 ## Riesgos y pendiente acotado
 
 La herramienta AGY puede leer/escribir archivos del worktree mediante su lista permitida; esto no equivale a una frontera de sistema operativo. El preflight protege contra la opción local de acceso fuera de workspace conocida, pero no demuestra el aislamiento efectivo del proveedor. La integración autenticada y el ciclo E2E siguen sin verificar. P1.4 y P1.5 permanecen sin aprobación final.
+
+## Seguimiento Windows — fixture de detección de reparse points (2026-11-13)
+
+- CI de P1.5/P2.6 ejecutó la suite completa en Windows/Python 3.12 y reportó estos fallos: `test_plan_rejects_junction_at_worktree_storage_root` y `test_plan_rejects_windows_reparse_attribute_without_junction_api` (`ValueError not raised`). Linux/Python 3.11 y 3.12 pasaron; Windows/Python 3.11 quedó cancelado por la matriz.
+- `plan()` resuelve el root de Git antes de derivar el directorio; las dos fixtures comparaban rutas sin canonicalizar. Ajusté solo esas comparaciones para normalizar rutas. El detector de producción no cambió.
+- PASS local — los dos casos focalizados, validador de skill, `compileall` y `git diff --check` en Windows/Python 3.14. Python 3.12 no está instalado localmente; confirmación CI del arreglo: `NOT_RUN` hasta completar la nueva ejecución.
+- La reproducción local adicional de `tests.test_integration_candidate` se canceló tras 17 de 65 casos; no equivale a suite completa. El CI terminó 684 pruebas en 1011.6 s con los dos fallos citados.
