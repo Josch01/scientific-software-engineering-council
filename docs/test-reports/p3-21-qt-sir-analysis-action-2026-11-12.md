@@ -8,4 +8,4 @@
 - Decisiones: se reutiliza el builder P3.20; resultados nuevos van a un directorio exclusivo, conservan entradas/log/procedencia y se cargan solo tras validación; no se ejecuta código del proyecto.
 - Límites: sin cancelación segura porque el motor actual no admite interrupción; progreso indeterminado, sin porcentajes inventados. Suite completa y verificación Linux: `NOT_RUN` en este incremento.
 - Validez: solo fixture sintético; SIR/datos del usuario `NOT_RUN`; incertidumbre y validez matemática `NOT_ASSESSED`; ningún proveedor invocado.
-- GitHub: rama `codex/p3-21-qt-analysis-action`; commit y PR pendientes; no hay merge a `main` ni release.
+- GitHub: commit `c52bdb6`; [PR #52](https://github.com/Josch01/scientific-software-engineering-council/pull/52) abierto como borrador sobre P3.20; CI pendiente. Sin merge a `main` ni release.
