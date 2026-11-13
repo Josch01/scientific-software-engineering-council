@@ -9,6 +9,11 @@ import math
 import unicodedata
 
 try:
+    from .scientific_ui_theme import CHART_SERIES_COLORS, COLORS
+except ImportError:  # Support direct execution from scripts/.
+    from scientific_ui_theme import CHART_SERIES_COLORS, COLORS
+
+try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:
     QtCore = QtGui = QtWidgets = None
@@ -25,7 +30,7 @@ MAX_CHART_POINTS = 100_000
 MAX_CHART_TOTAL_POINTS = 200_000
 MAX_CHART_HTML_BYTES = 4 * 1024 * 1024
 MAX_WEBENGINE_DATA_URL_BYTES = 2_000_000
-_COLORS = ("#176b87", "#c76732", "#3b7e58", "#7856a5", "#a14355", "#b28a18")
+_COLORS = CHART_SERIES_COLORS
 WEBENGINE_AVAILABLE = all(
     item is not None for item in (QtCore, QtGui, QtWidgets, QWebEnginePage, QWebEngineSettings, QWebEngineView)
 )
@@ -116,16 +121,17 @@ if(xmin===xmax){xmin-=0.5;xmax+=0.5;}if(ymin===ymax){const p=Math.max(Math.abs(y
 else{const p=(ymax-ymin)*0.06;ymin-=p;ymax+=p;}
 const px=x=>L+(x-xmin)/(xmax-xmin)*(W-L-R),py=y=>H-B-(y-ymin)/(ymax-ymin)*(H-T-B);
 const el=(tag,attrs,text)=>{const n=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs||{}))n.setAttribute(k,String(v));if(text!==undefined)n.textContent=text;svg.appendChild(n);return n;};
-el('path',{d:`M${L},${T}V${H-B}H${W-R}`,fill:'none',stroke:'#68798a','stroke-width':2});
+for(const y of [ymin,ymax])el('path',{d:`M${L},${py(y)}H${W-R}`,fill:'none',stroke:'#474550','stroke-width':1,class:'grid'});
+el('path',{d:`M${L},${T}V${H-B}H${W-R}`,fill:'none',stroke:'#696574','stroke-width':2});
 for(const [x,label] of [[L,String(allX[0])],[W-R,String(allX[allX.length-1])]])el('text',{x,y:H-B+24,'text-anchor':x===L?'start':'end',class:'tick'},label);
 for(const [y,label] of [[T,String(ymax)],[H-B,String(ymin)]])el('text',{x:L-10,y:y+4,'text-anchor':'end',class:'tick'},label);
 el('text',{x:(L+W-R)/2,y:H-16,'text-anchor':'middle',class:'axis'},data.x_label);
 const ylabel=el('text',{x:18,y:(T+H-B)/2,'text-anchor':'middle',class:'axis',transform:`rotate(-90 18 ${(T+H-B)/2})`},data.y_label);
-const colors=['#176b87','#c76732','#3b7e58','#7856a5','#a14355','#b28a18'];
+const colors=__SSEC_CHART_COLORS__;
 const stride=Math.max(1,Math.ceil(allX.length/2000)),renderedIndices=[];
 for(let j=0;j<allX.length;j+=stride)renderedIndices.push(j);
 if(renderedIndices[renderedIndices.length-1]!==allX.length-1)renderedIndices.push(allX.length-1);
-const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length];const d=renderedIndices.map((j,k)=>`${k?'L':'M'}${px(s.x[j]).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i});paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
+const paths=[];data.series.forEach((s,i)=>{const color=colors[i%colors.length];const d=renderedIndices.map((j,k)=>`${k?'L':'M'}${px(s.x[j]).toFixed(2)},${py(s.y[j]).toFixed(2)}`).join(' ');const path=el('path',{d,fill:'none',stroke:color,'stroke-width':2.5,'data-index':i,class:'series-line'});paths.push(path);const button=document.createElement('button');button.type='button';button.textContent=s.name;button.setAttribute('aria-pressed','true');button.style.borderColor=color;button.addEventListener('click',()=>{const on=button.getAttribute('aria-pressed')!=='true';button.setAttribute('aria-pressed',String(on));path.style.display=on?'':'none';});legend.appendChild(button);});
 svg.addEventListener('mousemove',event=>{const point=svg.createSVGPoint();point.x=event.clientX;point.y=event.clientY;const p=point.matrixTransform(svg.getScreenCTM().inverse());if(p.x<L||p.x>W-R){tip.textContent='';return;}const ratio=(p.x-L)/(W-L-R),index=Math.max(0,Math.min(allX.length-1,Math.round(ratio*(allX.length-1))));const visible=data.series.map((s,i)=>paths[i].style.display==='none'?null:`${s.name}: ${s.y[index]}`).filter(Boolean);tip.textContent=`${data.x_label}: ${allX[index]} · ${visible.join(' · ')}`;});
 svg.addEventListener('mouseleave',()=>{tip.textContent='';});
 })();"""
@@ -138,23 +144,37 @@ def build_scientific_chart_html(plot_data: Mapping[str, object]) -> str:
         json.dumps(normalized, ensure_ascii=False, allow_nan=False,
                    separators=(",", ":")).encode("utf-8")
     ).decode("ascii")
-    script_hash = base64.b64encode(hashlib.sha256(_SCRIPT.encode("utf-8")).digest()).decode("ascii")
+    script = _SCRIPT.replace("__SSEC_CHART_COLORS__", json.dumps(CHART_SERIES_COLORS))
+    script_hash = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
     csp = (
         "default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; "
         "connect-src 'none'; form-action 'none'; img-src 'none'; font-src 'none'; "
         f"script-src 'sha256-{script_hash}'; style-src 'unsafe-inline'"
     )
+    c = COLORS
+    theme_css = (
+        f":root{{color-scheme:dark;--surface:{c['surface']};--raised:{c['surface_raised']};"
+        f"--text:{c['text']};--muted:{c['muted']};--border:{c['border']};--accent:{c['accent']};}}"
+        "*{box-sizing:border-box}body{font:14px 'Segoe UI',system-ui,sans-serif;color:var(--text);"
+        "background:var(--surface);margin:0;padding:14px}h2{font-size:16px;margin:4px 0 10px}"
+        "svg{width:100%;height:auto;background:var(--surface);border-radius:8px}"
+        ".axis{font:14px system-ui,sans-serif;fill:var(--text)}.tick{font:12px system-ui,sans-serif;fill:var(--muted)}"
+        ".legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}"
+        ".legend button{background:var(--raised);border:1px solid;border-radius:7px;padding:6px 10px;"
+        "color:var(--text);cursor:pointer;transition:background-color 140ms ease,opacity 140ms ease}"
+        ".legend button:hover{background:#403d49}.legend button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+        ".tooltip{min-height:1.5em;color:var(--muted);font-variant-numeric:tabular-nums;padding-top:5px}"
+        "@media(prefers-reduced-motion:no-preference){.series-line{animation:line-in 260ms ease-out both}}"
+        "@keyframes line-in{from{opacity:.15}to{opacity:1}}"
+        "@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}"
+    )
     html = (
         "<!doctype html><html lang=\"es\"><head><meta charset=\"utf-8\">"
         f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<style>body{font:14px sans-serif;color:#17212b;margin:10px}h2{font-size:16px;margin:4px 0 10px}"
-        "svg{width:100%;height:auto;background:#fff}.axis{font:14px sans-serif;fill:#344454}"
-        ".tick{font:12px sans-serif;fill:#526374}.legend{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}"
-        ".legend button{background:white;border:2px solid;border-radius:4px;padding:4px 8px;color:#17212b}"
-        ".tooltip{min-height:1.4em;color:#344454;font-variant-numeric:tabular-nums}</style></head>"
+        f"<style>{theme_css}</style></head>"
         f"<body><div id=\"payload\" data-payload=\"{encoded_payload}\"></div>"
-        "<main id=\"chart\"></main><script>" + _SCRIPT + "</script></body></html>"
+        "<main id=\"chart\"></main><script>" + script + "</script></body></html>"
     )
     if len(html.encode("utf-8")) > MAX_CHART_HTML_BYTES:
         raise ValueError(f"chart HTML exceeds the {MAX_CHART_HTML_BYTES}-byte limit")
@@ -174,8 +194,8 @@ if QtWidgets is not None:
             del event
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            painter.fillRect(self.rect(), QtGui.QColor("#ffffff"))
-            rect = self.rect().adjusted(88, 20, -18, -54)
+            painter.fillRect(self.rect(), QtGui.QColor(COLORS["surface"]))
+            rect = self.rect().adjusted(88, 24, -18, -58)
             series = self._data["series"]
             x_values = series[0]["x"]
             y_values = tuple(value for item in series for value in item["y"])
@@ -192,17 +212,24 @@ if QtWidgets is not None:
                 padding = (y_max - y_min) * 0.06
                 y_min -= padding
                 y_max += padding
-            painter.setPen(QtGui.QPen(QtGui.QColor("#8795a3"), 1))
+            painter.setPen(QtGui.QPen(QtGui.QColor(COLORS["border"]), 1))
+            for fraction in (0.0, 0.5, 1.0):
+                y = rect.bottom() - round(fraction * rect.height())
+                painter.drawLine(rect.left(), y, rect.right(), y)
             painter.drawLine(rect.bottomLeft(), rect.bottomRight())
             painter.drawLine(rect.bottomLeft(), rect.topLeft())
-            painter.setPen(QtGui.QColor("#536273"))
+            painter.setPen(QtGui.QColor(COLORS["muted"]))
             painter.drawText(34, rect.top() + 8, 48, 18,
                              QtCore.Qt.AlignmentFlag.AlignRight, f"{y_max:.4g}")
             painter.drawText(34, rect.bottom() - 9, 48, 18,
                              QtCore.Qt.AlignmentFlag.AlignRight, f"{y_min:.4g}")
             painter.drawText(rect.left(), rect.bottom() + 22, f"{x_min:.5g}")
             painter.drawText(rect.right() - 50, rect.bottom() + 22, f"{x_max:.5g}")
-            painter.drawText(rect.left(), self.height() - 8, str(self._data["x_label"]))
+            painter.drawText(
+                QtCore.QRectF(rect.left(), self.height() - 25, rect.width(), 20),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                str(self._data["x_label"]),
+            )
             painter.save()
             painter.translate(13, rect.center().y())
             painter.rotate(-90)

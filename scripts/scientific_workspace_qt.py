@@ -18,6 +18,11 @@ import tempfile
 import threading
 
 try:
+    from .scientific_ui_theme import CHART_SERIES_COLORS, COLORS, qt_stylesheet
+except ImportError:  # Support direct execution from scripts/.
+    from scientific_ui_theme import CHART_SERIES_COLORS, COLORS, qt_stylesheet
+
+try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:  # Keep this optional frontend importable without Qt installed.
     QtCore = QtGui = QtWidgets = None
@@ -219,13 +224,13 @@ if QtWidgets is not None:
     class _TrajectoryPlot(QtWidgets.QFrame):
         """Small native Qt plot for the verified time series already in memory."""
 
-        _COLORS = ("#176b87", "#c76732", "#3b7e58", "#7856a5", "#a14355")
+        _COLORS = CHART_SERIES_COLORS
 
         def __init__(self, content: Mapping[str, object], parent=None):
             super().__init__(parent)
             self._content = content
             self.setObjectName("trajectoryPlot")
-            self.setMinimumHeight(230)
+            self.setMinimumHeight(260)
             self.setAccessibleName("Gráfica de trayectoria de simulación")
             self.setAccessibleDescription(
                 f"Eje x: Tiempo · {self._content.get('time_unit') or 'unidad no indicada'}. "
@@ -238,14 +243,14 @@ if QtWidgets is not None:
             del event
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            painter.fillRect(self.rect(), QtGui.QColor("#ffffff"))
-            rect = self.rect().adjusted(54, 20, -20, -44)
+            painter.fillRect(self.rect(), QtGui.QColor(COLORS["surface"]))
+            rect = self.rect().adjusted(64, 20, -20, -82)
             times = self._content.get("times", ())
             values = self._content.get("values", ())
             names = self._content.get("series_names", ())
             indices = self._content.get("series_indices", ())
             if not times or not values or not names or not indices:
-                painter.setPen(QtGui.QColor("#536273"))
+                painter.setPen(QtGui.QColor(COLORS["muted"]))
                 painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, "No hay datos para graficar")
                 return
 
@@ -259,17 +264,24 @@ if QtWidgets is not None:
                 padding = (y_max - y_min) * 0.06
                 y_min, y_max = y_min - padding, y_max + padding
 
-            axis_pen = QtGui.QPen(QtGui.QColor("#9aa8b5"), 1)
+            grid_pen = QtGui.QPen(QtGui.QColor(COLORS["border"]), 1)
+            painter.setPen(grid_pen)
+            for fraction in (0.0, 0.5, 1.0):
+                y = rect.bottom() - round(fraction * rect.height())
+                painter.drawLine(rect.left(), y, rect.right(), y)
+            axis_pen = QtGui.QPen(QtGui.QColor(COLORS["muted"]), 1)
             painter.setPen(axis_pen)
             painter.drawLine(rect.bottomLeft(), rect.bottomRight())
             painter.drawLine(rect.bottomLeft(), rect.topLeft())
-            painter.setPen(QtGui.QColor("#536273"))
+            painter.setPen(QtGui.QColor(COLORS["muted"]))
             painter.drawText(4, rect.top() + 8, f"{y_max:.4g}")
             painter.drawText(4, rect.bottom(), f"{y_min:.4g}")
-            painter.drawText(rect.left(), rect.bottom() + 27, f"{x_min:.4g}")
-            painter.drawText(rect.right() - 48, rect.bottom() + 27, f"{x_max:.4g}")
+            painter.drawText(rect.left(), rect.bottom() + 17, f"{x_min:.4g}")
+            painter.drawText(rect.right() - 48, rect.bottom() + 17, f"{x_max:.4g}")
             painter.drawText(
-                rect.left(), self.height() - 8, f"Tiempo · {self._content.get('time_unit') or 'unidad no indicada'}"
+                QtCore.QRectF(rect.left(), rect.bottom() + 24, rect.width(), 20),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                f"Tiempo · {self._content.get('time_unit') or 'unidad no indicada'}",
             )
             painter.save()
             painter.translate(12, rect.center().y())
@@ -299,11 +311,11 @@ if QtWidgets is not None:
                     else:
                         path.lineTo(point)
                 painter.drawPath(path)
-                legend_x = rect.left() + series_number * 112
+                legend_x = rect.left() + series_number * 100
                 painter.setPen(QtGui.QPen(color, 3))
-                painter.drawLine(legend_x, rect.bottom() + 38, legend_x + 18, rect.bottom() + 38)
-                painter.setPen(QtGui.QColor("#243746"))
-                painter.drawText(legend_x + 24, rect.bottom() + 43, sanitize_display_text(str(name))[:32])
+                painter.drawLine(legend_x, rect.bottom() + 54, legend_x + 18, rect.bottom() + 54)
+                painter.setPen(QtGui.QColor(COLORS["muted"]))
+                painter.drawText(legend_x + 24, rect.bottom() + 59, sanitize_display_text(str(name))[:32])
 
 
     class ScientificWorkspaceWindow(QtWidgets.QMainWindow):
@@ -339,37 +351,7 @@ if QtWidgets is not None:
             self._project_root: Path | None = None
             self._manifest_relative_path: str | None = None
             self._build_shell()
-            self.setStyleSheet(
-                "QMainWindow { background: #f2f5f7; color: #1d2d39; }"
-                "QLabel { color: #243746; }"
-                "QDialog, QProgressDialog { background: #f2f5f7; color: #243746; }"
-                "QToolBar { background: #16384a; border: 0; spacing: 8px; padding: 8px; }"
-                "QToolBar QLabel { color: #ffffff; font-size: 16px; font-weight: 600; }"
-                "QPushButton { background: #176b87; color: white; border: 1px solid #10546b;"
-                " border-radius: 4px; padding: 7px 12px; }"
-                "QPushButton:hover { background: #125b73; }"
-                "QPushButton:disabled { background: #9eafb8; color: #f5f7f8; }"
-                "QPushButton:focus, QTabBar::tab:focus, QTableWidget:focus, QPlainTextEdit:focus {"
-                " border: 2px solid #d68a31; }"
-                "QTabWidget::pane { background: #f2f5f7; border: 1px solid #d9e1e6; }"
-                "QTabBar::tab { background: #e7edf0; color: #243746; padding: 7px 12px; }"
-                "QTabBar::tab:selected { background: #ffffff; color: #16384a; font-weight: 600; }"
-                "QScrollArea, QScrollArea > QWidget > QWidget { background: #f2f5f7; }"
-                "QGroupBox { background: white; color: #243746; border: 1px solid #d9e1e6;"
-                " border-radius: 5px; }"
-                "QGroupBox { margin-top: 12px; padding: 12px; font-weight: 600; }"
-                "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
-                "QLabel#workspaceDigestStatus { background: #e5f2ec; color: #245c3c;"
-                " border: 1px solid #c3ddce; border-radius: 4px; padding: 8px; font-weight: 600; }"
-                "QLabel#scientificNotice { color: #5b4a26; background: #fff8e7;"
-                " border: 1px solid #ecdcae; border-radius: 4px; padding: 8px; }"
-                "QTableWidget { background: #ffffff; color: #243746; gridline-color: #e1e7eb;"
-                " alternate-background-color: #f6f8f9; selection-background-color: #d7eaf0;"
-                " selection-color: #16384a; }"
-                "QHeaderView::section { background: #e6edf1; color: #243746; padding: 5px; }"
-                "QPlainTextEdit { background: #ffffff; color: #243746; selection-background-color: #d7eaf0; }"
-                "QStatusBar { background: #e6edf1; color: #243746; }"
-            )
+            self.setStyleSheet(qt_stylesheet())
 
         @property
         def simulation_running(self) -> bool:
@@ -433,7 +415,6 @@ if QtWidgets is not None:
             layout.setSpacing(10)
             self.workspace_heading = QtWidgets.QLabel("Selecciona un espacio científico")
             self.workspace_heading.setObjectName("workspaceHeading")
-            self.workspace_heading.setStyleSheet("font-size: 21px; font-weight: 650; color: #16384a;")
             layout.addWidget(self.workspace_heading)
             self.digest_status = QtWidgets.QLabel("Sin workspace cargado · aún no verificado")
             self.digest_status.setObjectName("workspaceDigestStatus")
@@ -1279,7 +1260,6 @@ if QtWidgets is not None:
             message = QtWidgets.QLabel(sanitize_display_text(component.message))
             message.setWordWrap(True)
             message.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-            message.setStyleSheet("color: #536273; font-weight: 400;")
             card_layout.addWidget(message)
 
             renderer = {
@@ -1405,7 +1385,7 @@ if QtWidgets is not None:
                 warning = QtWidgets.QLabel(f"Acción no disponible: {action_error}")
                 warning.setWordWrap(True)
                 warning.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-                warning.setStyleSheet("color: #9c3b2e;")
+                warning.setObjectName("scientificActionWarning")
                 layout.addWidget(warning)
 
         def _add_source_provenance(self, layout, component: ComponentView) -> None:
@@ -1569,7 +1549,7 @@ if QtWidgets is not None:
             status.setObjectName(f"uncertainty-status-{component.component_id}")
             status.setWordWrap(True)
             status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-            status.setStyleSheet("color: #825b18; font-weight: 600;")
+            status.setProperty("state", "warning")
             layout.addWidget(status)
             self._render_json(layout, component)
             self._add_source_provenance(layout, component)
