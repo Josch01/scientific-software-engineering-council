@@ -8,4 +8,4 @@
    Qt worker, output workspace handoff, and project-change guard.
 4. [x] Run focused engine/workspace/Qt regressions, compile, and diff checks;
    save compact evidence in the P3.32 report.
-5. [ ] Push branch and open a draft PR stacked on P3.31.
+5. [x] Push branch and open [draft PR #73](https://github.com/Josch01/scientific-software-engineering-council/pull/73) stacked on P3.31.

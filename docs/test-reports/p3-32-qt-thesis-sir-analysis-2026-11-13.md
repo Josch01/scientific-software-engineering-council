@@ -1,6 +1,6 @@
 # P3.32 — Ajuste SIR de tesis desde el Centro de Control
 
-**Estado:** implementado en rama de trabajo; PR draft por crear. Incremento experimental.
+**Estado:** implementado; [PR draft #73](https://github.com/Josch01/scientific-software-engineering-council/pull/73), apilado sobre P3.31. Incremento experimental.
 
 ## Resultado
 
