@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -52,7 +53,7 @@ class ThesisSIRAnalysisWorkspaceTests(unittest.TestCase):
         result = _analysis()
         with tempfile.TemporaryDirectory() as temporary:
             root = write_thesis_sir_analysis_workspace(temporary, result)
-            self.assertEqual(root.parent, Path(temporary))
+            self.assertTrue(os.path.samefile(root.parent, temporary))
             loaded = load_scientific_workspace(root, "workspace.json")
             view = build_workspace_view_model(loaded)
 

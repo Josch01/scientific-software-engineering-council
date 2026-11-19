@@ -18,9 +18,10 @@
 - `PASS` — `py_compile` y `git diff --check`.
 - Una ejecución inicial dio una aserción interna intermitente de Chromium (`CalledOnValidBrowserThread`) porque los fixtures cerraban, pero no destruían, páginas WebEngine pendientes. El teardown ahora destruye las páginas en el hilo Qt y procesa `DeferredDelete`; la suite combinada completa pasa.
 - `PASS` — captura del diálogo con backend nativo Windows y fuentes legibles. QA visual Qt Linux `NOT_RUN`; la interfaz base también conserva la revisión de escritorio Windows 1440×920 de P3.29.
+- GitHub Actions en `851cf4b`: Ubuntu 3.11/3.12 pasó; Windows falló únicamente porque una prueba comparaba una ruta temporal canónica contra su alias 8.3. La aserción ahora usa `os.path.samefile`; las 3 pruebas del writer pasan localmente y la matriz remota debe repetirse para cerrar el fallo.
 
 ## Alcance científico y pendientes
 
 La integración solo usa fixtures sintéticos. El ajuste admite `d0`, `gamma` y coeficientes/frecuencias armónicos declarados; mantiene fijos condiciones iniciales, `q` y retardo. No incorpora solver, optimizador, incertidumbre ni análisis de identificabilidad nuevos. El ajuste no se puede cancelar de forma segura porque P3.31 no ofrece cancelación.
 
-SIR y datos de la tesis del usuario: `NOT_RUN`. CLI/proveedor: `NOT_RUN`. No se hizo afirmación de validez matemática ni epidemiológica. Pendiente: QA visual del nuevo diálogo con el backend de escritorio real, QA Qt Linux y ejecutar el caso con datos reales solo después de autorización humana.
+SIR y datos de la tesis del usuario: `NOT_RUN`. CLI/proveedor real: `NOT_RUN`. No se hizo afirmación de validez matemática ni epidemiológica. Pendiente: resultado de la matriz Windows corregida, QA Qt Linux y ejecutar el caso con datos reales solo después de autorización humana.
