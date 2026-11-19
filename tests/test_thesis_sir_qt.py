@@ -11,8 +11,9 @@ import unittest
 from unittest.mock import patch
 
 try:
-    from PySide6 import QtWidgets
+    from PySide6 import QtCore, QtWidgets
 except ImportError:
+    QtCore = None
     QtWidgets = None
 
 
@@ -47,11 +48,20 @@ class ThesisSirQtPageTests(unittest.TestCase):
         from scripts.thesis_sir_qt import ThesisSIRPage
 
         self.page = ThesisSIRPage()
-        self.addCleanup(self.page.close)
+        self.addCleanup(self._dispose_page)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.source = Path(self.temp.name) / "reconstruction.json"
         self.source.write_bytes(_reconstruction_payload())
+
+    def _dispose_page(self):
+        page = self.page
+        page.close()
+        page.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(
+            None, QtCore.QEvent.Type.DeferredDelete
+        )
+        self.app.processEvents()
 
     def _set_valid_parameters(self, *, ascertainment="0.1"):
         page = self.page

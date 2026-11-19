@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import stat
+from datetime import datetime, timezone
 from collections.abc import Mapping
 
 try:
@@ -46,6 +48,13 @@ try:
     from .thesis_sir_audit_workspace import write_thesis_sir_audit_workspace
 except ImportError:
     from thesis_sir_audit_workspace import write_thesis_sir_audit_workspace
+
+try:
+    from .thesis_sir_analysis import analyze_thesis_sir_parameters
+    from .thesis_sir_analysis_workspace import write_thesis_sir_analysis_workspace
+except ImportError:
+    from thesis_sir_analysis import analyze_thesis_sir_parameters
+    from thesis_sir_analysis_workspace import write_thesis_sir_analysis_workspace
 
 
 MAX_STEPS_PER_INTERVAL = 1000
@@ -134,6 +143,20 @@ def thesis_parameters_from_fields(
         raise ValueError(str(exc)) from exc
 
 
+def thesis_sir_fit_parameter_options(parameters: ThesisSIRParameters):
+    """Return only supported dynamic fit parameters with their scientific units/domains."""
+    values = [("d0", parameters.d0, "dimensionless", (-2.0, 2.0)),
+              ("gamma", parameters.gamma, "1/week", (0.05, 0.70))]
+    for index, harmonic in enumerate(parameters.harmonics):
+        values.extend((
+            (f"harmonic_{index}_cosine", harmonic.cosine, "dimensionless", (-2.0, 2.0)),
+            (f"harmonic_{index}_sine", harmonic.sine, "dimensionless", (-2.0, 2.0)),
+            (f"harmonic_{index}_angular_frequency", harmonic.angular_frequency,
+             "rad/week", (0.05, 2.20)),
+        ))
+    return tuple(values)
+
+
 if QtWidgets is not None:
     class _ThesisSIRWorker(QtCore.QThread):
         succeeded = QtCore.Signal(object)
@@ -161,10 +184,48 @@ if QtWidgets is not None:
                 self.failed.emit(f"{type(exc).__name__}: {str(exc)[:1000]}")
 
 
+    class _ThesisSIRAnalysisWorker(QtCore.QThread):
+        succeeded = QtCore.Signal(str)
+        failed = QtCore.Signal(str)
+
+        def __init__(self, parameters, observations, fit_config, max_step, output_parent, parent=None):
+            super().__init__(parent)
+            self._parameters = parameters
+            self._observations = observations
+            self._fit_config = fit_config
+            self._max_step = max_step
+            self._output_parent = output_parent
+
+        def run(self) -> None:
+            try:
+                started_at_utc = datetime.now(timezone.utc).isoformat()
+                result = analyze_thesis_sir_parameters(
+                    self._parameters,
+                    self._observations,
+                    initial_parameters=self._fit_config["initial_parameters"],
+                    bounds=self._fit_config["bounds"],
+                    perturbations=self._fit_config["perturbations"],
+                    max_step=self._max_step,
+                    max_steps_per_interval=MAX_STEPS_PER_INTERVAL,
+                )
+                completed_at_utc = datetime.now(timezone.utc).isoformat()
+                workspace = write_thesis_sir_analysis_workspace(
+                    self._output_parent,
+                    result,
+                    started_at_utc=started_at_utc,
+                    completed_at_utc=completed_at_utc,
+                )
+                self.succeeded.emit(str(workspace))
+            except Exception as exc:
+                self.failed.emit(f"{type(exc).__name__}: {str(exc)[:1000]}")
+
+
     class ThesisSIRPage(QtWidgets.QWidget):
         """Project-independent UI for read-only DGE import and thesis SIR runs."""
 
         audit_workspace_ready = QtCore.Signal(str)
+        analysis_workspace_ready = QtCore.Signal(str)
+        activity_finished = QtCore.Signal()
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -174,11 +235,13 @@ if QtWidgets is not None:
             self.result_payload: dict[str, object] | None = None
             self.state = "EMPTY"
             self._worker: _ThesisSIRWorker | None = None
+            self._analysis_worker: _ThesisSIRAnalysisWorker | None = None
+            self.fit_configuration: dict[str, object] | None = None
             self._build_ui()
 
         @property
         def run_in_progress(self) -> bool:
-            return self._worker is not None
+            return self._worker is not None or self._analysis_worker is not None
 
         def _build_ui(self) -> None:
             outer = QtWidgets.QVBoxLayout(self)
@@ -307,6 +370,7 @@ if QtWidgets is not None:
 
             parameter_group = QtWidgets.QGroupBox("Parámetros explícitos del modelo")
             parameter_group.setObjectName("thesisSirParameterGroup")
+            self.parameter_group = parameter_group
             parameter_layout = QtWidgets.QVBoxLayout(parameter_group)
             parameter_layout.setSpacing(8)
             form = QtWidgets.QFormLayout()
@@ -387,6 +451,29 @@ if QtWidgets is not None:
             model_bounds.setWordWrap(True)
             parameter_layout.addWidget(model_bounds)
             setup_layout.addWidget(parameter_group)
+
+            fit_group = QtWidgets.QGroupBox("Ajuste de parámetros dinámicos")
+            fit_group.setObjectName("thesisSirFitConfigurationGroup")
+            fit_layout = QtWidgets.QVBoxLayout(fit_group)
+            self.configure_fit_button = QtWidgets.QPushButton("Configurar parámetros de ajuste…")
+            self.configure_fit_button.setObjectName("configureThesisSirFitButton")
+            self.configure_fit_button.setEnabled(False)
+            self.configure_fit_button.clicked.connect(self.configure_fit_parameters)
+            fit_layout.addWidget(self.configure_fit_button)
+            self.fit_configuration_status = QtWidgets.QLabel(
+                "Sin parámetros seleccionados; SSEC no elegirá límites ni perturbaciones por ti."
+            )
+            self.fit_configuration_status.setObjectName("thesisSirFitConfigurationStatus")
+            self.fit_configuration_status.setWordWrap(True)
+            fit_layout.addWidget(self.fit_configuration_status)
+            fit_hint = QtWidgets.QLabel(
+                "Solo d₀, γ y coeficientes/frecuencias armónicas son ajustables. "
+                "I₀, S₀/N, q y retardo permanecen fijos."
+            )
+            fit_hint.setObjectName("thesisSirHelperText")
+            fit_hint.setWordWrap(True)
+            fit_layout.addWidget(fit_hint)
+            setup_layout.addWidget(fit_group)
             setup_layout.addStretch(1)
 
             results_panel = QtWidgets.QFrame(self.workspace_splitter)
@@ -409,12 +496,18 @@ if QtWidgets is not None:
             )
             self.run_button.clicked.connect(self.start_simulation)
             actions.addWidget(self.run_button, 1)
+            self.fit_button = QtWidgets.QPushButton("Ajustar a datos…")
+            self.fit_button.setObjectName("runThesisSirFitButton")
+            self.fit_button.setEnabled(False)
+            self.fit_button.setMinimumHeight(42)
+            self.fit_button.clicked.connect(self.start_parameter_fit)
             self.save_button = QtWidgets.QPushButton("Exportar resultado…")
             self.save_button.setObjectName("saveThesisSirResultButton")
             self.save_button.setEnabled(False)
             self.save_button.setMinimumHeight(42)
             self.save_button.clicked.connect(self.export_result_dialog)
             actions.addWidget(self.save_button, 1)
+            results_layout.addWidget(self.fit_button)
             results_layout.addLayout(actions)
             self.audit_button = QtWidgets.QPushButton("Preparar bundle de auditoría…")
             self.audit_button.setObjectName("prepareThesisSirAuditButton")
@@ -501,6 +594,11 @@ if QtWidgets is not None:
         def _invalidate_result(self, *_args) -> None:
             if self.run_in_progress:
                 return
+            self.fit_configuration = None
+            if hasattr(self, "fit_configuration_status"):
+                self.fit_configuration_status.setText(
+                    "Configuración de ajuste invalidada; vuelve a seleccionar parámetros, límites y perturbaciones."
+                )
             had_result_or_empty_state = (
                 self.result_payload is not None
                 or self.content_stack.currentWidget() is self.empty_state
@@ -508,6 +606,7 @@ if QtWidgets is not None:
             self.result_payload = None
             self.save_button.setEnabled(False)
             self.audit_button.setEnabled(False)
+            self._update_analysis_controls()
             if self.observations is None:
                 self.state = "EMPTY"
                 return
@@ -532,11 +631,16 @@ if QtWidgets is not None:
             self.observations = None
             self.source_path = None
             self.result_payload = None
+            self.fit_configuration = None
+            self.fit_configuration_status.setText(
+                "Sin parámetros seleccionados; SSEC no elegirá límites ni perturbaciones por ti."
+            )
             self.run_button.setEnabled(False)
             self.save_button.setEnabled(False)
             self.audit_button.setEnabled(False)
             self._clear_content()
             self.state = "EMPTY"
+            self._update_analysis_controls()
             self.data_status.setText("Validando archivo local…")
             self.data_status.setProperty("state", "neutral")
             self.data_series_label.setText("Serie · DGE_monday_sunday_candidate")
@@ -572,6 +676,142 @@ if QtWidgets is not None:
                 "info",
             )
             self._show_observation_chart()
+            self._update_analysis_controls()
+
+        def _fit_configuration_dialog(self, parameters: ThesisSIRParameters):
+            dialog = QtWidgets.QDialog(self)
+            dialog.setObjectName("thesisSirFitConfigurationDialog")
+            dialog.setWindowTitle("Configurar ajuste SIR")
+            dialog.setMinimumSize(1080, 460)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            notice = QtWidgets.QLabel(
+                "Selecciona cada parámetro y especifica límites y perturbación. "
+                "Los valores iniciales y dominios permitidos se muestran para revisión."
+            )
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
+            rows = thesis_sir_fit_parameter_options(parameters)
+            table = QtWidgets.QTableWidget(len(rows), 8, dialog)
+            table.setObjectName("thesisSirFitParameterTable")
+            table.setAccessibleName("Parámetros ajustables, límites y perturbaciones")
+            table.setAccessibleDescription(
+                "Selecciona parámetros dinámicos y captura límites y perturbación en las tres columnas finales."
+            )
+            table.setHorizontalHeaderLabels(
+                ["Incluir", "Parámetro", "Inicial", "Unidad", "Dominio permitido", "Límite inferior", "Límite superior", "Perturbación"]
+            )
+            table.horizontalHeader().setSectionResizeMode(
+                QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+            table.horizontalHeader().setSectionResizeMode(
+                1, QtWidgets.QHeaderView.ResizeMode.Stretch
+            )
+            for column, width in ((0, 60), (2, 90), (3, 100), (4, 175),
+                                  (5, 110), (6, 110), (7, 115)):
+                table.setColumnWidth(column, width)
+            table.horizontalHeader().setStretchLastSection(False)
+            table.verticalHeader().setVisible(False)
+            table.setWordWrap(True)
+            for row, (name, value, unit, domain) in enumerate(rows):
+                include = QtWidgets.QTableWidgetItem()
+                include.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                include.setCheckState(QtCore.Qt.CheckState.Unchecked)
+                include.setWhatsThis(f"Incluir {name} en el ajuste")
+                include.setToolTip(f"Incluir {name} como parámetro ajustable")
+                table.setItem(row, 0, include)
+                for column, text in ((1, name), (2, f"{value:.10g}"), (3, unit),
+                                     (4, f"[{domain[0]:g}, {domain[1]:g}]")):
+                    cell = QtWidgets.QTableWidgetItem(text)
+                    cell.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
+                    table.setItem(row, column, cell)
+                for column in (5, 6, 7):
+                    value_cell = QtWidgets.QTableWidgetItem("")
+                    value_cell.setToolTip("Entrada numérica explícita; sin valor predeterminado")
+                    table.setItem(row, column, value_cell)
+            layout.addWidget(table, 1)
+            columns_note = QtWidgets.QLabel(
+                "En cada fila seleccionada, introduce los tres valores. La perturbación debe "
+                "permanecer dentro de los límites alrededor del valor inicial."
+            )
+            columns_note.setWordWrap(True)
+            layout.addWidget(columns_note)
+            buttons = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.StandardButton.Save
+                | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            )
+            save_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save)
+            cancel_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            save_button.setText("Guardar selección")
+            cancel_button.setText("Cancelar")
+            save_button.setObjectName("saveThesisSirFitConfigurationButton")
+            cancel_button.setObjectName("cancelThesisSirFitConfigurationButton")
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            dialog.parameter_table = table
+            return dialog, rows
+
+        def configure_fit_parameters(self) -> None:
+            if self.run_in_progress or self.observations is None:
+                self._set_run_status("Importa los datos antes de configurar un ajuste.", "warning")
+                return
+            try:
+                parameters = self._collect_parameters()
+            except (TypeError, ValueError, OverflowError) as exc:
+                self._set_run_status(f"Parámetros del modelo inválidos: {str(exc)[:500]}", "warning")
+                return
+            dialog, rows = self._fit_configuration_dialog(parameters)
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return
+            initial: dict[str, float] = {}
+            bounds: dict[str, tuple[float, float]] = {}
+            perturbations: dict[str, float] = {}
+            try:
+                for row, (name, value, _unit, _domain) in enumerate(rows):
+                    if dialog.parameter_table.item(row, 0).checkState() != QtCore.Qt.CheckState.Checked:
+                        continue
+                    lower_text = dialog.parameter_table.item(row, 5).text().strip()
+                    upper_text = dialog.parameter_table.item(row, 6).text().strip()
+                    step_text = dialog.parameter_table.item(row, 7).text().strip()
+                    if not lower_text or not upper_text or not step_text:
+                        raise ValueError(f"{name}: introduce límite inferior, superior y perturbación")
+                    initial[name] = value
+                    bounds[name] = (float(lower_text), float(upper_text))
+                    perturbations[name] = float(step_text)
+                if not initial:
+                    raise ValueError("selecciona al menos un parámetro dinámico")
+                option_by_name = {item[0]: item for item in rows}
+                for name, value in initial.items():
+                    lower, upper = bounds[name]
+                    domain = option_by_name[name][3]
+                    step = perturbations[name]
+                    if not all(math.isfinite(item) for item in (lower, upper, step)):
+                        raise ValueError(f"valores no finitos para {name}")
+                    if lower >= upper or lower < domain[0] or upper > domain[1] or not lower <= value <= upper:
+                        raise ValueError(f"límites no válidos para {name}")
+                    if step <= 0 or value - step < lower or value + step > upper:
+                        raise ValueError(f"perturbación no válida para {name}")
+            except (TypeError, ValueError, OverflowError) as exc:
+                self._set_run_status(f"Configuración de ajuste no guardada: {str(exc)[:500]}", "warning")
+                return
+            self.fit_configuration = {
+                "initial_parameters": initial,
+                "bounds": bounds,
+                "perturbations": perturbations,
+            }
+            self.fit_configuration_status.setText(
+                "Parámetros listos: " + ", ".join(initial) + " · límites y perturbaciones explícitos."
+            )
+            self._update_analysis_controls()
+
+        def _update_analysis_controls(self) -> None:
+            busy = self.run_in_progress
+            has_data = self.observations is not None
+            self.configure_fit_button.setEnabled(has_data and not busy)
+            self.fit_button.setEnabled(has_data and self.fit_configuration is not None and not busy)
+            self.run_button.setEnabled(has_data and not busy)
+            self.load_data_button.setEnabled(not busy)
+            self.parameter_group.setEnabled(not busy)
 
         def _show_observation_chart(self) -> None:
             self._clear_content()
@@ -624,6 +864,133 @@ if QtWidgets is not None:
                 "Se calculará en memoria con el motor científico incluido en SSEC. "
                 "El archivo de datos no se modificará. ¿Confirmas la ejecución?"
             )
+
+        def _analysis_confirmation_text(
+            self, parameters: ThesisSIRParameters, output_parent: str | os.PathLike[str]
+        ) -> str:
+            if self.observations is None or self.source_path is None or self.fit_configuration is None:
+                raise ValueError("se requieren observaciones y una configuración de ajuste válida")
+            config = self.fit_configuration
+            lines = [
+                f"Modelo: {THESIS_SIR_EQUATION_SET}",
+                f"Fuente: {THESIS_SOURCE_REFERENCE} · PDF SHA-256 {THESIS_PDF_SHA256}",
+                f"Datos seleccionados: {self.source_path}",
+                f"Serie: {self.observations.series_id} · {len(self.observations.counts)} semanas",
+                f"SHA-256 de origen: {self.observations.source_sha256}",
+                "Parámetros base: " + json.dumps(
+                    parameters.to_dict()["parameters"], ensure_ascii=False, allow_nan=False
+                ),
+                "Parámetros ajustables: " + json.dumps(
+                    config["initial_parameters"], ensure_ascii=False, allow_nan=False
+                ),
+                "Límites: " + json.dumps(config["bounds"], ensure_ascii=False, allow_nan=False),
+                "Perturbaciones de sensibilidad: " + json.dumps(
+                    config["perturbations"], ensure_ascii=False, allow_nan=False
+                ),
+                f"Integrador: RK4 fijo · Δt={self.max_step_combo.currentData():g} semanas · "
+                f"máx. {MAX_STEPS_PER_INTERVAL} pasos/intervalo",
+                f"Destino: se creará una subcarpeta nueva dentro de {Path(output_parent).expanduser()}",
+                "Workspace que se escribirá: serie observada seleccionada, modelo, configuración "
+                "del ajuste, resultados, bitácora y snapshots con SHA-256 del motor/código. "
+                "No se copiará el JSON original ni la tesis.",
+                "",
+                "Se ejecutará el motor P3.31 local; no invoca modelos ni ejecuta código generado. "
+                "Los archivos fuente no se modificarán. El ajuste no prueba identificabilidad ni "
+                "validez científica; incertidumbre: NOT_CALCULATED.",
+                "El cálculo no admite cancelación segura. ¿Confirmas el ajuste?",
+            ]
+            return "\n".join(lines)
+
+        def start_parameter_fit(self) -> None:
+            if self.run_in_progress:
+                return
+            if self.observations is None or self.source_path is None or self.fit_configuration is None:
+                self._set_run_status(
+                    "Importa datos y configura al menos un parámetro antes de ajustar.", "warning"
+                )
+                return
+            try:
+                parameters = self._collect_parameters()
+            except (TypeError, ValueError, OverflowError) as exc:
+                self._set_run_status(f"Parámetros del modelo inválidos: {str(exc)[:500]}", "warning")
+                return
+            output_parent = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                "Seleccionar carpeta para el nuevo workspace de análisis",
+                str(self.source_path.parent),
+            )
+            if not output_parent:
+                return
+            try:
+                confirmation = self._analysis_confirmation_text(parameters, output_parent)
+            except (TypeError, ValueError, OverflowError) as exc:
+                self._set_run_status(f"No se puede confirmar el análisis: {str(exc)[:500]}", "warning")
+                return
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Confirmar ajuste SIR",
+                confirmation,
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                self._set_run_status("Ajuste no ejecutado · confirmación rechazada", "warning")
+                return
+            copied_config = {
+                key: dict(value) for key, value in self.fit_configuration.items()
+            }
+            self.result_payload = None
+            self.save_button.setEnabled(False)
+            self.audit_button.setEnabled(False)
+            self._clear_content()
+            self.state = "RUNNING_ANALYSIS"
+            self.progress_bar.setAccessibleName("Ajuste en curso; progreso no estimado")
+            self.progress_bar.show()
+            self._set_run_status(
+                "Ajuste y sensibilidad en curso · progreso no estimado · no cancelable de forma segura",
+                "active",
+            )
+            self._update_analysis_controls()
+            worker = _ThesisSIRAnalysisWorker(
+                parameters,
+                self.observations,
+                copied_config,
+                float(self.max_step_combo.currentData()),
+                output_parent,
+                self,
+            )
+            worker.succeeded.connect(self._on_analysis_worker_success)
+            worker.failed.connect(self._on_analysis_worker_failure)
+            worker.finished.connect(self._on_analysis_worker_finished)
+            self._analysis_worker = worker
+            self._update_analysis_controls()
+            worker.start()
+
+        def _on_analysis_worker_success(self, workspace_path: str) -> None:
+            self.state = "ANALYZED"
+            self._set_run_status(
+                "Análisis calculado y workspace verificado · NOT_ASSESSED / NOT_CALCULATED",
+                "computed",
+            )
+            self.analysis_workspace_ready.emit(workspace_path)
+
+        def _on_analysis_worker_failure(self, message: str) -> None:
+            self.result_payload = None
+            self.state = "FAILED"
+            self.save_button.setEnabled(False)
+            self.audit_button.setEnabled(False)
+            self._clear_content()
+            self._set_run_status(f"Falló el ajuste; no se cargaron resultados · {message[:1000]}", "error")
+
+        def _on_analysis_worker_finished(self) -> None:
+            worker = self._analysis_worker
+            self._analysis_worker = None
+            self.progress_bar.hide()
+            self._update_analysis_controls()
+            if worker is not None:
+                worker.deleteLater()
+            self.activity_finished.emit()
 
         def prepare_audit_workspace_dialog(self) -> None:
             if self.run_in_progress or self.observations is None or self.result_payload is None:
@@ -716,6 +1083,7 @@ if QtWidgets is not None:
             worker.failed.connect(self._on_worker_failure)
             worker.finished.connect(self._on_worker_finished)
             self._worker = worker
+            self._update_analysis_controls()
             worker.start()
 
         def _on_worker_success(self, payload: object) -> None:
@@ -748,6 +1116,8 @@ if QtWidgets is not None:
             self.run_button.setEnabled(self.observations is not None)
             if worker is not None:
                 worker.deleteLater()
+            self._update_analysis_controls()
+            self.activity_finished.emit()
 
         def _show_result_charts(self, payload: Mapping[str, object]) -> None:
             self._clear_content()
